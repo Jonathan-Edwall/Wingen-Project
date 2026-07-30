@@ -1,0 +1,21 @@
+#1: conda install conda-forge::mamba
+#2: mamba env create -p C:\Users\jonat\anaconda3\envs\krill_env -f C:\Users\jonat\GitHub\Wingen-Project\environment_krill.yml
+#3: conda activate krill_env
+
+
+conda list -n krill_env
+
+
+hur man deletar:
+conda env remove -n "krill_envv" --yes
+rm -r C:\Users\jonat\anaconda3\envs\krill_env
+conda info --envs
+
+Hur man bestämmer krill_env som python interpreter:
+#1 gå till sökrutan
+#2 skriv ">" sedan: "Python: Select Interpreter"
+
+
+Hur man uppdaterar denna environment senare:
+#1: conda activate base
+#2: mamba env update -p C:\Users\jonat\anaconda3\envs\krill_env -f C:\Users\jonat\GitHub\Wingen-Project\environment_krill.yml --prune

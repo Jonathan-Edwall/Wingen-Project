@@ -24,7 +24,7 @@ knitr::opts_chunk$set(echo = TRUE)
 # Set the path to your GitHub folder
 YOUR_GITHUB_ROOT_DIRECTORY <- "C:/Users/jonat/GitHub"
 # Defining the relative path in the repository
-repository_path <- file.path(YOUR_GITHUB_ROOT_DIRECTORY,"roh-island-simulation")
+repository_path <- file.path(YOUR_GITHUB_ROOT_DIRECTORY,"Wingen-Project")
 #################################### 
 # Defining Input parameters
 #################################### 
@@ -78,6 +78,11 @@ if (!dir.exists(output_dir)) {
   dir.create(output_dir, recursive = TRUE)
 }
 
+##################################### 
+## Defining the Conda directory
+##################################### 
+
+  
 ```
 
 ---
@@ -106,19 +111,28 @@ editor_options:
 <!-- ## Loading Libraries --> 
 
 ```{r Loading Libraries, echo = FALSE, results= 'hide', warning = FALSE}
-if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
 if (!require(wingen)) remotes::install_github("AnushaPB/wingen", dependencies = TRUE)
 library(wingen)
-if (!require(kableExtra)) install.packages("kableExtra", dependencies = TRUE)
-library(kableExtra) 
+#if (!require(kableExtra)) install.packages("kableExtra", dependencies = TRUE)
+#library(kableExtra) 
 if (!require(ggplot2)) install.packages("ggplot2", dependencies = TRUE)
 library(ggplot2)
 ```
 # Wingen 
 ```{r 1.1.1: Wingen try,echo = FALSE,results= 'hide',warning = FALSE}
 load_middle_earth_ex()
-gd_rast <- window_gd(vcf = lotr_vcf,  coords = lotr_coords,  lyr = lotr_lyr,  stat = "pi",  wdim = 5)
-gd_krig <- wkrig_gd(gd_rast, mask = lotr_range) plot(gd_krig)
+gd_rast <- window_gd(
+  gen = lotr_vcf,
+  coords = lotr_coords,
+  lyr = lotr_lyr,
+  stat = "pi",
+  wdim = 5
+  
+)
+
+
+gd_krig <- wkrig_gd(gd_rast)
+plot(gd_krig)
 ```
 
 

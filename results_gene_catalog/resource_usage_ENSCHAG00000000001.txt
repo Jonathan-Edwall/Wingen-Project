@@ -1,0 +1,30 @@
+
+
+processing file: 2_Herring_Wingen.Rmd
+input_vcf_file: /proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/temp/ENSCHAG00000000001_cds.vcf.gz 
+variant rows: 33 | samples found: 125 
+output file: /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/results_gene_catalog/.render_ENSCHAG00000000001/2_Herring_Wingen.knit.md
+
+	Command being timed: "Rscript -e rmarkdown::render('/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/code/2_Herring_Wingen.Rmd', run_pandoc=FALSE, intermediates_dir='/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/results_gene_catalog/.render_ENSCHAG00000000001')"
+	User time (seconds): 908.91
+	System time (seconds): 16.61
+	Percent of CPU this job got: 99%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 15:30.36
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 31085176
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 263
+	Minor (reclaiming a frame) page faults: 7605004
+	Voluntary context switches: 1678
+	Involuntary context switches: 1486
+	Swaps: 0
+	File system inputs: 16
+	File system outputs: 18800
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

@@ -1,0 +1,378 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gmd:MD_Metadata xmlns:gmd="http://www.isotc211.org/2005/gmd" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:gco="http://www.isotc211.org/2005/gco" xmlns:srv="http://www.isotc211.org/2005/srv" xmlns:gmx="http://www.isotc211.org/2005/gmx" xmlns:gts="http://www.isotc211.org/2005/gts" xmlns:gsr="http://www.isotc211.org/2005/gsr" xmlns:gmi="http://www.isotc211.org/2005/gmi" xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:xlink="http://www.w3.org/1999/xlink" xsi:schemaLocation="http://www.isotc211.org/2005/gmd http://schemas.opengis.net/csw/2.0.2/profiles/apiso/1.0.0/apiso.xsd">
+  <gmd:fileIdentifier>
+    <gco:CharacterString>bae53d8e-a5a2-4d01-b260-54d72ad46813</gco:CharacterString>
+  </gmd:fileIdentifier>
+  <gmd:language>
+    <gmd:LanguageCode codeList="http://www.loc.gov/standards/iso639-2/" codeListValue="eng">English</gmd:LanguageCode>
+  </gmd:language>
+  <gmd:characterSet>
+    <gmd:MD_CharacterSetCode codeList="http://standards.iso.org/iso/19139/resources/gmxCodelists.xml#MD_CharacterSetCode" codeListValue="utf8" />
+  </gmd:characterSet>
+  <gmd:hierarchyLevel>
+    <gmd:MD_ScopeCode codeList="http://standards.iso.org/iso/19139/resources/gmxCodelists.xml#MD_ScopeCode" codeListValue="dataset" />
+  </gmd:hierarchyLevel>
+  <gmd:contact>
+    <gmd:CI_ResponsibleParty>
+      <gmd:organisationName>
+        <gco:CharacterString>HELCOM Secretariat</gco:CharacterString>
+      </gmd:organisationName>
+      <gmd:contactInfo>
+        <gmd:CI_Contact>
+          <gmd:address>
+            <gmd:CI_Address>
+              <gmd:electronicMailAddress>
+                <gco:CharacterString>data@helcom.fi</gco:CharacterString>
+              </gmd:electronicMailAddress>
+            </gmd:CI_Address>
+          </gmd:address>
+        </gmd:CI_Contact>
+      </gmd:contactInfo>
+      <gmd:role>
+        <gmd:CI_RoleCode codeList="http://standards.iso.org/iso/19139/resources/gmxCodelists.xml#CI_RoleCode" codeListValue="pointOfContact" />
+      </gmd:role>
+    </gmd:CI_ResponsibleParty>
+  </gmd:contact>
+  <gmd:dateStamp>
+    <gco:DateTime>2021-09-09T11:59:30</gco:DateTime>
+  </gmd:dateStamp>
+  <gmd:referenceSystemInfo>
+    <gmd:MD_ReferenceSystem>
+      <gmd:referenceSystemIdentifier>
+        <gmd:RS_Identifier>
+          <gmd:code>
+            <gmx:Anchor xlink:href="http://www.opengis.net/def/crs/EPSG/0/3035">EPSG:3035</gmx:Anchor>
+          </gmd:code>
+        </gmd:RS_Identifier>
+      </gmd:referenceSystemIdentifier>
+    </gmd:MD_ReferenceSystem>
+  </gmd:referenceSystemInfo>
+  <gmd:identificationInfo>
+    <gmd:MD_DataIdentification>
+      <gmd:citation>
+        <gmd:CI_Citation>
+          <gmd:title>
+            <gco:CharacterString>Potential spawning areas for herring (PBS EFH)</gco:CharacterString>
+          </gmd:title>
+          <gmd:date>
+            <gmd:CI_Date>
+              <gmd:date>
+                <gco:Date>2020-05-13</gco:Date>
+              </gmd:date>
+              <gmd:dateType>
+                <gmd:CI_DateTypeCode codeList="http://standards.iso.org/iso/19139/resources/gmxCodelists.xml#CI_DateTypeCode" codeListValue="publication" />
+              </gmd:dateType>
+            </gmd:CI_Date>
+          </gmd:date>
+          <gmd:identifier>
+            <gmd:MD_Identifier>
+              <gmd:code>
+                <gmx:Anchor xlink:href="https://metadata.helcom.fi/geonetwork/srv/eng/catalog.search#/metadata/bae53d8e-a5a2-4d01-b260-54d72ad46813">https://metadata.helcom.fi/geonetwork/srv/eng/catalog.search#/metadata/bae53d8e-a5a2-4d01-b260-54d72ad46813</gmx:Anchor>
+              </gmd:code>
+            </gmd:MD_Identifier>
+          </gmd:identifier>
+        </gmd:CI_Citation>
+      </gmd:citation>
+      <gmd:abstract>
+        <gco:CharacterString>Essential fish habitat (EFH) map on Potential spawning areas for herring was prepared in PanBalticScope project (co-founded by the European Maritime and Fisheries Fund of the European Union) http://www.panbalticscope.eu/
+
+Herring (Clupea harengus) is widely distributed in the Baltic Sea and is common in all sub-basins. Herring feeds in the pelagic, mainly on zooplankton, and is an important prey for cod, other fish, and marine mammals. In fisheries management, herring in the Baltic Sea is sub-divided into several stocks. Herring spawns in coastal areas or offshore shallows. It has demersal eggs, which are attached to the substrate. Spawning may occur both in spring and autumn, depending on population, but spring spawning dominates today. Spawning areas of herring were identified by main habitat associations, based on existing observations of herring spawning grounds in the Baltic Sea. ‘Potential spawning areas’ were delineated based on the distribution of any of the following: modelled photic zone, photic hard bottom, charophytes, Fucus spp, Furcellaria lumbricalis, and Zostera marina, several data layers were combined due to uncertainty in the coverage of some of them, ‘High probability’ spawning areas were identified as areas where the modelled photic zone overlaps with any of the other layers. The habitat variables were identified by other existing HELCOM data layers. 
+
+Stock: Herring in ICES subdivisions 22-24 (spring spawning), subdivisions 25-27, 28.2, 29 and 32, subdivision 28.1 (Gulf of Riga), subdivisions 30-31.
+
+EFH type: Spawning areas
+
+Approach: Habitat associations combined with manual corrections to eastern Gulf of Finland (Neva inlet), Curonian lagoon, Szczechin lagoon, Vistula lagoon and German waters
+
+Variables and thresholds: Distribution of Photic zone, Photic hard bottom, Charophytes, Fucus spp., Furcellaria lumbricalis, Zostera marina. The resulting data layer was corrected by removing recruitment areas in eastern Gulf of Finland (Neva inlet), Curonian lagoon, Szczechin lagoon and enhancing that of the Vistula lagoon.
+
+Quality: The data layer is mainly developed based on main habitat associations as identified from scientific literature, not actual data on herring spawning.
+The delineations are based on other data layers (benthic and habitat-related ecosystem components) for which mapping is not exhaustive and sampling density may vary between countries. Underlying data layers on vegetation (Fucus, Furcellaria, charophytes, Zostera) are based on inventory data and species distribution models. Information on the distribution of Furcellaria is lacking from Russia.
+Herring preferably spawns in shallow areas. However, the layer does not include depth as a variable, as some known spawning areas offshore would not be included if the depth restriction is used. Due to constraints in the resolution of the underlying data layer, the map also identifies areas shallower than one meter as potential spawning areas of Baltic herring. However, spawning of Baltic herring does not usually occur in such shallow depth.
+The map represents potential spawning areas. In addition, behavioral components and hydrographic factors influence on the actual chose of spawning site at a certain occasion. Due to these constraints, the data layer on Baltic herring spawning habitats should be considered as a rough estimation.
+
+Attribute information: Raster value representing no spawning (0), potential spawning area (0.5) and high probability spawning area (1).
+
+References
+- Fey, DP (2001) Differences in temperature conditions and somatic growth rate of larval and early juvenile spring spawned herring from the Vistula Lagoon, Baltic Sea manifested in the otolith size to fish size relationship. Journal of Fish Biology 58: 1257–1273 
+- Fey, DP, AM Lejk, P Margonski, L Szymanek, I Psuty, T Nermer, F Lempe, HV Strehlow, P Polte, D Moll, N Stybel, A Hiller, and M van Laak (2014a) Herring. An analysis of spawning ground management, ecological conditions and human impacts in Greifswald Bay, Vistula Lagoon and Hanö Bight. NMFRI, Gdynia, 177 pp. 
+- Fey, D, A. Szkudlarek-Pawelczyk, and A. Wozniczka (2014b) Abundance and distribution of larval herring, Clupea harengus (Actinopterygii: Clupeiformes: Clupeidae) in the Pomeranian Bay, Baltic Sea as an indicator of spawning sites. Acta Ichthyologica et Piscatoria 44: 309–317 
+- HELCOM (2018a) HELCOM Map and Data service. Layers: mean slope and bottom currents. https://maps.helcom.fi/website/mapservice/. Accessed March 2019
+- HELCOM (2018b) HELCOM Map and Data service. Layers: Seabed sediment polygon (BALANCE), Fucus distribution, Furcellaria lumbricalis distribution. https://maps.helcom.fi/website/mapservice/ Accessed 29 October 2018
+- Kanstinger P, J Beher, G Grenzdörffer, C Hammer, KB Huebert, D Stepputtis, and M Peck (2018) What is left? Macrophyte meadows and Atlantic herring (Clupea harengus) spawning sites in the Greifswalder Bodden, Baltic Sea. Estuar Coast Shelf Sci 201:72-81) 
+- Krasovskaya, N (2002) Spawning of Baltic herring in the Vistula Lagoon: Effects of environmental conditions and stock parameters. Bulletin of Sea Fish. Inst. No. 1 (155), Gdynia: 3–25
+- Popiel, J (1984) On the biology of the Baltic herring. Reports of the Sea Fisheries Institute, Gdynia, vol. 19, 8-16.</gco:CharacterString>
+      </gmd:abstract>
+      <gmd:pointOfContact>
+        <gmd:CI_ResponsibleParty>
+          <gmd:organisationName>
+            <gco:CharacterString>HELCOM Secretariat</gco:CharacterString>
+          </gmd:organisationName>
+          <gmd:contactInfo>
+            <gmd:CI_Contact>
+              <gmd:address>
+                <gmd:CI_Address>
+                  <gmd:electronicMailAddress>
+                    <gco:CharacterString>data@helcom.fi</gco:CharacterString>
+                  </gmd:electronicMailAddress>
+                </gmd:CI_Address>
+              </gmd:address>
+            </gmd:CI_Contact>
+          </gmd:contactInfo>
+          <gmd:role>
+            <gmd:CI_RoleCode codeList="http://standards.iso.org/iso/19139/resources/gmxCodelists.xml#CI_RoleCode" codeListValue="pointOfContact" />
+          </gmd:role>
+        </gmd:CI_ResponsibleParty>
+      </gmd:pointOfContact>
+      <gmd:descriptiveKeywords>
+        <gmd:MD_Keywords>
+          <gmd:keyword>
+            <gco:CharacterString>Species distribution</gco:CharacterString>
+          </gmd:keyword>
+          <gmd:keyword>
+            <gco:CharacterString>Habitats and biotopes</gco:CharacterString>
+          </gmd:keyword>
+          <gmd:type>
+            <gmd:MD_KeywordTypeCode codeList="http://standards.iso.org/iso/19139/resources/gmxCodelists.xml#MD_KeywordTypeCode" codeListValue="theme" />
+          </gmd:type>
+          <gmd:thesaurusName>
+            <gmd:CI_Citation>
+              <gmd:title>
+                <gco:CharacterString>GEMET - INSPIRE themes, version 1.0</gco:CharacterString>
+              </gmd:title>
+              <gmd:date>
+                <gmd:CI_Date>
+                  <gmd:date>
+                    <gco:Date>2008-06-01</gco:Date>
+                  </gmd:date>
+                  <gmd:dateType>
+                    <gmd:CI_DateTypeCode codeList="http://standards.iso.org/iso/19139/resources/gmxCodelists.xml#CI_DateTypeCode" codeListValue="publication" />
+                  </gmd:dateType>
+                </gmd:CI_Date>
+              </gmd:date>
+              <gmd:identifier>
+                <gmd:MD_Identifier>
+                  <gmd:code>
+                    <gmx:Anchor xlink:href="https://metadata.helcom.fi/geonetwork/srv/eng/thesaurus.download?ref=external.theme.httpinspireeceuropaeutheme-theme">geonetwork.thesaurus.external.theme.httpinspireeceuropaeutheme-theme</gmx:Anchor>
+                  </gmd:code>
+                </gmd:MD_Identifier>
+              </gmd:identifier>
+            </gmd:CI_Citation>
+          </gmd:thesaurusName>
+        </gmd:MD_Keywords>
+      </gmd:descriptiveKeywords>
+      <gmd:descriptiveKeywords>
+        <gmd:MD_Keywords>
+          <gmd:keyword>
+            <gco:CharacterString>habitat</gco:CharacterString>
+          </gmd:keyword>
+          <gmd:type>
+            <gmd:MD_KeywordTypeCode codeList="http://standards.iso.org/iso/19139/resources/gmxCodelists.xml#MD_KeywordTypeCode" codeListValue="discipline" />
+          </gmd:type>
+          <gmd:thesaurusName>
+            <gmd:CI_Citation>
+              <gmd:title>
+                <gco:CharacterString>GEMET</gco:CharacterString>
+              </gmd:title>
+              <gmd:date>
+                <gmd:CI_Date>
+                  <gmd:date>
+                    <gco:Date>2018-08-16</gco:Date>
+                  </gmd:date>
+                  <gmd:dateType>
+                    <gmd:CI_DateTypeCode codeList="http://standards.iso.org/iso/19139/resources/gmxCodelists.xml#CI_DateTypeCode" codeListValue="publication" />
+                  </gmd:dateType>
+                </gmd:CI_Date>
+              </gmd:date>
+              <gmd:identifier>
+                <gmd:MD_Identifier>
+                  <gmd:code>
+                    <gmx:Anchor xlink:href="https://metadata.helcom.fi/geonetwork/srv/eng/thesaurus.download?ref=external.theme.gemet-en">geonetwork.thesaurus.external.theme.gemet-en</gmx:Anchor>
+                  </gmd:code>
+                </gmd:MD_Identifier>
+              </gmd:identifier>
+            </gmd:CI_Citation>
+          </gmd:thesaurusName>
+        </gmd:MD_Keywords>
+      </gmd:descriptiveKeywords>
+      <gmd:descriptiveKeywords>
+        <gmd:MD_Keywords>
+          <gmd:keyword>
+            <gco:CharacterString>MADS</gco:CharacterString>
+          </gmd:keyword>
+          <gmd:type>
+            <gmd:MD_KeywordTypeCode codeList="" codeListValue="" />
+          </gmd:type>
+        </gmd:MD_Keywords>
+      </gmd:descriptiveKeywords>
+      <gmd:resourceConstraints>
+        <gmd:MD_LegalConstraints>
+          <gmd:useConstraints>
+            <gmd:MD_RestrictionCode codeList="http://standards.iso.org/iso/19139/resources/gmxCodelists.xml#MD_RestrictionCode" codeListValue="otherRestrictions" />
+          </gmd:useConstraints>
+          <gmd:otherConstraints>
+            <gco:CharacterString>Use constraints: Data can be used freely given that the source (PanBalticScope project) is cited.</gco:CharacterString>
+          </gmd:otherConstraints>
+        </gmd:MD_LegalConstraints>
+      </gmd:resourceConstraints>
+      <gmd:resourceConstraints>
+        <gmd:MD_LegalConstraints>
+          <gmd:accessConstraints>
+            <gmd:MD_RestrictionCode codeList="http://standards.iso.org/iso/19139/resources/gmxCodelists.xml#MD_RestrictionCode" codeListValue="otherRestrictions" />
+          </gmd:accessConstraints>
+          <gmd:otherConstraints>
+            <gmx:Anchor xlink:href="http://inspire.ec.europa.eu/metadata-codelist/LimitationsOnPublicAccess/noLimitations">Access constraints: No limitations on public access.</gmx:Anchor>
+          </gmd:otherConstraints>
+        </gmd:MD_LegalConstraints>
+      </gmd:resourceConstraints>
+      <gmd:spatialRepresentationType>
+        <gmd:MD_SpatialRepresentationTypeCode codeList="http://standards.iso.org/iso/19139/resources/gmxCodelists.xml#MD_SpatialRepresentationTypeCode" codeListValue="vector" />
+      </gmd:spatialRepresentationType>
+      <gmd:language>
+        <gmd:LanguageCode codeList="http://www.loc.gov/standards/iso639-2/" codeListValue="eng">English</gmd:LanguageCode>
+      </gmd:language>
+      <gmd:topicCategory>
+        <gmd:MD_TopicCategoryCode>environment</gmd:MD_TopicCategoryCode>
+      </gmd:topicCategory>
+      <gmd:extent>
+        <gmd:EX_Extent>
+          <gmd:geographicElement>
+            <gmd:EX_GeographicBoundingBox>
+              <gmd:westBoundLongitude>
+                <gco:Decimal>8.857421278953552</gco:Decimal>
+              </gmd:westBoundLongitude>
+              <gmd:eastBoundLongitude>
+                <gco:Decimal>30.830077528953556</gco:Decimal>
+              </gmd:eastBoundLongitude>
+              <gmd:southBoundLatitude>
+                <gco:Decimal>53.6985167875425</gco:Decimal>
+              </gmd:southBoundLatitude>
+              <gmd:northBoundLatitude>
+                <gco:Decimal>65.98351454987969</gco:Decimal>
+              </gmd:northBoundLatitude>
+            </gmd:EX_GeographicBoundingBox>
+          </gmd:geographicElement>
+          <gmd:temporalElement>
+            <gmd:EX_TemporalExtent>
+              <gmd:extent>
+                <gml:TimePeriod gml:id="Temporal">
+                  <gml:beginPosition>2011-01-01</gml:beginPosition>
+                  <gml:endPosition>2016-12-31</gml:endPosition>
+                </gml:TimePeriod>
+              </gmd:extent>
+            </gmd:EX_TemporalExtent>
+          </gmd:temporalElement>
+        </gmd:EX_Extent>
+      </gmd:extent>
+    </gmd:MD_DataIdentification>
+  </gmd:identificationInfo>
+  <gmd:distributionInfo>
+    <gmd:MD_Distribution>
+      <gmd:distributionFormat>
+        <gmd:MD_Format>
+          <gmd:name>
+            <gco:CharacterString>ESRI Shapefile</gco:CharacterString>
+          </gmd:name>
+          <gmd:version>
+            <gco:CharacterString>1.0</gco:CharacterString>
+          </gmd:version>
+        </gmd:MD_Format>
+      </gmd:distributionFormat>
+      <gmd:transferOptions>
+        <gmd:MD_DigitalTransferOptions>
+          <gmd:onLine>
+            <gmd:CI_OnlineResource>
+              <gmd:linkage>
+                <gmd:URL>https://maps.helcom.fi/website/MADS/download/?id=bae53d8e-a5a2-4d01-b260-54d72ad46813</gmd:URL>
+              </gmd:linkage>
+              <gmd:protocol>
+                <gco:CharacterString>WWW:LINK-1.0-http--link</gco:CharacterString>
+              </gmd:protocol>
+              <gmd:name>
+                <gco:CharacterString>Download dataset</gco:CharacterString>
+              </gmd:name>
+              <gmd:function>
+                <gmd:CI_OnLineFunctionCode codeList="https://standards.iso.org/iso/19139/resources/gmxCodelists.xml#CI_OnLineFunctionCode" codeListValue="download" />
+              </gmd:function>
+            </gmd:CI_OnlineResource>
+          </gmd:onLine>
+          <gmd:onLine>
+            <gmd:CI_OnlineResource>
+              <gmd:linkage>
+                <gmd:URL>https://maps.helcom.fi/website/mapservice/?datasetID=bae53d8e-a5a2-4d01-b260-54d72ad46813</gmd:URL>
+              </gmd:linkage>
+              <gmd:protocol>
+                <gco:CharacterString>WWW:LINK-1.0-http--link</gco:CharacterString>
+              </gmd:protocol>
+              <gmd:name>
+                <gco:CharacterString>Open in Map Viewer</gco:CharacterString>
+              </gmd:name>
+              <gmd:function>
+                <gmd:CI_OnLineFunctionCode codeList="https://standards.iso.org/iso/19139/resources/gmxCodelists.xml#CI_OnLineFunctionCode" codeListValue="information" />
+              </gmd:function>
+            </gmd:CI_OnlineResource>
+          </gmd:onLine>
+        </gmd:MD_DigitalTransferOptions>
+      </gmd:transferOptions>
+    </gmd:MD_Distribution>
+  </gmd:distributionInfo>
+  <gmd:dataQualityInfo>
+    <gmd:DQ_DataQuality>
+      <gmd:scope>
+        <gmd:DQ_Scope>
+          <gmd:level>
+            <gmd:MD_ScopeCode codeList="http://standards.iso.org/iso/19139/resources/gmxCodelists.xml#MD_ScopeCode" codeListValue="dataset" />
+          </gmd:level>
+        </gmd:DQ_Scope>
+      </gmd:scope>
+      <gmd:report>
+        <gmd:DQ_DomainConsistency>
+          <gmd:result>
+            <gmd:DQ_ConformanceResult>
+              <gmd:specification>
+                <gmd:CI_Citation>
+                  <gmd:title>
+                    <gmx:Anchor xlink:href="http://data.europa.eu/eli/reg/2010/1089">Commission Regulation (EU) No 1089/2010 of 23 November 2010 implementing Directive 2007/2/EC of the European Parliament and of the Council as regards interoperability of spatial data sets and services</gmx:Anchor>
+                  </gmd:title>
+                  <gmd:date>
+                    <gmd:CI_Date>
+                      <gmd:date>
+                        <gco:Date>2010-12-08</gco:Date>
+                      </gmd:date>
+                      <gmd:dateType>
+                        <gmd:CI_DateTypeCode codeList="http://standards.iso.org/iso/19139/resources/gmxCodelists.xml#CI_DateTypeCode" codeListValue="publication" />
+                      </gmd:dateType>
+                    </gmd:CI_Date>
+                  </gmd:date>
+                </gmd:CI_Citation>
+              </gmd:specification>
+              <gmd:explanation gco:nilReason="missing">
+                <gco:CharacterString />
+              </gmd:explanation>
+              <gmd:pass gco:nilReason="unknown" />
+            </gmd:DQ_ConformanceResult>
+          </gmd:result>
+        </gmd:DQ_DomainConsistency>
+      </gmd:report>
+      <gmd:lineage>
+        <gmd:LI_Lineage>
+          <gmd:statement>
+            <gco:CharacterString>Photic zone: As produced within the EU Interreg IIIB project BALANCE (HELCOM 2018a).
+Seabed sediments – Photic hard bottom: Benthic biotope complexes in the Baltic Sea based on a combination of geological sediment data from the EU Interreg IIIB project BALANCE and light availability data from EUSeaMap.
+
+Charophyte distribution: HOLAS II Dataset “Charophyte distribution” (HELCOM 2018b), representing the distribution of charophytes (Chara spp, Nitella spp, Nitellopsis spp, Tolypella spp) mainly based on data submission by HELCOM contracting parties. Submitted point data were originally gathered in national mapping and monitoring campaigns, or for scientific research. Scientific publications were used to complement the data for the Curonian, Vistula and Szczechin lagoons. Polygon data from Poland was digitized based on the Polish Marine Atlas. From Estonian waters, a predictive model was used (200m resolution), which was converted to presence/absence using minimized difference threshold criteria. All data (point, polygon and the raster presenting predicted presence of charophytes) were generalized to 5km x 5km grid cells.
+
+Fucus species’ distribution: HOLAS II Dataset “Fucus distribution” (HELCOM 2018b), based on data submission by HELCOM contracting parties. Mainly pointwise occurrences of Fucus were submitted, as originally gathered in national mapping and monitoring campaigns, or for scientific research. From Estonian waters, a predictive model was used (200m resolution), that was converted to presence/absence using minimized difference threshold criteria. All data (point, and the raster presenting predicted presence of Fucus) were generalized to 5km x 5km grid cells.
+
+Furcellaria lumbricalis distribution: HOLAS II Dataset “Furcellaria lumbricalis distribution” (HELCOM 2018b), based on data submission by HELCOM contracting parties. Mainly pointwise occurrences of Furcellaria were submitted, originally gathered in national mapping and monitoring campaigns, or for scientific research. From Estonian waters, a predictive model was used (200m resolution), that was converted to presence/absence using minimized difference threshold criteria. For Poland, only confirmed occurrence of Furcellaria was included (Slupsk bank, Rowy reef and reef at Orlowo cliff). All data (point, and the raster presenting predicted presence of Furcellaria) were generalized to 5km x 5km grid cells.
+
+Zostera marina distribution: HELCOM HOLAS II Dataset “Zostera marina distribution” (2018b). The data was based on data submission by HELCOM contracting parties. Mainly pointwise occurrences of eelgrass were submitted, originally gathered in national mapping and monitoring campaigns, or for scientific research. Polygon data from Puck Bay (Poland) was digitized based on Polish Marine Atlas and Orlowo cliff area was added based on expert knowledge. From Estonian waters, a predictive model was used (200m resolution), that was converted to presence/absence using minimized difference threshold criteria. All data (point, polygon and the raster presenting predicted presence of eelgrass in the Estonian waters) were generalized to 5km x 5km grid cells.
+
+Layer edited in February 2021 to remove Nodata cells within the http://metadata.helcom.fi/geonetwork/srv/eng/catalog.search#/metadata/7a0256db-f557-4f8f-a5a1-bfb25fee225f. Nodata cells were given the value based on the value of adjacent cells. The tool “focal statistics” was used by including 3 adjacent cells to each direction (rectangle) in the analysis and populating the Nodata cells with the most frequent value (Majority) found within that area. The tool was run several times with the same settings, if the Nodata area was larger and all cells could not be populated with on go.</gco:CharacterString>
+          </gmd:statement>
+        </gmd:LI_Lineage>
+      </gmd:lineage>
+    </gmd:DQ_DataQuality>
+  </gmd:dataQualityInfo>
+</gmd:MD_Metadata>
+

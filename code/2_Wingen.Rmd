@@ -1,0 +1,1660 @@
+---
+title: "Herring - Genetic Diversity Map"
+output: html_document
+date: "2026-09-03"
+---
+# Preparation
+```{r setup, echo = FALSE, results = 'hide', warning = FALSE}
+# Clean the working environment
+rm(list = ls())
+gc()
+
+#######################################
+# Input Files / Directories:
+######################################
+if (Sys.getenv("ROOT") != "") {
+  github_repository_path <- file.path(Sys.getenv("ROOT"))
+} else {
+  #github_repository_path <- file.path("/mnt/c/Users/jonat/pipeline/GitHub/Wingen-Project")
+  github_repository_path <- file.path("/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project")
+}
+if (!file.exists(github_repository_path)) {
+  stop("Github Repo path not found: ", github_repository_path)
+}
+
+if (Sys.getenv("filtered_vcf_file") != "") {
+  input_vcf_file <- Sys.getenv("filtered_vcf_file")
+} else {
+  # input_vcf_file <- file.path(github_repository_path,"data/raw/genetic_variation_herring/head_chr1_1-1e6_herring_sentieon_125ind_231031.newID.filter.setGT.noIndels.minDP3.0maxDP3.0avg.snpEff.biallelic.vcf.gz")
+  input_vcf_file <- file.path(github_repository_path, "data/raw/herring_2026_Swedish_East_Coast/Goodall2025_Swedish_East_Coast_Dataset_BalticSea_Herring.vcf.gz")
+    # input_vcf_file <- file.path(github_repository_path, "data/raw/zostera_marina/zostera_monitoring_230504_2138_SNPs_all_no_replicates.vcf")
+  #input_vcf_file <- file.path(github_repository_path, "data/preprocessed/gene_test.vcf")
+}
+if (!file.exists(input_vcf_file)) {
+  stop("VCF file not found: ", input_vcf_file)
+}
+
+if (Sys.getenv("sample_coordinates_file") != "") {
+  input_coordinate_file_path <- Sys.getenv("sample_coordinates_file")
+} else {
+  #input_coordinate_file_path <- file.path(github_repository_path,  "data/raw/genetic_variation_herring/125_individual_info_list_shared_with_media_coordinates.xlsx")
+  input_coordinate_file_path <- file.path(github_repository_path,"data/raw/herring_2026_Swedish_East_Coast/individuals_w_mapped_geographical_coordinates_Goodall2025_Swedish_East_Coast_Dataset_BalticSea_Herring.xlsx")
+  # input_coordinate_file_path <- file.path(github_repository_path,"data/raw/zostera_marina/individuals_w_mapped_geographical_coordinates_pop_info.csv")
+  }
+if (!file.exists(input_coordinate_file_path)) {
+  stop("Coordinate file not found: ", input_coordinate_file_path)
+}
+
+study_species <- Sys.getenv("study_species", unset = "Herring_SECD") # dataset_species_name
+
+vcf_filter_value <- Sys.getenv("vcf_filter_value", unset = "") # contains gene name/CHR region etc.
+
+if (Sys.getenv("wingen_output_dir") != "") {
+  output_dir <- Sys.getenv("wingen_output_dir")
+} else {
+  output_dir <- file.path(github_repository_path, "results")
+}
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+#######################################
+# Input Parameters:
+######################################
+
+# --- Region of interest (optional) ---
+# Set all four to numeric WGS84 degrees to restrict the analysis to a
+# geographic subpopulation (what used to be the separate Subpopulation
+# script). Leave any of them NULL to run on the full, unfiltered
+# dataset instead (what used to be the separate FullDataset script) -
+# this one script now covers both; nothing else below needs to change
+# between the two cases, since everything from section 1b onward
+# already operates generically on vcf/coords_file_df/sample_order.
+LAT_MIN <- as.numeric(Sys.getenv("LAT_MIN", unset = NA))
+LAT_MAX <- as.numeric(Sys.getenv("LAT_MAX", unset = NA))
+LON_MIN <- as.numeric(Sys.getenv("LON_MIN", unset = NA))
+LON_MAX <- as.numeric(Sys.getenv("LON_MAX", unset = NA))
+ROI_ACTIVE <- !any(is.na(c(LAT_MIN, LAT_MAX, LON_MIN, LON_MAX)))
+######### Defining Raster Creation Parameters for (coords_to_raster) #########
+ctr_disagg <- Sys.getenv("CTR_DISAGG", unset = "") # coords_to_raster(disagg): Disaggregation factor to apply to raster (defaults to NULL) [Default: NULL]
+ctr_disagg <- if (ctr_disagg == "") NULL else as.numeric(ctr_disagg)
+
+# ctr_disagg <- 2
+
+# Set raster resolution
+#
+# Like wdim_value/fact_value above, this is a per-dataset tuning knob, not
+# a universal constant - 2.5 km was arrived at for SECD specifically (see
+# the commented history in the build-raster chunk below: 20 -> 10 -> 5 ->
+# 2.5 km, refined down via preview_gd() as this moved from the original
+# globally-dispersed dataset to SECD's much denser Baltic coastline). A
+# dataset spanning thousands of km at 2.5 km cells produces a grid cell
+# too small to even see in preview_gd() (confirmed: ~1200 cells span the
+# 125-individual dataset's own N-S extent alone, each ~0.08% of a plot's
+# height) - and, more importantly, silently shrinks MAX_INTERP_DIST's
+# window-based default to a small fraction of that dataset's real spacing,
+# which is the same masking failure mode fixed earlier, recurring here for
+# the same underlying reason. RESOLUTION_KM overrides the default below;
+# re-check with preview_gd() (section 2.4) whenever the active dataset
+# changes, same as wdim_value/fact_value.
+
+resolution_m <- as.numeric(Sys.getenv("RESOLUTION_KM", unset = 2.5)) * 1e3 # To-do: Accept decimal inputs of both "." and ","
+
+######### Defining Window settings for window_gd() #########
+#### Window settings for window_gd() ####
+#
+# wdim = 7 was tuned for the full, globally-dispersed dataset's sample
+# density; a tighter region of interest will usually support a smaller
+# wdim (denser local sampling, less need to reach far for a window's
+# worth of samples) - re-check with the preview_gd() grid search in
+# section 2.4 whenever LAT/LON_MIN/MAX change.
+wdim_value <- as.numeric(Sys.getenv("WDIM", unset = 7))
+fact_value <- as.numeric(Sys.getenv("FACT", unset = 3))
+min_n_samples_per_calc <- as.numeric(Sys.getenv("MIN_N_SAMPLES_PER_CALC", unset = 2)) # Minimum number of samples to use in calculations (any focal cell with a window containing less than this number of samples will be assigned a value of NA; defaults to 2). [Default: 2]
+
+use_rarify <- as.logical(Sys.getenv("USE_RARIFY", unset = FALSE)) # [Default: FALSE] 
+use_rarify <- TRUE
+rarify_n <- as.numeric(Sys.getenv("RARIFY_N", unset = min_n_samples_per_calc)) # rarify_n: If rarify = TRUE, number of points to use for rarefaction (defaults to min_n). [Default: min_n]
+rarify_n <- 4
+rarify_n_iterations <- as.numeric(Sys.getenv("RARIFY_N_ITERATIONS", unset = 5)) # If rarify = TRUE, number of iterations to use for rarefaction (defaults to 5). Can also be set to "all" to use all possible combinations of samples of size rarify_n within the window. [Default: 5]
+# rarify_n_iterations <-"all" # use all possible combinations of samples of size rarify_n within the window
+
+
+######### Defining kriging parameters for wkrig_gd() #########
+# grd_disagg_factor (previously used in krig_gd(disagg_grd), here used in terra:s disagg function instead since wkrigd_gd lacks this functionality:
+# subdivides each lyr cell into grd_disagg_factor^2 sub-cells for smoothing (finer pixel spacing) in the kriging prediction grid  
+# To disable (grd stays at lyr's native resolution), set to 1.
+grd_disagg_factor <- as.numeric(Sys.getenv("GRD_DISAGG_FACTOR", unset = 3)) # Ries et al.: disagg_grd = 3-5
+# grd_disagg_factor <- 7
+
+use_weighted_kriging <- as.logical(Sys.getenv("USE_WEIGHTED_KRIGING", unset = FALSE))
+use_weighted_kriging <- TRUE
+
+nmax_neighbours <- as.numeric(Sys.getenv("NMAX_NEIGHBOURS", unset = Inf))
+nmax_neighbours <- 15 # wkrig_gd(nmax): Maximum number of neighboring observations to use for kriging at each prediction location
+
+# weight_r: Optional SpatRaster with sample counts per cell, used to compute location-specific measurement variance and weights for kriging. If NULL (default), no weighting is applied. [Default: NULL]
+
+# MAX_INTERP_DIST_MODE picks how the interpolation distance-from-sample cutoff  (section 5's final mask_gd(..., dist_to_sample, maxval = MAX_INTERP_DIST)) gets set:
+#   "computed"  - window-footprint reach (default) - see window_based_reach_km below
+#   "clustered" - median nearest-neighbor distance between clustered sample locations (clustered_reach_km below).
+              # computed on cluster CENTROIDS (see CLUSTER_THRESHOLD_KM / centroids_v above), specifically so near-duplicate points at the same site don't deflate the median.
+              # Representing the "typical real spacing between sampling sites" 
+#   "hardcoded" - predefined MAX_INTERP_DIST_KM value you choose
+#   "none"      - unlimited distance value (No distance based pruning) -> mask_gd's maxval=Inf
+#                 In this case, only a species-range polygon for masking would prune away interpolated values from the map or a sample-count cutoff of any kind, which would then create a fully smoothed continous heatmap with "no gaps"
+MAX_INTERP_DIST_MODE <- Sys.getenv("MAX_INTERP_DIST_MODE", unset = "computed")
+MAX_INTERP_DIST_OVERRIDE_KM <- as.numeric(Sys.getenv("MAX_INTERP_DIST_KM", unset = NA))
+
+# Simple variable used for "growing the interpolated area by X%".
+# This variable multiplies works on whatever MAX_INTERP_DIST mode (see above) lands on.
+# MAX_INTERP_DIST_SCALE is here used as a linear factor, so for sqrt(1 + X) (e.g. 1.2247 would roughly increase the area by a nominal +50%) 
+MAX_INTERP_DIST_SCALE <- as.numeric(Sys.getenv("MAX_INTERP_DIST_SCALE", unset = 1))
+
+# maxdist here is a SEPARATE knob from MAX_INTERP_DIST (not a duplicate, easy to conflate since both are "how far is too far"). maxdist only reaches gstat's neighbor search inside
+# wkrig_gd() (r_pts there is built from wgd_confident[["pi"]]'s CELL
+# CENTROIDS, via terra::as.data.frame(r, xy = TRUE) - confirmed from
+# wkrig_gd.R source), i.e. "how far from a surviving WINDOW CELL is this
+# prediction". MAX_INTERP_DIST's final mask instead measures distance to
+# the nearest actual raw sample coordinate (dist_to_sample, from
+# coords_wgs84). A window cell's centroid can sit up to roughly half a
+# window-width from the real samples that fed it, so these are not the
+# same test and one is not redundant with the other.
+# see the note by the final mask in section 5. Defaults to a computed
+# value derived once MAX_INTERP_DIST is known (section 1.4, right after
+# MAX_INTERP_DIST_SCALE is applied) - not resolved here, since that
+# depends on values not computed yet at this point in the script. Set
+# MAXDIST explicitly (including to Inf, wingen's own raw default) to
+# skip that and use your own value instead.
+
+maxdist <- as.numeric(Sys.getenv("MAXDIST", unset = NA)) # Maximum distance to consider for neighboring observations. Left NA here (resolved in section 1.4) unless explicitly set. If set together with nmax, both parameters limit the number of neighbors. [Default when explicitly set to Inf: Inf]
+max_range_frac <- as.numeric(Sys.getenv("MAX_RANGE_FRAC", unset = 0.5)) # Numeric. Maximum fraction of the range parameter to consider for neighboring observations (default: 0.5). This can help to limit the influence of distant points. [Default: 0.5]
+
+######### Defining Masking parameters for mask_gd() #########
+# MIN_SAMPLE_COUNT_MODE picks how minval_sample_count gets set. It's used
+# in TWO places with two different roles:
+#   * pre-kriging  (wgd_confident): protects the variogram fit itself, since
+#     gstat::variogram() uses every non-NA cell in r regardless of maxdist/
+#     nmax -> this is the only "lever" that keeps a low-support cell from
+#     shaping the fitted spatial model.
+#   * post-kriging (mgd_honest): re-applies that same coarse-cell verdict to
+#     the fine kriged surface via nearest-neighbor resample - a proxy for
+#     "was the nearest original window well-supported", not an independent
+#     measure of THIS pixel's own interpolation uncertainty (wkrig_gd()
+#     computes kriging variance internally via gstat but never returns it,
+#     confirmed from source - var1.var is discarded, only var1.pred is
+#     kept, even with model_output = TRUE - so no more direct per-pixel
+#     measure is available through wingen as it stands).
+# Modes:
+#   "hardcoded" - User set value for MIN_SAMPLE_COUNT_VALUE will be used (default, matches prior
+#                 behavior; see the sample-count-at-real-points diagnostic
+#                 above for picking a defensible one from real numbers
+#                 rather than a guess)
+#   "none"      - no sample-count-based masking at all, at either stage.
+#                 mask_gd's minval = 0 is a no-op (sample_count is never
+#                 negative). Together with MAX_INTERP_DIST_MODE = "none",
+#                 this reproduces a fully smoothed and continous heatmap where only a species-range polygon constrained the map,
+#                 nothing else. Kept as a genuinely separate toggle from
+#                 MAX_INTERP_DIST_MODE on purpose, same reasoning as
+#                 maxdist above: one is about distance, this is about
+#                 sample count, and folding them into one flag would
+#                 recreate the exact conflation both toggles exist to
+#                 untangle.
+MIN_SAMPLE_COUNT_MODE <- Sys.getenv("MIN_SAMPLE_COUNT_MODE", unset = "hardcoded")
+MIN_SAMPLE_COUNT_MODE <- "none"
+MIN_SAMPLE_COUNT_VALUE <- as.numeric(Sys.getenv("MIN_SAMPLE_COUNT", unset = 2))
+
+minval_sample_count <- switch(MIN_SAMPLE_COUNT_MODE,
+  "none" = {
+    cat("MIN_SAMPLE_COUNT_MODE = 'none': no sample-count-based masking, at either stage (Ries et al. (2023)-style)\n")
+    0
+  },
+  "hardcoded" = {
+    cat("Using MIN_SAMPLE_COUNT:", MIN_SAMPLE_COUNT_VALUE, "\n")
+    MIN_SAMPLE_COUNT_VALUE
+  },
+  stop("MIN_SAMPLE_COUNT_MODE must be 'hardcoded' or 'none' - got: '", MIN_SAMPLE_COUNT_MODE, "'")
+) # mask_gd(minval): If y is a Raster object, value of y below which to mask.
+
+masking_polygon_file_path <- Sys.getenv("MASKING_POLYGON", unset = NA)
+# masking_polygon_file_path <- file.path(github_repository_path,"data/raw/herring_2026_Swedish_East_Coast/potential_spawning_areas_for_herring_PBS_EFH/EFH_Herring.tif") 
+
+# Checking if the masking file exist
+if (!is.na(masking_polygon_file_path)) {
+    if (!file.exists(masking_polygon_file_path)) {
+    stop("Masking polygon file not found: ", masking_polygon_file_path)
+  }
+}
+
+######### Defining Domain Type for the habitat mask (land vs ocean) #########
+# DOMAIN_TYPE picks which Natural Earth polygon type defines the valid
+# analysis area: the ne_download(type = ...) argument built in section 2.2,
+# fed straight into mask_gd() in both section 2.4 (lyr) and section 4 (mgd).
+# Neither of those two mask_gd() calls has any ocean- or land-specific
+# logic in it - both just keep whatever overlaps habitat_mask and NA the
+# rest - so nothing downstream of section 2.2 needs to branch on this at
+# all; it's resolved once, here, same as MIN_SAMPLE_COUNT_MODE above.
+#   "ocean" (default) - marine/aquatic species: keep sea cells, mask out land
+#   "land"            - terrestrial species: keep land cells, mask out ocean
+# Comments elsewhere in sections 2 and 4 are still worded for the "ocean"
+# default (e.g. "bleed onto land", "narrow water sites") since that's this
+# script's original use case - read land/ocean swapped when DOMAIN_TYPE =
+# "land"; the touches = TRUE reasoning they describe applies symmetrically
+# to narrow land features (isthmuses, peninsulas) either way.
+DOMAIN_TYPE <- Sys.getenv("DOMAIN_TYPE", unset = "ocean")
+if (!DOMAIN_TYPE %in% c("ocean", "land")) {
+  stop("DOMAIN_TYPE must be 'ocean' or 'land' - got: '", DOMAIN_TYPE, "'")
+}
+
+#### Plot Display settings ####
+# Option for overlaying the sample locations of the empirical data points on the final masked pi map (section 6), where the size of the data points is proportional to the number of individuals sharing each coordinate
+# TRUE/FALSE only.
+SHOW_SAMPLE_POINTS <- as.logical(Sys.getenv("SHOW_SAMPLE_POINTS", unset = TRUE))
+# SHOW_SAMPLE_POINTS <- "FALSE"
+
+# Which statistic controls dot size when SHOW_SAMPLE_POINTS is on:
+#   "count" - number of individuals sharing each location (or cluster)
+#   "value" - the empirical, pre-kriging pi value there instead (from wgd). Lets the user compare the raw windowed value directly against the interpolated surface.
+#   "All"   - Creates both "count" and "value" plots
+# Only read when SHOW_SAMPLE_POINTS is TRUE; "count" or "value" only.
+SAMPLE_POINT_SIZE_BY <- Sys.getenv("SAMPLE_POINT_SIZE_BY", unset = "count")
+SAMPLE_POINT_SIZE_BY <- "All"
+
+# Renders plots with an orthographic display projection instead of plain
+# lat/long - curves the graticule (grid lines), visually emphasizing that
+# the map is a 2D projection of a 3D surface. Display-only: doesn't touch
+# any underlying raster or computation, purely how coord_sf() draws it.
+# TRUE/FALSE only, same as SHOW_SAMPLE_POINTS.
+SPHERICAL_GRID <- as.logical(Sys.getenv("SPHERICAL_GRID", unset = FALSE))
+
+# Color scale of the heatmaps (This setting won't however affect the sample-count layer map, since it keeps its own separate "viridis" choice regardless)
+# Values: Any scale_fill_viridis_c() option works: "inferno" (default), "mako", "rocket", "turbo", "cividis", "plasma", "viridis" "magma".
+# mako/rocket are good options for avoiding the default inferno's tendency to have the highest intensity of bright-yellow to blend into the light background.
+HEATMAP_COLOR_PALETTE <- Sys.getenv("HEATMAP_COLOR_PALETTE", unset = "inferno")
+HEATMAP_COLOR_PALETTE <- "turbo"
+# HEATMAP_COLOR_PALETTE <- "mako"
+# HEATMAP_COLOR_PALETTE <- "rocket"
+
+# Optional: instead of one dot per raw distinct coordinate, group sites
+# within CLUSTER_SAMPLE_POINTS_KM of each other into a single dot
+# (centroid position, summed count) before plotting - repeat visits to
+# the same ground can sit just metres to a couple km apart (see section
+# 1.4's clustering note) and would otherwise draw as overlapping or
+# misleading dots at map scale. A fully separate computation from section
+# 1.4's own clustering (CLUSTER_THRESHOLD_KM) - independent on purpose,
+# so changing one never silently changes the other. Off by default: shows
+# every raw distinct coordinate as its own dot. TRUE/FALSE only, same as
+# SHOW_SAMPLE_POINTS.
+CLUSTER_SAMPLE_POINTS <- as.logical(Sys.getenv("CLUSTER_SAMPLE_POINTS", unset = FALSE))
+CLUSTER_SAMPLE_POINTS_KM <- as.numeric(Sys.getenv("CLUSTER_SAMPLE_POINTS_KM", unset = 2))
+
+
+# # Naming prefix for every output file - encodes region (full vs subpop)
+# # and window settings, so batch runs across different ROIs/wdim/fact
+# # combinations never collide.
+# region_tag <- if (ROI_ACTIVE) "subpop" else "full"
+# #output_prefix <- paste0(format(Sys.Date(), "%Y-%m-%d"), "_herring_", region_tag, "_wdim", wdim_value, "_fact", fact_value, "_")
+# 
+# # Studied species, for plot titles
+# #study_species <- "Herring"
+# study_species <- "Herring (SECD)"
+# 
+# # Define naming prefix of every output file
+# if (Sys.getenv("vcf_filter_mode") != "" & Sys.getenv("vcf_filter_value") != "") {
+#   output_prefix <- paste0(format(Sys.Date(), "%Y-%m-%d"),"_",study_species,"_subpop_gene_test_bp_")
+#   output_prefix <- paste0(format(Sys.Date(), "%Y-%m-%d"),"_",study_species,"_subpop_",vcf_filter_value,"_")
+# } else {
+#     #output_prefix <- paste0(format(Sys.Date(), "%Y-%m-%d"),"_herring_subpop_gene_test_bp_")
+#     #output_prefix <- paste0(format(Sys.Date(), "%Y-%m-%d"),"_herring_subpop_chr_1_bp_")
+#     output_prefix <- paste0(format(Sys.Date(), "%Y-%m-%d"),"_",study_species,"_subpop_","wdim",wdim_value,"_fact",fact_value,"_chr_1_bp_")
+# }
+
+############ Herring Temporary #############
+# MIN_SAMPLE_COUNT_MODE <- "none"
+# minval_sample_count <- 0
+# MAX_INTERP_DIST_SCALE <- 1.5
+# # SPHERICAL_GRID <- TRUE
+# study_species <- "Herring_SECD"
+####################################
+
+# Define region tag for filenames
+# TRUE  -> "_subpop_"
+# FALSE -> "_"
+region_tag <- if (ROI_ACTIVE) "_subpop_" else "_"
+
+
+######### Temporary code to easily run the 125 ind dataset #########
+# input_vcf_file <- file.path(github_repository_path,"data/raw/genetic_variation_herring/head_chr1_1-1e6_herring_sentieon_125ind_231031.newID.filter.setGT.noIndels.minDP3.0maxDP3.0avg.snpEff.biallelic.vcf.gz")
+# #input_vcf_file <- file.path(github_repository_path,"data/raw/genetic_variation_herring/herring_sentieon_125ind_231031.newID.filter.setGT.noIndels.minDP3.0maxDP3.0avg.snpEff.biallelic.vcf.gz")
+# input_coordinate_file_path <- file.path(github_repository_path,  "data/raw/genetic_variation_herring/125_individual_info_list_shared_with_media_coordinates.xlsx")
+# resolution_m <- 5 * 1e3
+# study_species <- "Herring_125_ind_"
+# # Define the coordinates for the studied geographical region of interest in (regular) WGS84 coordinates (latitude, longitude)
+# # Latitude Coordinates
+# LAT_MIN <- 30
+# LAT_MAX <- 72
+# # Longitude Coordinates
+# LON_MIN <- -25
+# LON_MAX <- 60 # Ural mountains in Russia roughly
+# ROI_ACTIVE <- !any(is.na(c(LAT_MIN, LAT_MAX, LON_MIN, LON_MAX)))
+# region_tag <- if (ROI_ACTIVE) "_subpop_" else "_"
+#####################################################################
+######### Temporary code to easily run zostera marina dataset #########
+# input_vcf_file <- file.path(github_repository_path, "data/raw/zostera_marina/zostera_monitoring_230504_2138_SNPs_all_no_replicates.vcf")
+# input_coordinate_file_path <- file.path(github_repository_path,"data/raw/zostera_marina/individuals_w_mapped_geographical_coordinates_pop_info.csv")
+
+# # SPHERICAL_GRID <- TRUE
+# MIN_SAMPLE_COUNT_MODE <- "none"
+# minval_sample_count <- 0
+# MAX_INTERP_DIST_SCALE <- 1.5
+
+# study_species <- paste0("zostera_marina")
+
+
+# # Ries et al mimic with masking polygon:
+# MAX_INTERP_DIST_MODE <- "none"
+# MIN_SAMPLE_COUNT_MODE <- "none"
+# masking_polygon_file_path <- file.path(github_repository_path,"data/raw/zostera_marina/zostera_marina_distribution_2016-2021_HOLAS_3/EC_22.tif")
+# input_vcf_file <- file.path(github_repository_path, "data/raw/zostera_marina/zostera_monitoring_230504_2138_SNPs_all_no_replicates.vcf")
+# input_coordinate_file_path <- file.path(github_repository_path,"data/raw/zostera_marina/individuals_w_mapped_geographical_coordinates_pop_info.csv")
+# study_species <- "zostera_marina_cont_interpol_"
+# study_species <- "zostera_marina_ries_window_test_",
+#####################################################################
+#####################################################################
+######### Temporary code to easily run fucus vesiculosus dataset #########
+# input_vcf_file <- file.path(github_repository_path, "data/raw/fucus_vesiculosus/Fucus_vesiculosus_SNP_data.vcf")
+# input_coordinate_file_path <- file.path(github_repository_path,"data/raw/fucus_vesiculosus/individuals_w_mapped_geographical_coordinates_fucus_vesiculosus_table_s1_coordinates.xlsx")
+# # Andreas preferred study region:
+# #grd_disagg_factor <- 1 # Temp for speeding up computation
+# # Latitude Coordinates
+# LAT_MIN <- 53
+# LAT_MAX <- 70
+# # Longitude Coordinates
+# LON_MIN <- 9.5 # Splits danmark in half
+# LON_MAX <- 35 # Sankt petersburg roughly
+# ROI_ACTIVE <- !any(is.na(c(LAT_MIN, LAT_MAX, LON_MIN, LON_MAX)))
+# region_tag <- if (ROI_ACTIVE) "_subpop_" else "_"
+# 
+# MIN_SAMPLE_COUNT_MODE <- "none"
+# minval_sample_count <- 0
+# MAX_INTERP_DIST_SCALE <- 1.5
+# # SPHERICAL_GRID <- TRUE
+# study_species <- "fucus_vesiculosus"
+#####################################################################
+#####################################################################
+######### Temporary code to easily run idotea balthica dataset #########
+# input_vcf_file <- file.path(github_repository_path, "data/raw/idotea_balthica/doi_10_5061_dryad_xksn02vbk__v20191223/Ibalthica_2014_final_genotype_dataset_33774loci.vcf")
+# input_coordinate_file_path <- file.path(github_repository_path,"data/raw/idotea_balthica/doi_10_5061_dryad_xksn02vbk__v20191223/individuals_w_mapped_geographical_coordinates_idotea_balthica_table1_coordinates.xlsx")
+
+# study_species <- "idotea_balthica"
+# MIN_SAMPLE_COUNT_MODE <- "none"
+# minval_sample_count <- 0
+# MAX_INTERP_DIST_SCALE <- 1.5
+# # SPHERICAL_GRID <- TRUE
+######################################################################
+
+if (use_weighted_kriging){
+  weighted_kriging_text <- "_weighted_krig"
+} else {
+  weighted_kriging_text <- ""
+}
+
+if (use_rarify){
+  rarify_window_calc_text <- paste0("_rarify_n",rarify_n,"_it",rarify_n_iterations)
+} else {
+  rarify_window_calc_text <- ""
+}
+
+if (!is.null(ctr_disagg)) {
+  coords_to_raster_disagg_text <-  paste0("ctr_disagg",ctr_disagg,"_")
+} else {
+  coords_to_raster_disagg_text <- ""
+}
+# File prefix text describing the plot settings + resolution
+if (SPHERICAL_GRID){
+  plot_settings_text <- paste0("spherical_palette_",HEATMAP_COLOR_PALETTE,"_",MAX_INTERP_DIST_SCALE,"_scale_", signif(resolution_m /1e3, digits=2),"_km_res")
+} else {
+  plot_settings_text <- paste0("palette_",HEATMAP_COLOR_PALETTE,"_",MAX_INTERP_DIST_SCALE,"_scale_", signif(resolution_m /1e3, digits=2),"_km_res")
+}
+
+
+# Define naming prefix of the output files
+if (Sys.getenv("vcf_filter_mode") != "" & Sys.getenv("vcf_filter_value") != "" & Sys.getenv("gene_scope") != "all") {
+  
+  output_prefix <- paste0(
+    format(Sys.Date(), "%Y-%m-%d"),
+    "_", study_species,
+    "_", Sys.getenv("vcf_filter_value"),
+    "_", Sys.getenv("gene_scope"),
+    region_tag,
+    plot_settings_text,
+    coords_to_raster_disagg_text,
+    "wdim", wdim_value,
+    "_fact", fact_value,
+    "_min_n",min_n_samples_per_calc,
+    rarify_window_calc_text,
+    "_disagg_grd", grd_disagg_factor,
+    weighted_kriging_text,
+    "_nmax", nmax_neighbours,
+    "_minval", minval_sample_count,    
+    "_"
+  )
+  
+} else if (Sys.getenv("vcf_filter_mode") != "" & Sys.getenv("vcf_filter_value") != "") {
+  
+  output_prefix <- paste0(
+    format(Sys.Date(), "%Y-%m-%d"),
+    "_", study_species,
+    "_", Sys.getenv("vcf_filter_value"),
+    region_tag,
+    plot_settings_text,
+    coords_to_raster_disagg_text,
+    "wdim", wdim_value,
+    "_fact", fact_value,
+    "_min_n",min_n_samples_per_calc,
+    rarify_window_calc_text,
+    "_disagg_grd", grd_disagg_factor,
+    weighted_kriging_text,
+    "_nmax", nmax_neighbours,
+    "_minval", minval_sample_count,    
+    "_"
+  )
+  
+} else {
+  
+  output_prefix <- paste0(
+    format(Sys.Date(), "%Y-%m-%d"),
+    "_", study_species,
+    region_tag,
+    plot_settings_text,
+    coords_to_raster_disagg_text,
+    "wdim", wdim_value,
+    "_fact", fact_value,
+    "_min_n",min_n_samples_per_calc,
+    rarify_window_calc_text,
+    "_disagg_grd", grd_disagg_factor,
+    weighted_kriging_text,
+    "_nmax", nmax_neighbours,
+    "_minval", minval_sample_count,
+    "_"
+  
+  )
+}
+
+
+
+#
+# Future implementation: Letter dictionary to improve plot title displayal based on chose genetic diversity statistica.
+# pi = π
+# theta = θ 
+#
+
+knitr::opts_chunk$set(echo = TRUE)
+start_time <- Sys.time()
+```
+
+<!--
+One script, two modes, controlled entirely by LAT/LON_MIN/MAX above:
+  - all four NULL  -> full, unfiltered dataset
+  - all four set   -> restricted to that lat/long box (a "subpopulation")
+Everything from section 1b onward is unchanged either way - it already
+operates generically on vcf/coords_file_df/sample_order, so restricting
+those three objects once, early (section 1.2), is enough.
+
+Two automatic masks are used for display:
+  minval_sample_count - cells with too few real samples nearby
+  MAX_INTERP_DIST  - cells too far from any real sample at all
+-->
+# Loading Libraries
+```{r libraries}
+library(terra)
+library(rnaturalearth)
+library(wingen)
+library(vcfR)
+library(sf)
+library(readxl)
+library(ggplot2)
+```
+# 1. Data Preparation
+## 1.1 Loading the Datasets
+### 1.1.1 Load VCF
+```{r load-vcf}
+start_vcf_load_time <- Sys.time()
+
+# vcf <- read.vcfR(input_vcf_file)
+# sample_order <- colnames(vcf@gt)[-1]
+
+vcf <- read.vcfR(input_vcf_file)
+sample_order <- colnames(vcf@gt)[-1]
+cat("input_vcf_file:", input_vcf_file, "\n", file = stderr())
+cat("variant rows:", nrow(vcf@fix), "| samples found:", length(sample_order), "\n", file = stderr())
+
+vcf_runtime <- difftime(Sys.time(), start_vcf_load_time , units = "secs")
+message("read.vcfR runtime: ", round(vcf_runtime, 2), " seconds")
+```
+### 1.1.2 Loading coordinates (+matched and aligned)
+```{r load-coords}
+
+# Determining the file type of the input coordinate file (excel or csv)
+file_ext <- tolower(tools::file_ext(input_coordinate_file_path))
+
+if (file_ext %in% c("xls", "xlsx")) {
+  coords_file_df <- readxl::read_excel(input_coordinate_file_path)
+  
+} else if (file_ext == "csv") {
+  coords_file_df <- readr::read_delim(input_coordinate_file_path)
+  
+} else {
+  stop("Unsupported coordinate file format: .", file_ext)
+}
+
+# Standardizes column names across coordinate files that don't share a
+# schema (this project alone now has "sample_name" / "Longtitude(+E,
+# -W)" in one file and "Individual" / "Latitude" / "Longitude" in
+# another). Hardcoding one file's exact names, as this used to do,
+# fails silently rather than loudly on any file that doesn't match:
+# names(df)[names(df) == "a name that isn't there"] <- "new name" is a
+# no-op in R, not an error - so a differently-shaped file quietly kept
+# its ORIGINAL column names, "Sample ID" didn't exist at all, match()
+# against a NULL column returned all-NA, and coords_file_df silently
+# became rows of nothing that "matched" every VCF sample to no
+# coordinate at all. That's what actually broke - several steps
+# downstream of the real problem, and with no error message pointing
+# at the real cause.
+#
+# ID: assumed to be the first column, regardless of its name - simpler
+# and more robust across different collaborators' spreadsheets than
+# enumerating every name anyone might use for "individual ID".
+# Latitude/longitude: detected by searching column NAMES (not values)
+# for a matching substring, case-insensitively. "longtitude" stays one
+# of the longitude patterns specifically because it's this project's
+# own original file - a transposed-letter misspelling, not a
+# different naming convention, so still worth matching.
+standardize_coord_columns <- function(df) {
+  cn <- names(df)
+
+  id_col <- cn[1]
+
+  lat_matches <- cn[grepl("latitude|latitud", cn, ignore.case = TRUE)]
+  lon_matches <- cn[grepl("longitude|longitud|longtitude", cn, ignore.case = TRUE)]
+
+  if (length(lat_matches) == 0) {
+    stop("No latitude column found in ", input_coordinate_file_path,
+         ". Columns present: ", paste(cn, collapse = ", "))
+  }
+  if (length(lon_matches) == 0) {
+    stop("No longitude column found in ", input_coordinate_file_path,
+         ". Columns present: ", paste(cn, collapse = ", "))
+  }
+  if (length(lat_matches) > 1) {
+    warning("Multiple possible latitude columns (", paste(lat_matches, collapse = ", "),
+            ") - using the first: '", lat_matches[1], "'")
+  }
+  if (length(lon_matches) > 1) {
+    warning("Multiple possible longitude columns (", paste(lon_matches, collapse = ", "),
+            ") - using the first: '", lon_matches[1], "'")
+  }
+
+  lat_col <- lat_matches[1]
+  lon_col <- lon_matches[1]
+
+  cat("Standardizing coordinate columns for this file:\n",
+      "  Sample ID <- '", id_col,  "'\n",
+      "  Latitude  <- '", lat_col, "'\n",
+      "  Longitude <- '", lon_col, "'\n", sep = "")
+
+  names(df)[names(df) == id_col]  <- "Sample ID"
+  names(df)[names(df) == lat_col] <- "Latitude"
+  names(df)[names(df) == lon_col] <- "Longitude"
+  df
+}
+
+coords_file_df <- standardize_coord_columns(coords_file_df)
+
+coords_file_df$Latitude  <- as.numeric(coords_file_df$Latitude)
+coords_file_df$Longitude <- as.numeric(coords_file_df$Longitude)
+
+bad <- is.na(coords_file_df$Latitude) | is.na(coords_file_df$Longitude)
+if (any(bad)) warning(sum(bad), " coordinate row(s) failed numeric conversion")
+
+coords_file_df <- coords_file_df[match(sample_order, coords_file_df$`Sample ID`), ]
+
+n_unmatched <- sum(is.na(match(sample_order, coords_file_df$`Sample ID`)))
+if (n_unmatched > 0) {
+  warning(n_unmatched, " VCF sample(s) had no matching row in coords_file_df$`Sample ID`")
+}
+# Every sample failing to match is categorically different from a few
+# legitimately missing ones - almost certainly means the two ID
+# columns don't actually contain the same values (check the
+# "Standardizing coordinate columns" message above first), not that
+# coordinates are genuinely missing for the whole dataset. Stopping
+# here turns that into an immediate, specific error instead of a
+# confusing crash somewhere downstream once coords_file_df is already
+# silently empty.
+if (n_unmatched == length(sample_order)) {
+  stop("Every VCF sample failed to match a coordinate row, for vcf-file:",input_vcf_file ,"This is almost always an ID-column ",
+       "mismatch (different formatting/casing between the VCF sample names and the coordinate ",
+       "file's ID column), not missing data - check the columns picked above against ",
+       input_coordinate_file_path, " before going further.")
+}
+```
+### 1.1.3 Pruning datapoints with missing geographical coordinates 
+```{r}
+# Extracting individuals with missing geographical coordinates
+rows_with_na <- coords_file_df[
+  is.na(coords_file_df$Latitude) | is.na(coords_file_df$Longitude),
+]
+
+# Filtering away individuals with missing geographical coordinates
+coords_file_df <- coords_file_df[
+  !is.na(coords_file_df$Latitude) & !is.na(coords_file_df$Longitude),
+]
+
+#print(rows_with_na)
+# Removing individuals with missing geographical coordinates from the vcfR object
+if (nrow(rows_with_na) > 0) {
+for (i in 1:nrow(rows_with_na)) {
+  row <- rows_with_na[i,]
+  print(row)
+  sample_id <- as.character(row$`Sample ID`)
+  print(paste("Removing Sample ID",sample_id, "from the vcfR object"))
+  
+  vcf <- vcf[, colnames(vcf@gt) != sample_id]
+  #sample_id %in% colnames(vcf@gt)
+
+}
+}
+# vcf <- vcf[, colnames(vcf@gt) != "FVES-11"]
+# "FVES-11" %in% colnames(vcf@gt)
+# "FVES-11" %in% coords_file_df$`Sample ID`
+# vcf
+
+```
+## 1.2 (Optional) Restrict to a geographic subpopulation (lat/long box)
+```{r geographic-filter}
+if (ROI_ACTIVE) {
+  in_range <- coords_file_df$Latitude  >= LAT_MIN & coords_file_df$Latitude  <= LAT_MAX &
+              coords_file_df$Longitude >= LON_MIN & coords_file_df$Longitude <= LON_MAX
+  in_range[is.na(in_range)] <- FALSE  # missing/unmatched coordinates ---> excluded
+
+  cat(sum(in_range), "of", length(in_range),
+      "samples fall inside the requested lat/long range and will be kept.\n")
+
+  # vcf and coords_file_df have to shrink together, in the same order.
+  # coords_file_df's rows and the VCF's genotype columns are two
+  # separate objects with no structural link between them - the only
+  # thing keeping row i of coords_file_df paired with the right
+  # individual's genotypes is that both are ordered by sample_order.
+  # Filter one without re-deriving gt_col_idx from the SAME filtered
+  # sample_order and that pairing silently breaks: latitude/longitude
+  # get assigned to whichever individual now happens to sit at that
+  # row, not the individual that coordinate actually belongs to - wrong
+  # answers with no error or warning, since both objects stay
+  # internally valid, just no longer aligned with each other.
+  coords_file_df <- coords_file_df[in_range, ]
+  sample_order   <- sample_order[in_range]
+
+  gt_col_idx <- match(sample_order, colnames(vcf@gt))
+  vcf <- vcf[, c(1, gt_col_idx)]
+} else {
+  cat("No region-of-interest set - using the full,", length(sample_order), "-sample dataset.\n")
+}
+```
+### Spot-check: are there really samples near a given location?
+A reusable template, not a one-off - point this at whatever location a
+map makes you suspicious about, and check directly rather than reading
+it off a color. (Originally written to confirm no real samples exist
+near Iceland, despite an earlier bug making it look like some did - see
+section 4's WGS84_DIST_PAD comment.)
+```{r spot-check}
+spot_check_lat_range <- c(62, 67)
+spot_check_lon_range <- c(-25, -12)
+
+near_spot <- coords_file_df[
+  coords_file_df$Latitude  > spot_check_lat_range[1] & coords_file_df$Latitude  < spot_check_lat_range[2] &
+  coords_file_df$Longitude > spot_check_lon_range[1] & coords_file_df$Longitude < spot_check_lon_range[2], ]
+near_spot[, c("Sample ID", "Latitude", "Longitude")]
+```
+## 1.3 Plotting sample locations
+```{r raw-sample-map, fig.width = 10, fig.height = 6}
+world_map_scale <- 10 # 10 (large) = 1:10 million; ne_download(scale): The scale of map to return, one of '110', '50', '10' or 'small', 'medium', 'large'.
+map_type_world_map <- "land" # ne_download(type): type of natural earth file to download one of 'countries', 'map_units', 'map_subunits', 'sovereignty', 'states' OR the portion of any natural earth vector url after the scale and before the . e.g. for 'ne_50m_urban_areas.zip' this would be 'urban_areas'. See Details. OR the raster filename e.g. for 'MSR_50M.zip' this would be 'MSR_50M'
+
+# returnclass: A string determining the spatial object to return. Either "sf" for for simple feature (from 'sf', the default) or "sv" for a 'SpatVector' (from 'terra').
+
+world_land <- ne_download(type = map_type_world_map, category = "physical", scale = world_map_scale, returnclass = "sf")
+
+coords_raw_sf <- st_as_sf(coords_file_df, coords = c("Longitude", "Latitude"), crs = 4326)
+
+bb_raw    <- st_bbox(coords_raw_sf)
+pad_raw_x <- 0.05 * (bb_raw[["xmax"]] - bb_raw[["xmin"]])
+pad_raw_y <- 0.05 * (bb_raw[["ymax"]] - bb_raw[["ymin"]])
+
+raw_map <- ggplot() +
+  geom_sf(data = world_land, fill = "grey85", color = "grey60", linewidth = 0.2) +
+  geom_sf(data = coords_raw_sf, size = 1.8, alpha = 0.7, color = "#B2182B") +
+  coord_sf(xlim = c(bb_raw[["xmin"]] - pad_raw_x, bb_raw[["xmax"]] + pad_raw_x),
+           ylim = c(bb_raw[["ymin"]] - pad_raw_y, bb_raw[["ymax"]] + pad_raw_y)) +
+  labs(title = paste0("Sample locations, ", region_tag, " (n = ", nrow(coords_file_df), ")")) +
+  theme_minimal(base_size = 12) +
+  theme(panel.background = element_rect(fill = "aliceblue", color = NA),
+        panel.grid = element_line(color = "white"),
+        axis.title = element_blank())
+
+raw_map
+ggsave(file.path(output_dir, paste0(output_prefix, "raw_sample_map.png")), raw_map,
+       width = 10, height = 6, dpi = 300)
+```
+## 1.4 Computing sample distances (MAX_INTERP_DIST)
+Computed here, before the raster gets built, so both the raster's own
+extent (section 2) and the final distance mask (section 5.2.2) tie back to
+the same real number, rather than each being picked independently.
+```{r nn-distance}
+coords_wgs84 <- vect(coords_file_df, geom = c("Longitude", "Latitude"), crs = "EPSG:4326")
+nn_dist <- apply(as.matrix(distance(coords_wgs84)), 1, function(d) min(d[d > 0]))
+summary(nn_dist / 1e3)  # km, per individual - kept for reference only
+
+# Per-individual nearest-neighbor distance is the wrong basis for a spacing
+# figure here: up to 50 individuals share one Capture_Population's
+# coordinates, and many Capture_Population codes are repeat visits to the
+# same ground on a different week/year rather than genuinely distinct
+# locations - e.g. BLE09 and BLE19 are both "Dynan", 11 days apart.
+# Confirmed: the 150 sites collapse to just ~82 distinct location-clusters at
+# a 2 km merge distance, some clusters absorbing up to 12 separate
+# Capture_Population codes. The naive median comes out ~1.5-1.8 km regardless
+# of individual- or site-level weighting, so almost nothing survived a mask
+# built on that number - this was tuned assuming a few far-away OUTLIERS
+# inflate a mean (median chosen to resist that), when the actual problem here
+# is many near-DUPLICATE points deflating the median instead - the opposite
+# failure mode.
+#
+# Fix: cluster sites within CLUSTER_THRESHOLD_KM of each other (single-
+# linkage) before computing spacing, so repeat visits to the same ground
+# count once, not once per visit. Deduplicating by (Latitude, Longitude)
+# directly, not by a named grouping column like Capture_Population - a
+# named column varies by dataset (this project alone has had
+# Capture_Population, and separately "Location" as a coarser text
+# descriptor covering multiple distinct coordinates - 16 Location values
+# for 36 actual distinct coordinates in the 125-individual dataset) or may
+# not exist at all, and coords_file_df is only guaranteed to have
+# Latitude/Longitude, standardized above regardless of source file.
+# Confirmed this generalizes safely: on the 125-individual global dataset
+# (no Capture_Population column at all - hardcoding that reference is what
+# actually broke there), the 125 individuals collapse to 36 distinct
+# coordinates, already all more than 2 km apart from each other, so
+# clustering is a no-op there and the median comes out 157.6 km - within
+# 0.4 km of the uncontaminated original per-individual figure for that
+# dataset. CLUSTER_THRESHOLD_KM is a real judgment call, not a computed
+# fact - 2 km is chosen to roughly match resolution_m
+
+CLUSTER_THRESHOLD_KM <- 2
+
+site_coords   <- coords_file_df[!duplicated(coords_file_df[, c("Latitude", "Longitude")]), ]
+site_v        <- vect(site_coords, geom = c("Longitude", "Latitude"), crs = "EPSG:4326")
+site_dist_km  <- as.dist(as.matrix(distance(site_v)) / 1e3)
+site_clusters <- cutree(hclust(site_dist_km, method = "single"), h = CLUSTER_THRESHOLD_KM)
+
+cluster_centroid <- function(i) {
+  rows <- site_clusters == i
+  c(lon = mean(site_coords$Longitude[rows]), lat = mean(site_coords$Latitude[rows]))
+}
+centroids       <- as.data.frame(t(sapply(sort(unique(site_clusters)), cluster_centroid)))
+centroids_v     <- vect(centroids, geom = c("lon", "lat"), crs = "EPSG:4326")
+cluster_nn_dist <- apply(as.matrix(distance(centroids_v)), 1, function(d) min(d[d > 0]))
+
+cat(nrow(coords_file_df), "individuals share", nrow(site_coords), "distinct coordinates, collapsing into",
+    length(unique(site_clusters)), "location-clusters at a",
+    CLUSTER_THRESHOLD_KM, "km merge threshold\n")
+cat("median nn-distance, per-individual (naive):     ", round(median(nn_dist) / 1e3, 2), "km\n")
+cat("median nn-distance, clustered locations:        ", round(median(cluster_nn_dist) / 1e3, 2), "km\n")
+
+# --- Deciding MAX_INTERP_DIST here, not in section 5 ---
+# buffer_m (section 2.3, raster extent margin) and the final display cutoff
+# (section 5) both need to tie back to the SAME number - that was always the
+# point of computing this here rather than in two places. MAX_INTERP_DIST IS
+# that number now, decided once, immediately below.
+#
+# Two candidates, answering different questions:
+#   window-based: how far window_gd() itself looks (wdim aggregated cells,
+#     each fact_value*resolution_m wide; radius = half the window's width) -
+#     ignores where real samples actually are. More permissive.
+#   clustered:    real median spacing between the ~82 distinct sampling
+#     locations above. More conservative/protective, since it's grounded in
+#     actual data density rather than the window's own mechanics.
+# These come out roughly 5x apart here (~26 km vs ~4.6 km) - that gap is
+# expected, not a red flag, since the two numbers are answering genuinely
+# different questions. Default below is window-based; set
+# MAX_INTERP_DIST_MODE = "clustered" to switch to the other one directly,
+# or "hardcoded" + MAX_INTERP_DIST_KM to override with any other value.
+
+window_based_reach_km <- (wdim_value / 2) * fact_value * resolution_m / 1e3
+clustered_reach_km    <- median(cluster_nn_dist) / 1e3
+
+cat("window-footprint-based reach:  ", round(window_based_reach_km, 2), "km\n")
+cat("clustered-location-based reach:", round(clustered_reach_km, 2), "km\n")
+
+MAX_INTERP_DIST <- switch(MAX_INTERP_DIST_MODE,
+  "none" = {
+    cat("MAX_INTERP_DIST_MODE = 'none': no display-distance cutoff (Ries et al. (2023)-style)\n")
+    Inf
+  },
+  "hardcoded" = {
+    if (is.na(MAX_INTERP_DIST_OVERRIDE_KM)) stop("MAX_INTERP_DIST_MODE = 'hardcoded' requires MAX_INTERP_DIST_KM to be set")
+    cat("Using MAX_INTERP_DIST_KM override:", MAX_INTERP_DIST_OVERRIDE_KM, "km\n")
+    MAX_INTERP_DIST_OVERRIDE_KM * 1e3
+  },
+  "computed" = {
+    cat("Using window-footprint reach (set MAX_INTERP_DIST_MODE = 'clustered' for the more conservative clustered figure,",
+        "'hardcoded' + MAX_INTERP_DIST_KM for any other value, or 'none' for no cutoff)\n")
+    window_based_reach_km * 1e3
+  },
+  "clustered" = {
+    cat("Using clustered-location reach:", round(clustered_reach_km, 1), "km\n")
+    clustered_reach_km * 1e3
+  },
+  stop("MAX_INTERP_DIST_MODE must be 'computed', 'clustered', 'hardcoded', or 'none' - got: '", MAX_INTERP_DIST_MODE, "'")
+)
+MAX_INTERP_DIST <- MAX_INTERP_DIST * MAX_INTERP_DIST_SCALE
+if (MAX_INTERP_DIST_SCALE != 1) cat("MAX_INTERP_DIST_SCALE =", MAX_INTERP_DIST_SCALE, "applied - final MAX_INTERP_DIST:", round(MAX_INTERP_DIST / 1e3, 2), "km\n")
+
+# maxdist speed default, resolved here rather than in the settings block
+# because it needs MAX_INTERP_DIST and window_based_reach_km, both only known once real data is loaded.
+# This controls how many cell centroids wkrig_gd() bothers considering per prediction, purely for computational efficiency of the kriging.
+#
+# wkrig_gd()'s maxdist measures distance from a prediction location to the nearest surviving CELL CENTROID. A real sample that ends up within MAX_INTERP_DIST of that prediction location (i.e. close enough to survive section 5's mask) can itself sit up to window_based_reach_km from ITS OWN cell's centroid, since window_gd() pools samples from anywhere in the full window, not just the centroid cell.
+# By the triangle inequality, the prediction location can then be up to MAX_INTERP_DIST + window_based_reach_km from that centroid and still be relevant
+# -> So that sum is the smallest maxdist guaranteed to never exclude a centroid a surviving prediction might actually need. Any centroid farther than that literally cannot matter, however this run's specific data happens to be arranged.
+if (is.na(maxdist)) {
+  maxdist <- if (is.finite(MAX_INTERP_DIST)) MAX_INTERP_DIST + (window_based_reach_km * 1e3) else Inf
+  cat("maxdist not set - defaulting to MAX_INTERP_DIST + window_based_reach_km =", round(maxdist / 1e3, 2), "km (set MAXDIST to override, e.g. to Inf for wingen's own raw default)\n")
+}
+
+MAX_INTERP_DIST
+```
+# 2. Raster Creation
+## 2.1 Sample-driven raster, world CRS, no named-region boundary
+Mollweide, not the wingen vignette's Goode Homolosine: Goode Homolosine
+is interrupted specifically to keep landmasses whole, which means its
+cuts land in the ocean instead - not ideal for a marine dataset.
+Mollweide is uninterrupted and equal-area, at the cost of more shape
+distortion far from the map's center. That trade-off is acceptable here
+specifically because of the masking in section 4 below - nothing is
+allowed to interpolate far enough for the distortion to matter.
+```{r world-crs}
+world_crs <- "+proj=moll"
+```
+```{r sample-points}
+coords_v  <- vect(coords_file_df, geom = c("Longitude", "Latitude"), crs = "EPSG:4326")
+coords_v_mollweide  <- project(coords_v, world_crs)
+coords_sf_mollweide <- st_as_sf(coords_v_mollweide)  # wingen wants sf/data.frame/matrix, not SpatVector
+```
+## 2.2 Domain Layer (ocean or land, per DOMAIN_TYPE)
+```{r domain-layer}
+domain_map_scale <- 10 # ne_download(scale): The scale of map to return, one of '110', '50', '10' or 'small', 'medium', 'large'.
+map_type <- DOMAIN_TYPE # ne_download(type): "ocean" or "land" here (DOMAIN_TYPE, defined above) - both are valid Natural Earth "physical"-category types, same source/scale already used for world_land in section 1.3, just deciding which one defines the mask_gd() domain below.
+habitat_mask <- ne_download(type = map_type, category = "physical", scale = domain_map_scale, returnclass = "sv")
+
+# Crop to a generous box around the actual samples before reprojecting
+# (avoids reprojecting irrelevant, distant coastline).
+bb  <- as.vector(ext(project(coords_v_mollweide, crs(habitat_mask))))
+pad <- 10  # degrees
+zoom_area <- ext(bb["xmin"] - pad, bb["xmax"] + pad, bb["ymin"] - pad, bb["ymax"] + pad)
+habitat_mask <- crop(habitat_mask, zoom_area)
+habitat_mask <- project(habitat_mask, world_crs)
+```
+## 2.3 (coords_to_raster) Building the raster
+```{r build-raster}
+# resolution_m <- 20 * 1e3            # 20 km; revisit after preview_gd() below
+# resolution_m <- 10 * 1e3            # 10 km; revisit after preview_gd() below
+# resolution_m <- 5 * 1e3            # 10 km; revisit after preview_gd() below
+#resolution_m <- 2.5 * 1e3            # 10 km; revisit after preview_gd() below
+
+# buffer_m needs to stay finite even when MAX_INTERP_DIST doesn't
+# (mode = "none") - coords_to_raster() can't extend a raster by an
+# infinite margin, and Inf * 1.5 is still Inf. Falls back to the
+# window-footprint reach specifically (always finite, since wdim_value/
+# fact_value/resolution_m never are) as a sensible minimum margin
+# regardless of which masking mode is active - not a flat distance
+# regardless of local sample density either way.
+buffer_basis_m <- if (is.finite(MAX_INTERP_DIST)) MAX_INTERP_DIST else (window_based_reach_km * 1e3)
+buffer_m     <- buffer_basis_m * 1.5  # margin past the eventual display cutoff (section 4),
+
+# coords_to_raster()'s `buffer` argument is in CELLS (it's passed
+# straight to terra::extend(), which treats a bare number as rows/
+# columns to add per side), not map units - convert once here so the
+# rest of the script can keep thinking in meters via buffer_m.
+# buffer_cells <- round(buffer_m / resolution_m)
+buffer_cells <- ceiling(buffer_m / resolution_m)
+
+#buffer_cells <- 1 #  Ries et al. (2023)
+
+# plot = TRUE gives an immediate sanity check of resolution/extent
+# against the sample points, without a separate manual plot() call.
+lyr <- coords_to_raster(coords_v_mollweide, buffer = buffer_cells, disagg = ctr_disagg, res = resolution_m, plot = TRUE)
+```
+## 2.4 Masking the raster using the domain layer
+```{r build-raster-domain-masking}
+# mask_gd(), not terra::mask() directly: mask_gd() has no `touches`
+# argument, so it always calls terra::mask(x, y) with terra's own
+# default, touches = TRUE - a cell survives if it merely overlaps the
+# habitat_mask polygon at all. That matters here specifically because `lyr`
+# defines window_gd()'s entire working domain (which cells can even be
+# considered as window centers), not just how the final map looks.
+# The stricter option (touches = FALSE, only reachable via
+# terra::mask() directly - a cell survives only if its centre is in
+# the habitat_mask polygon) leaves zero valid cells across anything narrower
+# than ~resolution_m end-to-end (straits, fjords, many island coasts, or
+# the land-side equivalent - narrow isthmuses/peninsulas - when
+# DOMAIN_TYPE = "land") - a gap the na.rm = TRUE fix in section 3 can't
+# rescue, since there's nothing non-NA left in that neighborhood to
+# average over in the first place. Section 4 masks kgd/habitat_mask
+# through mask_gd() too, for the same reason and the same touches = TRUE
+# treatment - see the comment there for the coastline-sharpness trade-off
+# that implies.
+lyr <- mask_gd(lyr, habitat_mask)
+```
+## 2.5 (preview_gd) Raster preview before trusting wdim/fact
+```{r preview}
+# preview_gd(lyr, coords_sf_mollweide, wdim = wdim_value, fact = fact_value, sample_count = TRUE, min_n = 2)
+
+# preview_gd() prints its own plot directly as a side effect (a genuine
+# ggplot under the hood - the "Ignoring unknown labels" message is a
+# ggplot2 warning firing during that internal print), but RETURNS the
+# underlying sample_count SpatRaster, not the plot object itself -
+# assigning that return value and ggsave()-ing it fails with "no
+# applicable method for 'grid.draw' applied to an object of class
+# SpatRaster". Saving the actual plot as a file instead means calling
+# this twice: once for the normal inline display (unchanged), once
+# wrapped in an explicit PNG device purely to redirect that same drawing
+# to a file. A little redundant computation, but preview_gd() is meant
+# to be fast to iterate with, and this sidesteps needing to know its
+# exact internal plotting mechanism to capture it correctly.
+
+# Note: maxdist is only built for method = "circle"/"resist". 
+# Closest equivalent of neighborhood-size for window_gd() would be wdim/fact
+preview_gd(lyr, coords_sf_mollweide, method = "window", wdim = wdim_value, fact = fact_value, sample_count = TRUE, min_n = min_n_samples_per_calc)
+
+window_preview_output_filename <- paste0(output_prefix,"window_preview","_buffer_",buffer_cells,".png")
+png(file.path(output_dir, window_preview_output_filename), width = 10, height = 6, units = "in", res = 300)
+preview_gd(lyr, coords_sf_mollweide, method = "window", wdim = wdim_value, fact = fact_value, sample_count = TRUE, min_n = min_n_samples_per_calc)
+invisible(dev.off())
+
+# Optional grid search across wdim x fact combinations - useful when
+# retuning for a new region of interest, safe to comment out for a
+# routine rerun once wdim_value/fact_value above are already trusted.
+# for (w in c(3, 5, 7)) {
+#   for (f in c(3, 5, 7)) {
+#     print(preview_gd(lyr, coords_sf_mollweide, wdim = w, fact = f, sample_count = TRUE, min_n = 2))
+#   }
+# }
+```
+# 3. (window_gd) Moving window - PI calculation
+```{r window-gd}
+start_window_gd_time <- Sys.time()
+# window_gd(..., fact = fact_value) would rebuild its own working grid
+# internally via terra::aggregate(lyr, fact, fun = mean) - without
+# na.rm = TRUE. Since lyr is sea = 1 / land = NA, that means an
+# aggregated cell only survives as non-NA if ALL of its resolution_m
+# sub-cells are sea; a single land sub-cell nulls the whole block, and
+# any cell whose own aggregated value is NA is skipped entirely
+# (sample_count = NA, no window ever evaluated), regardless of real
+# samples sitting right there. Aggregating with na.rm = TRUE ourselves
+# first, then passing fact = 0 so window_gd() doesn't re-aggregate,
+# keeps the same window geometry while fixing which cells are eligible
+# to be evaluated at all.
+
+lyr_agg <- terra::aggregate(lyr, fact = fact_value, fun = mean, na.rm = TRUE)
+# lyr = lyr_agg with fact = 0 is required together, and must NOT be changed independently, since window_gd(fact = 0) stops window_gd() from redoing the aggregation made in lyr_agg.
+# window_gd(fact) would otherwise rebuild its own working grid internally via terra::aggregate(lyr, fact, fun = mean), WITHOUT na.rm = TRUE.
+# Since lyr is sea = (1 / land) = NA, an aggregated cell would then only survive as non-NA if ALL of its fact_value^2 sub-cells are sea
+# => a single land sub-cell nulls the whole block, silently dropping coastal samples from ever getting a window evaluated, regardless of resolution_m (finer resolution
+# => more sub-cells per block
+# => MORE chances one clips land, not fewer).
+wgd <- window_gd(vcf,
+                 coords = coords_sf_mollweide,
+                 lyr = lyr_agg,
+                 stat = "pi",
+                 wdim = wdim_value, # [Default: 3x3 window]
+                 fact = 0, # must stay 0 (see comment above) [Default: 0]
+                 rarify = use_rarify,
+                 rarify_n = rarify_n, # rarify_n: If rarify = TRUE, number of points to use for rarefaction (defaults to min_n). [Default: 2]
+                 rarify_nit	= rarify_n_iterations, # If rarify = TRUE, number of iterations to use for rarefaction (defaults to 5). Can also be set to "all" to use all possible combinations of samples of size rarify_n within the window. [Default: 5]
+                 min_n = min_n_samples_per_calc,
+                 L = "nvariants" # For calculating "pi", L argument in pi.dosage function. "nvariants" counts SNP columns (not true surveyed sequence length) so this is "diversity per polymorphic site" rather than a properly bp-scaled per-nucleotide pi -> Should ideally be replaced with a true sequence length value for L. [Default: "nvariants"]
+                 # L = 100 # For calculating "pi", L argument in pi.dosage function. Return the average nucleotide diversity per nucleotide given the length L of the sequence. The wingen default is L = "nvariants", which sets L to the number of variants in the VCF. If L = NULL, returns the sum over SNPs of nucleotide diversity (note: L = NULL is the pi.dosage default which wingen does not use). [Default: "nvariants"]
+
+                 )
+names(wgd)
+
+
+# wgd <- window_gd(vcf,
+#                  coords = coords_sf_mollweide,
+#                  #lyr = lyr_agg,
+#                  lyr = lyr,
+#                  stat = "pi",
+#                  wdim = wdim_value, # [Default: 3x3 window]
+#                 # fact = 0, # [Default: 0]
+#                  fact = fact_value, # [Default: 0]
+#                  rarify = TRUE,
+#                  rarify_n = 4, # rarify_n: If rarify = TRUE, number of points to use for rarefaction (defaults to min_n). [Default: 2]
+#                  rarify_nit	= 5, # If rarify = TRUE, number of iterations to use for rarefaction (defaults to 5). Can also be set to "all" to use all possible combinations of samples of size rarify_n within the window. [Default: 5]
+#                  L = "nvariants"
+#                # L = 100 # For calculating "pi", L argument in pi.dosage function. Return the average nucleotide diversity per nucleotide given the length L of the sequence. The wingen default is L = "nvariants", which sets L to the number of variants in the VCF. If L = NULL, returns the sum over SNPs of nucleotide diversity (note: L = NULL is the pi.dosage default which wingen does not use). [Default: "nvariants"]
+#                  )
+
+window_gd_runtime <- difftime(Sys.time(), start_window_gd_time , units = "secs")
+message("window_gd runtime: ", round(window_gd_runtime, 2), " seconds")
+print(paste0("window_gd runtime: ", round(window_gd_runtime, 2), " seconds"))
+```
+## Sample-count diagnostic
+Decides minval_sample_count below from real numbers instead of a guess -
+what does wgd actually see near EACH real point? Sorted ascending:
+whatever minval_sample_count gets set to next, every row above that value
+is a real, named sample this pipeline would drop from both the kriging
+input and the final display. Worth re-running any time wdim_value/
+fact_value/resolution_m/the ROI change.
+```{r sample-count-diagnostic}
+sample_count_at_point <- terra::extract(wgd[["sample_count"]], coords_v_mollweide)$sample_count
+# order(), not sort(), for both lines below: sort() drops NA values by
+# default, order() keeps every position and just decides where NAs go -
+# using sort() separately from order() is what caused the crash (a
+# 122-length vector next to 125 reordered rows, three real samples with
+# sample_count_at_point = NA silently dropped by sort()). na.last =
+# FALSE additionally puts any NA cases FIRST rather than last - a
+# sample with no registered window at all is a worse case than any
+# numeric count, and default sorting would otherwise bury it past where
+# head(20) below ever looks.
+ord <- order(sample_count_at_point, na.last = FALSE)
+support_check <- coords_file_df[ord, c("Sample ID", "Latitude", "Longitude")]
+support_check$sample_count_at_point <- sample_count_at_point[ord]
+head(support_check, 20)
+```
+# 4. (wkrig_gd) Kriging
+```{r krige}
+# --- knob 1: minimum real samples backing a cell. Used here to protect
+# the variogram fit itself, not just to hide weak cells from the final
+# display afterward - the fitted model describes "how does pi
+# similarity decay with distance" using every non-NA cell in wgd as
+# input, all at once, regardless of how much real sample support any
+# individual cell actually had. A handful of noisy, low-confidence
+# windows sitting alongside confident ones can distort that single
+# global fit even for predictions made in well-supported areas, since
+# the same model gets applied everywhere. Filtering them out before
+# kriging protects the model; the mask_gd() masking further below still
+# protects the DISPLAYED output afterward - the two aren't redundant
+# with each other; the diagnostic chunk above is what should actually
+# set this number, not a guess.
+#
+# 2, not a stricter number: window_gd()'s own min_n (default 2) already
+# refuses to compute pi at all below that - anything higher than 2 here
+# is a SECOND, stricter cut on top of that decision. Start at 2 (i.e.
+# trust window_gd()'s own judgment and no further) and only raise it if
+# the diagnostic above and the variogram fit both look better for it.
+
+
+wgd_confident <- wgd
+wgd_confident[["pi"]] <- mask_gd(wgd[["pi"]], wgd[["sample_count"]], minval = minval_sample_count)
+
+# nmax caps how many neighboring points can inform a single prediction -
+# unrelated to what gets interpolated (r's job, below) or where (grd's
+# job, below). wingen's own docs suggest ~30 as a speed/accuracy
+# starting point; 15 is more conservative (smoother, cheaper) than that.
+#
+# r = wgd_confident[["pi"]], not the whole wgd_confident object: if r
+# has more than one layer, wkrig_gd() silently keeps only the FIRST one
+# ("Input raster has multiple layers. Using only the first layer.") -
+# wgd_confident is (pi, sample_count) in that order, so passing the
+# whole object happens to still krige pi, but only by layer position,
+# not by name. Being explicit here means that stays true even if a
+# future edit changes what layers wgd_confident carries or their order.
+#
+# grd = lyr, not disagg(wgd, ...): grd is ONLY a coordinate template -
+# "predict at every (x, y) in this grid's geometry" - its own cell
+# values are never read (unlike r, grd is extracted with na.rm = FALSE,
+# so even its NA cells get a prediction). grd = lyr means predicting
+# everywhere in lyr's footprint, including land, which is exactly why
+# the separate land re-mask right below is necessary, not optional. It
+# also keeps kgd on the exact same grid as lyr/habitat_mask, which the
+# sample_count mask further below relies on.
+
+start_wkrig_gd_time <- Sys.time()
+# Disaggregating the prediction grid (smoothing) prior to kriging: same geometry as lyr, just subdivided into sub-cells with finer spacing  for wkrig_gd() to report predictions at (see grd_disagg_factor comment in settings above).
+# The older kriging function, krig_gd() had an argument for this (disagg_grd), which have not been transferred over to the new kriging function, hence, terra:s disagg function is used here to create a finer grid instead!
+grd_fine <- if (grd_disagg_factor > 1) terra::disagg(lyr, fact = grd_disagg_factor) else lyr
+
+if (use_weighted_kriging) {
+# weight_r test:
+kgd <- wkrig_gd(r = wgd_confident[["pi"]],
+                grd = grd_fine,
+                weight_r = wgd_confident[["sample_count"]], # weight_r: Optional SpatRaster with sample counts per cell, used to compute location-specific measurement variance and weights for kriging. If NULL (default), no weighting is applied. [Default: NULL]
+                  nmax = nmax_neighbours,
+                  maxdist = maxdist,
+                  max_range_frac = max_range_frac
+                )
+} else {
+  # Pre 2026-08-25 kriging settings:
+  kgd <- wkrig_gd(r = wgd_confident[["pi"]],
+                  grd = grd_fine,
+                  nmax = nmax_neighbours,
+                  maxdist = maxdist,
+                  max_range_frac = max_range_frac
+                  )
+  
+}
+
+wkrig_gd_runtime <- difftime(Sys.time(), start_wkrig_gd_time , units = "secs")
+message("wkrig_gd runtime: ", round(wkrig_gd_runtime, 2), " seconds")
+print(paste0("wkrig_gd runtime: ", round(wkrig_gd_runtime, 2), " seconds"))
+
+# Re-exclude land explicitly. wkrig_gd() interpolates onto whatever
+# prediction grid it builds internally and can smooth land back in even
+# though `lyr` already had it as NA going in.
+# mask_gd()'s implicit touches = TRUE here means the coastline in the
+# final figure can bleed very slightly onto land wherever a cell merely
+# touches the sea, in exchange for not re-losing the same narrow-water
+# sites this exact mechanism was excluding earlier in the pipeline
+# (section 2.3). A sharper, centre-based edge is only reachable via
+# terra::mask(kgd, habitat_mask, touches = FALSE) directly, at that cost.
+mgd <- mask_gd(kgd, habitat_mask)
+```
+# 5. Masking 
+
+## 5.1 Polygon masking
+```{r}
+if (!is.na(masking_polygon_file_path)) {
+  mask_lyr <- rast(masking_polygon_file_path)  # rast(), not terra:::rast() - a normal exported
+                                                 # function, no reason to reach into terra's
+                                                 # internal namespace for it
+
+  # Diagnostic, not decoration: mask_lyr is coming from an external source
+  # (HELCOM/HOLAS in this case) with no guarantee of matching mgd's CRS,
+  # resolution, or value encoding. Worth actually looking at before trusting
+  # the mask below.
+  cat("Species range file CRS:\n"); print(crs(mask_lyr, describe = TRUE))
+  cat("Species range file native grid:\n"); print(mask_lyr)
+  cat("Distinct values present:", paste(unique(na.omit(values(mask_lyr))), collapse = ", "), "\n")
+
+  # mask_lyr is virtually certain to NOT already be on mgd's own grid (this
+  # pipeline's bespoke +proj=moll +lon_0=0 at whatever resolution_m/
+  # grd_disagg_factor produced) - that CRS/geometry mismatch is exactly
+  # what "[mask] extents do not match" means: terra::mask() requires x and y
+  # to share the same grid when y is a SpatRaster, not just an overlapping
+  # area. project(source, target_raster, method) reprojects AND resamples
+  # onto target_raster's exact geometry in one step - same pattern already
+  # used for dist_to_sample in section 5.
+  # method = "near": this is a categorical presence/range layer, not a
+  # continuous one - averaging class codes across cells (the default
+  # "bilinear") would produce meaningless intermediate values.
+  mask_lyr_aligned <- project(mask_lyr, mgd, method = "near")
+
+  # mask_gd()/terra::mask() masks wherever y is NA by default - correct
+  # if absence is coded as NA in this file, but silently a no-op if this
+  # file instead uses an explicit 0 (or other value) for absence with no
+  # NA at all. Check the distinct-values print above; if presence isn't
+  # bare 1-vs-NA, replace the line below with something explicit instead,
+  # e.g.: mask_lyr_aligned[mask_lyr_aligned != 1] <- NA
+  mgd_polygon <- mask_gd(mgd, mask_lyr_aligned)
+
+  ggplot_gd(mgd_polygon) + ggtitle("Nucleotide diversity, species-range-masked")
+}
+
+```
+
+## 5.2 Automatic Masking
+### 5.2.1 Sample Count Mask
+```{r automatic-mask - Sample Count Mask}
+# minval_sample_count now defined above, reused here for the final display
+# mask. sample_count is resampled (nearest-neighbor - it's a count, not
+# something to interpolate) straight onto mgd's own grid, rather than
+# disagg()'d from wgd by a fixed factor: mgd is on lyr's grid (the
+# krige chunk above krigs onto grd = lyr), and wgd's own grid (the
+# fact_value-aggregated one) has no guaranteed relationship to that
+# grid's exact resolution/extent. Tying this to mgd's actual grid,
+# whatever it is, means it can't drift out of sync with mgd if fact_value
+# or resolution_m ever change independently of each other.
+sample_count <- resample(wgd[["sample_count"]], mgd, method = "near")
+
+
+# HOTFIX 2026-09-01 (Make better permanent fix in future): When a non-one MAX_INTERP_DIST_SCALE increases the range of interpolated data points to be included, the geometry of the sample count layer still bottleneck the size of the interpolated "clusters". Hence to ensure that the size of these clusters is not limited by the sample count layer, as well as to ensure that the shape of the clusters wont take on the sample count layers rectangular shape, an easy fix to this was just to ensure that no sample count layer-based masking is made.
+# The cons with this approach however is that there is no sample count based masking of empirical + interpolated data point existing now for this specific case when you have set MAX_INTERP_DIST_SCALE > 1
+if ( (MIN_SAMPLE_COUNT_MODE != "none") && (MAX_INTERP_DIST_SCALE == 1) ) {
+      mgd_honest   <- mask_gd(mgd, sample_count, minval = minval_sample_count)
+}else { # If either sample count mode has been set to none OR MAX_INTERP_DIST_SCALE has been set to value larger than 1, masking is skipped.
+      mgd_honest <- mgd # Sample Count Masking Skipped
+ }
+
+
+```
+### 5.2.2 Distance Mask (from nearest empirical data point)
+Maximum distance from a cell to the nearest real sample
+```{r automatic-masks}
+start_distance_masking_time <- Sys.time()
+# MAX_INTERP_DIST was already decided in section 1.4 (window-based reach by
+# default, or the CLUSTER_THRESHOLD_KM-based clustered figure, or a direct
+# MAX_INTERP_DIST_KM override) - not redone here, so this and buffer_m
+# (section 2.3) both tie back to the exact same number rather than being
+# picked independently. This is also where planar-vs-geodesic distance
+# matters: terra computes true geodesic distance for a geographic CRS and
+# only planar distance for a projected one (like the Mollweide coordinates
+# used everywhere else in this script), and that gap is real at this data's
+# scale (measured ~10-15% at the few-km-to-tens-of-km range that matters
+# here) - which is why the vector/raster below are built in plain WGS84
+# specifically for this calculation, rather than folding maxdist into
+# wkrig_gd() directly on the Mollweide-projected grid.
+
+# Built directly in WGS84, rather than by reprojecting individual
+# Mollweide cell centers back to WGS84. Some cell centers, near the
+# edges of a Mollweide extent this wide, can fall outside Mollweide's
+# own valid elliptical domain and fail to reproject; reprojecting INTO
+# Mollweide from WGS84 (forward direction, below) doesn't have this
+# failure mode - every valid lon/lat has a defined Mollweide position,
+# it's only the reverse direction that can fail.
+wgs84_bb <- st_bbox(coords_raw_sf)  # real lon/lat extent of all samples, from section 1.3
+
+# WGS84_DIST_PAD must be generous enough that wgs84_grid's extent fully
+# covers mgd_honest's own extent (bb_raw + buffer_m) once reprojected - a
+# too-narrow pad here previously let a real bug through: cells in
+# mgd_honest that fall OUTSIDE wgs84_grid's extent get NA from project()
+# below (nothing there to sample), and with the OLD too_far <- dist >
+# MAX_INTERP_DIST; mask(x, too_far, maskvalues = TRUE) pattern, NA >
+# MAX_INTERP_DIST evaluates to NA, not TRUE - terra::mask() with an
+# explicit maskvalues only matches THAT value, it does not also treat NA
+# as "mask this" the way its own default behavior would. So those cells
+# silently passed the "too far" check no matter how far away they
+# actually were (confirmed via the spot-check above, near Iceland, where
+# no real sample exists). mask_gd() below sidesteps this differently: it
+# has no maskvalues argument at all, it always calls plain terra::mask(x,
+# y) - which DOES mask wherever y is NA, by default. So an unknown
+# distance is already treated as "not confirmed close enough" without
+# needing a separate manual failsafe line.
+#
+# Tied to buffer_m (doubled, for margin) rather than a flat number: a flat
+# 20-degree pad made sense for the original globally-dispersed dataset,
+# but is far more than buffer_m actually needs at this dataset's scale -
+# and that starts to matter once resolution is tightened below, since
+# cell count scales with pad^2. An oversized pad and a fine resolution
+# together would have made this genuinely slow for no accuracy benefit.
+WGS84_DIST_PAD <- (buffer_m / 111320) * 2  # metres -> degrees (~111.32 km/degree), doubled for margin
+
+# WGS84_DIST_PAD above assumes 111.32 km/degree, which is only accurate for LATITUDE
+# (a degree of LONGITUDE covers cos(latitude) times less real distance)
+# For stockholm region for instance (~59 latitude) that's roughly half (cos(59) =~ 0.51).
+# If the same distance pad would therefore be applied to both directions it would lead to under-covers for east-west specifically: wgs84_grid's real reach in that direction is only ~half what the pad number implies, so its edge sits closer to the samples than intended).
+# Cells in mgd_honest beyond THAT (too-close) edge get NA from the project() call below and mask_gd() would then masks them out regardless of true distance. 
+WGS84_DIST_PAD_LON <- WGS84_DIST_PAD / cos(mean(wgs84_bb[c("ymin", "ymax")]) * pi / 180)
+
+# Also tied to resolution_m rather than a flat number: at the old 0.5-deg
+# (~55 km) resolution, MAX_INTERP_DIST (now ~4.6-26 km, i.e. SMALLER than
+# one grid cell) couldn't actually be resolved - every mgd_honest cell
+# reprojecting near-neighbor onto the same 55 km wgs84_grid cell got the
+# identical distance value regardless of real differences in how close
+# each one truly is to a sample. This was already too coarse before
+# today, just not by enough to be obvious until MAX_INTERP_DIST itself
+# got fixed to a realistic (small) number.
+
+# To ensure that mgd_honest "lives on" a resolution_m grid (mgd_honest's real cell size is resolution_m / grd_disagg_factor, since grd_fine (used to build kgd/mgd/mgd_honest) disaggregates lyr by grd_disagg_factor first).
+# If wgs84_res would be left at plain resolution_m, wgs84_grid would roughly be "grd_disagg_factor" times coarser than what it's being reprojected onto in dist_to_sample below.
+# Otherwise the nearest-neighbor reprojection of a coarse WGS84 grid onto a much finer, differently-oriented Mollweide grid would produce a a rotation/reprojection artifact with jagged staircase-like edges on mgd_honest.
+# Matching wgs84_res to mgd_honest's actual resolution (This increases wgs84_grid's cell count by roughly grd_disagg_factor^2, so distance() below gets correspondingly slower)
+# Also folds in ctr_disagg (currently NULL/inactive - see raster creation parameters above):
+# if ctr_disagg is set, lyr's real resolution will be changed in the same way as grd_disagg_factor & and would silently reopen this exact mismatch
+lyr_res_m <- resolution_m / (if (!is.null(ctr_disagg)) ctr_disagg else 1)  # lyr's actual cell size, accounting for ctr_disagg
+wgs84_res <- (lyr_res_m / grd_disagg_factor) / 111320  # metres -> degrees latitude, matched to mgd_honest's actual (disaggregated) resolution
+
+wgs84_grid <- rast(ext(wgs84_bb["xmin"] - WGS84_DIST_PAD_LON, wgs84_bb["xmax"] + WGS84_DIST_PAD_LON,
+    wgs84_bb["ymin"] - WGS84_DIST_PAD, wgs84_bb["ymax"] + WGS84_DIST_PAD),
+resolution = wgs84_res, crs = "EPSG:4326")
+
+dist_wgs84 <- distance(wgs84_grid, coords_wgs84)
+dist_to_sample <- project(dist_wgs84, mgd_honest, method = "near")
+
+# Not redundant with wkrig_gd()'s maxdist (see settings block near the
+# top): this masks by distance to the nearest actual sample coordinate;
+# maxdist there only ever sees wgd_confident[["pi"]]'s cell centroids.
+# Also the ONLY thing standing between this map and an unconstrained continous heatmap interpolation style when MAX_INTERP_DIST_MODE = "none" (MAX_INTERP_DIST = Inf here makes this a no-op, y > Inf is never TRUE).
+
+mgd_honest <- mask_gd(mgd_honest, dist_to_sample, maxval = MAX_INTERP_DIST)
+
+distance_masking_runtime <- difftime(Sys.time(), start_distance_masking_time , units = "secs")
+message("distance masking runtime: ", round(distance_masking_runtime, 2), " seconds")
+print(paste0("distance masking runtime: ", round(distance_masking_runtime, 2), " seconds"))
+```
+# 6. Plots
+## 6.0 Defining plot_with_context (Plot Function)
+```{r}
+plot_with_context <- function(r, title, legend_name = "value", palette = HEATMAP_COLOR_PALETTE, show_points = FALSE, spherical_grid = SPHERICAL_GRID) {
+  r_wgs84 <- project(r, display_template, method = "near")  # nearest-neighbor: avoid
+                                                         # smoothing anything beyond
+                                                         # what kriging already did
+  df <- as.data.frame(r_wgs84, xy = TRUE)
+  names(df)[3] <- "value"
+
+  # Reprojecting the FULL global world_land_wgs84 is the likely root cause
+  # of the previous attempt's wrong extent: most of a whole-world land
+  # layer sits well outside a small regional projection's valid domain,
+  # and reprojecting far-outside-domain geometry can produce degenerate
+  # output that throws off coord_sf()'s automatic bounding-box calculation.
+  # Cropping to a generous regional box first, mirroring how `habitat_mask` is
+  # already cropped before reprojection in section 2.2, keeps every point
+  # handed to the projection safely within range - only actually needed
+  # for the spherical case, since plain WGS84 display has no domain limits
+  # to worry about.
+  land_for_plot <- if (spherical_grid) {
+    crop_box <- sf::st_bbox(c(xmin = display_xlim[1] - 1, xmax = display_xlim[2] + 1,
+                              ymin = display_ylim[1] - 1, ymax = display_ylim[2] + 1),
+                            crs = sf::st_crs(4326))                             
+    suppressWarnings(sf::st_crop(world_land_wgs84, crop_box))
+  } else {
+    world_land_wgs84
+  }
+
+  p <- ggplot() +
+    geom_sf(data = land_for_plot, fill = "grey85", color = "grey60", linewidth = 0.2) +
+    # geom_tile(), not geom_raster(): the reprojected grid isn't
+    # perfectly regular (Mollweide's own distortion, worse toward the
+    # edges), and geom_raster() forcibly shifts pixels to fit a regular
+    # grid when it isn't - real positional error, not a cosmetic
+    # warning. geom_tile() doesn't make that assumption.
+    #
+    # width/height set explicitly to display_res_deg, not left for
+    # geom_tile() to infer from the data: its default resolution() guess
+    # (smallest gap between observed x/y values) draws every tile at
+    # exactly that size with zero overlap, so whatever pixel grid the
+    # current graphics device happens to rasterize into can round two
+    # adjacent tiles a hair apart and leave a 1px background seam - this
+    # is why the same plot object showed lines in different positions in
+    # RStudio's viewer vs. the file ggsave() wrote, since each renders to
+    # a different output pixel count. A deliberate 2% oversize forces
+    # tiles to overlap instead of merely touch, so no rounding choice by
+    # any device can open a gap between them.
+    geom_tile(data = df, aes(x = x, y = y, fill = value),
+              width = display_res_deg * 1.02, height = display_res_deg * 1.02) +
+    scale_fill_viridis_c(option = palette, na.value = NA, name = legend_name)
+
+  if (show_points) {
+    size_legend_name <- if (SAMPLE_POINT_SIZE_BY == "value") "empirical pi" else "n samples"
+    p <- p +
+      geom_point(data = sample_point_counts,
+                 aes(x = Longitude, y = Latitude, size = size_value),
+                 shape = 21, fill = "white", color = "black", alpha = 0.5, stroke = 0.3) +
+      # _area, not scale_size(): keeps a 0 value at 0 size rather than a
+      # smaller-but-still-visible dot - more honest for both count and
+      # value data.
+      scale_size_area(max_size = 6, name = size_legend_name)
+  }
+  
+  # Lambert Azimuthal Equal-Area, not orthographic: still curves the
+  # graticule (the lat/long grid lines), visually emphasizing that this is
+  # a 2D projection of a 3D surface, but with no hard visibility cutoff at
+  # 90 degrees from center the way orthographic has - avoiding the domain
+  # problem above entirely, rather than just working around it - and a
+  # closer visual match to the subtle curvature in the eelgrass Skagerrak-
+  # Kattegat reference figure (DOI 10.1111/eva.12914) this feature was
+  # originally requested from, which is nothing like orthographic's
+  # dramatic "view from space" look. Purely a display choice either way -
+  # r itself is untouched, only how coord_sf() renders it changes.
+  # Centered on the data's own midpoint rather than an arbitrary default
+  # like (0,0), so the curve is naturally centered on the study area.
+  if (spherical_grid) {
+    spherical_crs <- sprintf("+proj=laea +lat_0=%f +lon_0=%f",
+                              mean(display_ylim), mean(display_xlim))
+
+    # xlim/ylim given in plain WGS84 degrees (matching default_crs below),
+    # NOT pre-reprojected into spherical_crs's own units - that was the
+    # actual bug behind both the too-wide zoom and the wall of "laea:
+    # Invalid latitude" warnings. With default_crs set, coord_sf() expects
+    # xlim/ylim in default_crs's units and reprojects them itself
+    # internally; handing it already-reprojected meter values on top of
+    # that double-transformed them, which is exactly what its own request
+    # to reproject "x or y limits" was failing on. lims_method =
+    # "geometry_bbox" is the fix the warning itself suggested - it avoids
+    # the boundary-densification step (sampling extra points along the
+    # box's edges to trace the curve accurately) that was generating
+    # invalid latitudes in the first place, at the cost of a less
+    # precisely-curved edge to the cropped view - not a concern here,
+    # since only the four corners matter for a simple rectangular crop.
+    p <- p + coord_sf(crs = spherical_crs, default_crs = sf::st_crs(4326),
+                       xlim = display_xlim, ylim = display_ylim,
+                       lims_method = "geometry_bbox")
+  } else {
+    p <- p + coord_sf(xlim = display_xlim, ylim = display_ylim, expand = FALSE)
+  }
+  
+
+  p +
+    ggtitle(title) +
+    theme_minimal(base_size = 12) +
+    theme(panel.background = element_rect(fill = "aliceblue", color = NA),
+          axis.title = element_blank())
+}
+
+```
+
+## 6.1 (Optional) Diagnostic Check of dist_to_sample
+```{r}
+# Diagnostic, not a real output: dist_to_sample itself (computed back in
+# section 5, before mask_gd() ever touches it), plotted directly. The
+# unmasked pi map above rules out kriging/lyr's extent/the domain mask -
+# mgd is smooth at both scales, so whatever's producing the rectangular
+# edges has to be downstream of it. sample_count's mask doesn't change
+# with MAX_INTERP_DIST_SCALE at all, so by elimination this leaves
+# dist_to_sample/MAX_INTERP_DIST specifically. This plot answers exactly
+# one question: is dist_to_sample itself already blocky before
+# mask_gd() ever sees it (points at how it's computed), or is it smooth
+# right up until the mask_gd() comparison against MAX_INTERP_DIST
+# (points somewhere in mask_gd() or that comparison instead)? viridis,
+# not the study's usual palette - this is a distance field in metres,
+# not a pi map, and shouldn't be visually confused with one.
+
+
+# dist_check_map <- plot_with_context(dist_to_sample,
+#   paste0("dist_to_sample diagnostic - ", region_tag), "distance (m)", palette = "viridis")
+# dist_check_map
+# ggsave(file.path(output_dir, paste0(output_prefix, "dist_to_sample_diagnostic.png")), dist_check_map,
+#        width = 10, height = 6, dpi = 300)
+```
+
+## 6.2 Genetic Diversity Layer plots (masked ("honest") and unmasked ("sloppy"), for comparison)
+"Unmasked" here still respects the domain re-mask above (mgd) - values
+interpolated outside the study domain (land, for a marine dataset; ocean,
+for a terrestrial one - see DOMAIN_TYPE) are never wanted. Both a
+masked and an unmasked version are kept so either the automatic default
+or a fuller view can be pulled depending on who's using the pipeline
+and why.
+
+The computation above (window_gd, kriging, both masks) happens under
+the Mollweide projection, since this standardizes real-world distance
+and ensures equal-area cells. The output rasters are reprojected back
+to WGS84 (latitude, longitude) only for display.
+```{r plots}
+start_plotting_time <- Sys.time()
+
+world_land_wgs84 <- world_land  # already sf, EPSG:4326, from section 1.3
+
+# Temp for ries et al:
+if (MAX_INTERP_DIST_MODE == "none" && MIN_SAMPLE_COUNT_MODE == "none" && exists("mgd_polygon")) {
+  mgd_honest <- mgd_polygon
+}
+
+# Empirical area check, for tuning MAX_INTERP_DIST_SCALE against an
+# actual target area increase (rather than trusting the sqrt(1+X) formula above):
+# run once at MAX_INTERP_DIST_SCALE = 1, note this number -> run again at a candidate scale, compare the ratio against what you actually wanted.
+# Needs checking per run rather than computed once, since how much the visible area grows with radius depends on how much neighboring sample points' buffers already overlap at the current scale.
+visible_cells <- sum(!is.na(terra::values(mgd_honest)))
+visible_area_km2 <- visible_cells * prod(terra::res(mgd_honest)) / 1e6
+cat("mgd_honest visible area:", round(visible_area_km2, 1), "km^2 across", visible_cells, "cells\n")
+
+
+# Real-sample extent (from the raw sample map, section 1.3), not the
+# wider raster/buffer extent used for the actual computation - keeps
+# these maps showing the area the samples actually span, rather than
+# pulling in extra coastline the buffer margin reaches but no sample
+# does.
+pad_display_x <- 0.10 * (bb_raw[["xmax"]] - bb_raw[["xmin"]])
+pad_display_y <- 0.10 * (bb_raw[["ymax"]] - bb_raw[["ymin"]])
+display_xlim <- c(bb_raw[["xmin"]] - pad_display_x, bb_raw[["xmax"]] + pad_display_x)
+display_ylim <- c(bb_raw[["ymin"]] - pad_display_y, bb_raw[["ymax"]] + pad_display_y)
+
+# One dot per distinct coordinate (default) or per CLUSTER_SAMPLE_POINTS_KM
+# cluster (if CLUSTER_SAMPLE_POINTS is on) - see that toggle's own comment
+# in the setup chunk for why this is a separate computation from section
+# 1.4's clustering rather than reusing it directly. Both the individual
+# count and the empirical pi value are computed regardless of
+# SAMPLE_POINT_SIZE_BY, so switching modes doesn't need re-deriving sites/
+# clusters - only size_value below actually depends on the toggle.
+pi_at_point <- terra::extract(wgd[["pi"]], coords_v_mollweide)$pi
+
+if (CLUSTER_SAMPLE_POINTS) {
+  cluster_sites_by_distance <- function(coords_df, threshold_km, values) {
+    sites   <- coords_df[!duplicated(coords_df[, c("Latitude", "Longitude")]), ]
+    sites_v <- vect(sites, geom = c("Longitude", "Latitude"), crs = "EPSG:4326")
+    dist_km <- as.dist(as.matrix(distance(sites_v)) / 1e3)
+    cl      <- cutree(hclust(dist_km, method = "single"), h = threshold_km)
+
+    centroid_of <- function(i) {
+      rows <- cl == i
+      c(lon = mean(sites$Longitude[rows]), lat = mean(sites$Latitude[rows]))
+    }
+    centroids <- as.data.frame(t(sapply(sort(unique(cl)), centroid_of)))
+
+    site_idx <- match(paste(coords_df$Latitude, coords_df$Longitude),
+                       paste(sites$Latitude, sites$Longitude))
+    individual_cluster <- cl[site_idx]
+
+    # mean pi across a cluster's merged sites, consistent with its
+    # position also being a mean (centroid) of those same sites
+    data.frame(Longitude = centroids$lon, Latitude = centroids$lat,
+               n     = as.numeric(table(individual_cluster)),
+               value = as.numeric(tapply(values, individual_cluster, mean, na.rm = TRUE)))
+  }
+
+  sample_point_counts <- cluster_sites_by_distance(coords_file_df, CLUSTER_SAMPLE_POINTS_KM, pi_at_point)
+} else {
+  # One row per distinct coordinate, with a count of how many individuals
+  # share it - base R aggregate(), not dplyr (not loaded in this script). By
+  # coordinate rather than any named grouping column, for the same reason as
+  # section 1.4's clustering: Latitude/Longitude are the only thing
+  # guaranteed to exist and mean the same thing across different datasets.
+  sample_point_counts <- aggregate(
+    list(n = coords_file_df$`Sample ID`),
+    by = list(Latitude = coords_file_df$Latitude, Longitude = coords_file_df$Longitude),
+    FUN = length
+  )
+  sample_point_value <- aggregate(
+    list(value = pi_at_point),
+    by = list(Latitude = coords_file_df$Latitude, Longitude = coords_file_df$Longitude),
+    FUN = mean, na.rm = TRUE
+  )
+  # Explicit match() rather than assuming the two aggregate() calls above
+  # return rows in the same order - true in practice (same grouping keys,
+  # same source data) but cheap to not depend on.
+  value_idx <- match(paste(sample_point_counts$Latitude, sample_point_counts$Longitude),
+                      paste(sample_point_value$Latitude, sample_point_value$Longitude))
+  sample_point_counts$value <- sample_point_value$value[value_idx]
+}
+
+sample_point_counts$size_value <- if (SAMPLE_POINT_SIZE_BY == "value") {
+  sample_point_counts$value
+} else {
+  sample_point_counts$n
+}
+
+# Every plot_with_context() call used to reproject onto a resolution
+# project() auto-picked fresh each time. Mollweide is equal-area, so its
+# meters-per-degree-longitude shrinks with latitude - a raster that's
+# uniform in Mollweide meters is NOT uniform in WGS84 degrees, and this
+# domain's ~54-66N span is wide enough for that mismatch to drift across
+# an integer source-to-target ratio at specific latitudes. A single fixed
+# template, built once and reused for every layer, removes the per-call
+# resolution guess entirely rather than just changing what it guesses.
+display_res_deg <- (resolution_m / grd_disagg_factor) / 111320
+display_template <- rast(xmin = display_xlim[1], xmax = display_xlim[2],
+                          ymin = display_ylim[1], ymax = display_ylim[2],
+                          resolution = display_res_deg, crs = "EPSG:4326")
+
+
+# --- Diagnostic: does the thin-line artifact predate WGS84 reprojection? ---
+# terra::plot() renders sample_count directly in its native Mollweide CRS -
+# no project(), no geom_tile(), nothing that could introduce a nearest-
+# neighbor resampling seam. Compare this against count_map immediately
+# below: if the lines are absent here but present there, that confirms the
+# artifact comes from plot_with_context()'s reprojection step (project()
+# auto-picking a resolution that doesn't hold across this domain's latitude
+# span), not from window_gd() or coords_to_raster() upstream.
+terra::plot(sample_count, main = "sample_count - native Mollweide (diagnostic, no reprojection)")
+
+
+# Plotting the sample count layer
+count_map <- plot_with_context(sample_count,
+  paste0("Sample counts per window - ", region_tag), "sample_count", palette = "viridis")
+count_map
+ggsave(file.path(output_dir, paste0(output_prefix, "full_sample_count.png")), count_map,
+       width = 10, height = 6, dpi = 300)
+
+# Plotting unmasked pi map
+excluded_label <- switch(DOMAIN_TYPE, "land" = "ocean excluded only", "ocean" = "land excluded only")
+if (use_weighted_kriging) {
+  unmasked_plot_title <- paste0(study_species, "π-diversity (With Weighted Kriging) - ", region_tag, ", unmasked (", excluded_label, ")")
+
+} else {
+  unmasked_plot_title <- paste0(study_species, "π-diversity - ", region_tag, ", unmasked (", excluded_label, ")")
+}
+
+pi_map_unmasked <- plot_with_context(mgd, unmasked_plot_title, "pi")
+pi_map_unmasked
+ggsave(file.path(output_dir, paste0(output_prefix, "full_pi_map_unmasked.png")), pi_map_unmasked,
+       width = 10, height = 6, dpi = 300)
+
+# Plotting the regular pi map after masking
+pi_map <- plot_with_context(mgd_honest,
+paste0(study_species, " nucleotide diversity (pi) - ", region_tag, ", masked"), "pi")
+pi_map
+ggsave(file.path(output_dir, paste0(output_prefix, "full_pi_map.png")), pi_map, width = 10, height = 6, dpi = 300)
+
+# Plotting the pi map with data points if SHOW_SAMPLE_POINTS == TRUE.
+# SAMPLE_POINT_SIZE_BY == "All" generates both the count- and value-sized
+# versions as separate files, rather than forcing a single choice.
+if (SHOW_SAMPLE_POINTS == TRUE) {
+  size_modes <- if (SAMPLE_POINT_SIZE_BY == "All") c("count", "value") else SAMPLE_POINT_SIZE_BY
+
+  for (mode in size_modes) {
+    # sample_point_counts$size_value and SAMPLE_POINT_SIZE_BY (read by
+    # plot_with_context()'s legend-naming) both need to reflect THIS
+    # iteration's mode, not whatever was set when they were first computed
+    # earlier - only matters for "All", which runs both modes here, but
+    # cheap to always do correctly regardless.
+    SAMPLE_POINT_SIZE_BY <- mode
+    sample_point_counts$size_value <- if (mode == "value") sample_point_counts$value else sample_point_counts$n
+
+    suffix <- if (mode == "value") "_by_pi_value" else "_by_sample_count"
+
+    pi_map_sample_points <- plot_with_context(mgd_honest,
+      paste0(study_species, " nucleotide diversity (pi) - ", region_tag, ", masked"), "pi",
+      show_points = TRUE)
+    print(pi_map_sample_points)  # bare object name doesn't auto-print inside a for loop
+    ggsave(file.path(output_dir, paste0(output_prefix, "full_pi_map_sample_points", suffix, ".png")),
+           pi_map_sample_points, width = 10, height = 6, dpi = 300)
+  }
+}
+
+
+plotting_runtime <- difftime(Sys.time(), start_plotting_time , units = "secs")
+message("plotting runtime: ", round(plotting_runtime, 2), " seconds")
+print(paste0("plotting runtime: ", round(plotting_runtime, 2), " seconds"))
+
+
+# Computing script runtime
+end_time <- Sys.time()
+runtime <- difftime(end_time, start_time, units = "secs")
+message("Script runtime: ", round(runtime, 2), " seconds")
+print(paste0("Script runtime: ", round(runtime, 2), " seconds"))
+
+# Runtime log - appends one row per run (never overwritten), so runtime
+# across different parameter combinations/datasets can be compared later.
+# One tab separates the headline total from the per-step breakdown, not a
+# fully columnar format - open as text, not spreadsheet software.
+runtime_log_path <- file.path(output_dir, "runtime_log.tsv")
+log_line <- sprintf(
+  "%s: script runtime: %.1f\tread.vcfR runtime=%.1f, wkrig_gd runtime=%.1f, window_gd_runtime=%.1f, distance_masking_runtime=%.1f, plotting_runtime=%.1f",
+  output_prefix, as.numeric(runtime), as.numeric(vcf_runtime), as.numeric(wkrig_gd_runtime), as.numeric(window_gd_runtime), as.numeric(distance_masking_runtime), as.numeric(plotting_runtime)
+)
+cat(log_line, "\n", file = runtime_log_path, append = TRUE, sep = "")
+```

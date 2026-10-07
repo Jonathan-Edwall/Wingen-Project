@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gene catalog</title>
+<link rel="stylesheet" href="https://cdn.datatables.net/2.1.8/css/dataTables.dataTables.min.css">
+<style>
+  :root {
+    --text:  #1a1a1a;
+    --muted: #666666;
+    --line:  #dddddd;
+    --hover: #f5f5f5;
+    --mono:  ui-monospace, "SFMono-Regular", Consolas, Menlo, monospace;
+  }
+  body {
+    margin: 24px 32px 64px;
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 14px;
+  }
+  h1 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0 0 2px;
+  }
+  .meta {
+    color: var(--muted);
+    font-size: 13px;
+    margin: 0 0 20px;
+  }
+  .meta.error {
+    color: #b91c1c;
+    background: #fee0e0;
+    border: 1px solid #f5b5b5;
+    border-radius: 4px;
+    padding: 6px 10px;
+  }
+  .meta.error[hidden] { display: none; }
+  table.dataTable {
+    width: 100% !important;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  table.dataTable thead th {
+    border-bottom: 2px solid var(--text) !important;
+    text-align: left;
+    padding: 6px 10px !important;
+    white-space: nowrap;
+  }
+  table.dataTable tbody td {
+    padding: 5px 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  table.dataTable tbody tr:hover { background: var(--hover); }
+  td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  td.gene-id { font-family: var(--mono); }
+  td.thumb { width: 50px; }
+  td.thumb img {
+    width: 44px; height: 28px; object-fit: cover; cursor: zoom-in; display: block;
+  }
+
+  #lightbox {
+    display: none; position: fixed; inset: 0; z-index: 50;
+    background: rgba(0, 0, 0, 0.85);
+    align-items: center; justify-content: center; padding: 32px;
+  }
+  #lightbox.open { display: flex; }
+  #lightbox img { max-width: 100%; max-height: 100%; }
+  #lightbox .caption {
+    position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
+    color: #fff; font-family: var(--mono); font-size: 13px;
+  }
+
+  /* Group header cells. They are click-to-hide controls, not sort controls:
+     they carry data-dt-order="disable" (set in buildHeader), so DataTables
+     draws no sort arrows on them and never sorts when they are clicked. */
+  table.dataTable thead th.group {
+    text-align: center;
+    border-bottom: 1px solid var(--line) !important;
+    cursor: pointer;
+    user-select: none;
+  }
+  table.dataTable thead th.group:hover { background: var(--hover); }
+
+  #toolbar {
+    display: flex; flex-wrap: wrap; align-items: flex-start;
+    gap: 10px 22px; margin-bottom: 14px;
+  }
+  .decimals-control {
+    font-size: 13px; color: var(--muted);
+    display: flex; align-items: center; gap: 6px;
+    padding: 3px 0;
+  }
+  .decimals-control input {
+    width: 3.5em; padding: 2px 4px; font-family: var(--mono); font-size: 13px;
+  }
+
+  /* Column-group toolbar. A group with sub-groups (Salinity, Water Temp...)
+     is drawn as ONE outlined cluster - the group's own button first, then
+     its sub-group buttons inside the same outline - so "Window"/"Location"
+     visibly belong to the covariate they sit under, instead of reading as
+     more top-level siblings of the top-level "Windows"/"Location". */
+  #group-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+  .toolbar-label { font-size: 13px; color: var(--muted); }
+  .cluster { display: inline-flex; align-items: center; gap: 4px; }
+  .cluster.has-children {
+    padding: 1px 4px 1px 1px;
+    border: 1px solid var(--line);
+    border-radius: 15px;
+    background: #fafafa;
+  }
+  .cluster.has-children > .chip { border-color: transparent; background: transparent; font-weight: 600; }
+  .cluster.has-children > .chip:hover { background: var(--hover); }
+  .cluster-children {
+    display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px;
+    padding-left: 6px; margin-left: 2px;
+    border-left: 1px solid var(--line);
+  }
+  .chip {
+    font: inherit; font-size: 12px; line-height: 1.4;
+    padding: 3px 10px; border-radius: 12px;
+    border: 1px solid var(--line); background: #fff; color: var(--text);
+    cursor: pointer; white-space: nowrap;
+  }
+  .chip:hover { background: var(--hover); }
+  .chip:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
+  .chip.collapsed {
+    color: var(--muted); background: var(--hover);
+    border-style: dashed; text-decoration: line-through;
+  }
+</style>
+</head>
+<body>
+
+<h1>Gene diversity catalog</h1>
+<p class="meta">Generated 2026-10-01 00:19. Click a thumbnail for the full map — →/← or click the image to browse, Esc to close. Click a group header, or its button below, to hide those columns.</p>
+
+<p id="table-error" class="meta error" role="alert" hidden></p>
+
+<div id="toolbar">
+  <label class="decimals-control">Decimals: <input type="number" id="decimals-input" min="0" max="10" value="6"></label>
+  <div id="group-toolbar" role="group" aria-label="Column groups" title="Click a group to show or hide its columns"></div>
+</div>
+
+<table id="catalog" class="display" style="width:100%">
+  <thead></thead>
+</table>
+
+<div id="lightbox">
+  <div class="caption"></div>
+  <img id="lightbox-img" src="" alt="">
+</div>
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdn.datatables.net/2.1.8/js/dataTables.min.js"></script>
+
+
+<script id="gene-data" type="application/json">[{"gene_id": "ESR2A_gene_body", "n_variants": 9, "n_locations_used": 47, "n_individuals": {"initial": 4678, "retained": 4678, "vcf_error": 0, "coords_mismatch": 0}, "windows": {"variance": 0.00212653, "mean": 0.28834667, "median": 0.29153439, "min": 0.0984127, "max": 0.41968254}, "location": {"variance": 0.00258444, "mean": 0.2740009, "median": 0.27222222, "min": 0.13952381, "max": 0.38010582}, "latitude": {"window_pi_latitude_r2": 0.00052357, "window_pi_latitude_slope": -0.00037745}, "salinity": {"window_pi_salinity_r2": 0.00027344, "window_pi_salinity_slope": -0.00052516, "location_salinity_r2": 0.00073647, "location_salinity_slope": 0.00092729}, "water_temp_summer": {"window_pi_temp_summer_r2": 0.0011383, "window_pi_temp_summer_slope": -0.00115267, "location_temp_summer_r2": 0.01399118, "location_temp_summer_slope": -0.00452646}, "water_temp_winter": {"window_pi_temp_winter_r2": 0.00028031, "window_pi_temp_winter_slope": 0.0004909, "location_temp_winter_r2": 0.01454659, "location_temp_winter_slope": 0.00457456}, "chlorophyll_a_log": {"window_pi_chl_log_r2": 0.00025144, "window_pi_chl_log_slope": 0.00206497, "location_chl_log_r2": 0.0426419, "location_chl_log_slope": -0.06139664}, "summary_path": "results/gene_catalog_herring_secd_complete_link/results/chr15/ESR2A_gene_body_gene_summary.json", "gene_dir": "results/gene_catalog_herring_secd_complete_link/results/chr15", "chr": "chr15", "plots": ["chr15/2026-09-30_herring_SECD_ESR2A_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map.png", "chr15/2026-09-30_herring_SECD_ESR2A_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_pi_value.png", "chr15/2026-09-30_herring_SECD_ESR2A_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_sample_count.png", "chr15/2026-09-30_herring_SECD_ESR2A_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_unmasked.png", "chr15/2026-09-30_herring_SECD_ESR2A_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_sample_count.png", "chr15/2026-09-30_herring_SECD_ESR2A_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_raw_sample_map.png", "chr15/2026-09-30_herring_SECD_ESR2A_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_window_preview_buffer_16.png"]}, {"gene_id": "HERPUD2_gene_body", "n_variants": 3, "n_locations_used": 47, "n_individuals": {"initial": 4678, "retained": 4676, "vcf_error": 2, "coords_mismatch": 0}, "windows": {"variance": 0.00394052, "mean": 0.27276413, "median": 0.28412698, "min": 0.0, "max": 0.37571429}, "location": {"variance": 0.00624144, "mean": 0.25977035, "median": 0.27857143, "min": 0.05, "max": 0.36904762}, "latitude": {"window_pi_latitude_r2": 0.03220441, "window_pi_latitude_slope": 0.00402967}, "salinity": {"window_pi_salinity_r2": 0.05739592, "window_pi_salinity_slope": -0.01035718, "location_salinity_r2": 0.08149333, "location_salinity_slope": -0.01515859}, "water_temp_summer": {"window_pi_temp_summer_r2": 0.00214261, "window_pi_temp_summer_slope": -0.00215272, "location_temp_summer_r2": 0.00187627, "location_temp_summer_slope": -0.00257595}, "water_temp_winter": {"window_pi_temp_winter_r2": 0.04457137, "window_pi_temp_winter_slope": -0.00842641, "location_temp_winter_r2": 0.07151985, "location_temp_winter_slope": -0.01576307}, "chlorophyll_a_log": {"window_pi_chl_log_r2": 0.00290823, "window_pi_chl_log_slope": 0.00956854, "location_chl_log_r2": 0.00348881, "location_chl_log_slope": 0.02729127}, "summary_path": "results/gene_catalog_herring_secd_complete_link/results/chr19/HERPUD2_gene_body_gene_summary.json", "gene_dir": "results/gene_catalog_herring_secd_complete_link/results/chr19", "chr": "chr19", "plots": ["chr19/2026-09-30_herring_SECD_HERPUD2_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map.png", "chr19/2026-09-30_herring_SECD_HERPUD2_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_pi_value.png", "chr19/2026-09-30_herring_SECD_HERPUD2_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_sample_count.png", "chr19/2026-09-30_herring_SECD_HERPUD2_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_unmasked.png", "chr19/2026-09-30_herring_SECD_HERPUD2_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_sample_count.png", "chr19/2026-09-30_herring_SECD_HERPUD2_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_raw_sample_map.png", "chr19/2026-09-30_herring_SECD_HERPUD2_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_window_preview_buffer_16.png"]}, {"gene_id": "HERPUD2_peak_region_incl_lncRNAs", "n_variants": 39, "n_locations_used": 47, "n_individuals": {"initial": 4678, "retained": 4678, "vcf_error": 0, "coords_mismatch": 0}, "windows": {"variance": 0.00481061, "mean": 0.38263851, "median": 0.39074481, "min": 0.12179487, "max": 0.51913309}, "location": {"variance": 0.00638161, "mean": 0.37272985, "median": 0.39079365, "min": 0.17582418, "max": 0.50892552}, "latitude": {"window_pi_latitude_r2": 0.07507472, "window_pi_latitude_slope": 0.00679801}, "salinity": {"window_pi_salinity_r2": 0.09949746, "window_pi_salinity_slope": -0.01506713, "location_salinity_r2": 0.11851457, "location_salinity_slope": -0.01848444}, "water_temp_summer": {"window_pi_temp_summer_r2": 0.01687673, "window_pi_temp_summer_slope": -0.00667549, "location_temp_summer_r2": 0.01601393, "location_temp_summer_slope": -0.0076096}, "water_temp_winter": {"window_pi_temp_winter_r2": 0.0752703, "window_pi_temp_winter_slope": -0.01209901, "location_temp_winter_r2": 0.11091111, "location_temp_winter_slope": -0.01984896}, "chlorophyll_a_log": {"window_pi_chl_log_r2": 0.0011633, "window_pi_chl_log_slope": 0.00664243, "location_chl_log_r2": 0.07039656, "location_chl_log_slope": -0.12396053}, "summary_path": "results/gene_catalog_herring_secd_complete_link/results/chr19/HERPUD2_peak_region_incl_lncRNAs_gene_summary.json", "gene_dir": "results/gene_catalog_herring_secd_complete_link/results/chr19", "chr": "chr19", "plots": ["chr19/2026-09-30_herring_SECD_HERPUD2_peak_region_incl_lncRNAs__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map.png", "chr19/2026-09-30_herring_SECD_HERPUD2_peak_region_incl_lncRNAs__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_pi_value.png", "chr19/2026-09-30_herring_SECD_HERPUD2_peak_region_incl_lncRNAs__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_sample_count.png", "chr19/2026-09-30_herring_SECD_HERPUD2_peak_region_incl_lncRNAs__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_unmasked.png", "chr19/2026-09-30_herring_SECD_HERPUD2_peak_region_incl_lncRNAs__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_sample_count.png", "chr19/2026-09-30_herring_SECD_HERPUD2_peak_region_incl_lncRNAs__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_raw_sample_map.png", "chr19/2026-09-30_herring_SECD_HERPUD2_peak_region_incl_lncRNAs__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_window_preview_buffer_16.png"]}, {"gene_id": "Inversion_chr12", "n_variants": 370, "n_locations_used": 47, "n_individuals": {"initial": 4678, "retained": 4678, "vcf_error": 0, "coords_mismatch": 0}, "windows": {"variance": 0.00360063, "mean": 0.26540875, "median": 0.25033333, "min": 0.16538353, "max": 0.40590734}, "location": {"variance": 0.00315464, "mean": 0.26050828, "median": 0.2480399, "min": 0.16347748, "max": 0.40009009}, "latitude": {"window_pi_latitude_r2": 0.49796498, "window_pi_latitude_slope": -0.01514689}, "salinity": {"window_pi_salinity_r2": 0.40597317, "window_pi_salinity_slope": 0.02633069, "location_salinity_r2": 0.34218616, "location_salinity_slope": 0.02208317}, "water_temp_summer": {"window_pi_temp_summer_r2": 0.19779423, "window_pi_temp_summer_slope": 0.01977128, "location_temp_summer_r2": 0.07165417, "location_temp_summer_slope": 0.01131731}, "water_temp_winter": {"window_pi_temp_winter_r2": 0.37454646, "window_pi_temp_winter_slope": 0.02334962, "location_temp_winter_r2": 0.42335643, "location_temp_winter_slope": 0.02726548}, "chlorophyll_a_log": {"window_pi_chl_log_r2": 0.02163506, "window_pi_chl_log_slope": -0.02494614, "location_chl_log_r2": 0.00666185, "location_chl_log_slope": 0.02681113}, "summary_path": "results/gene_catalog_herring_secd_complete_link/results/chr12/Inversion_chr12_gene_summary.json", "gene_dir": "results/gene_catalog_herring_secd_complete_link/results/chr12", "chr": "chr12", "plots": ["chr12/2026-09-30_herring_SECD_Inversion_chr12__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map.png", "chr12/2026-09-30_herring_SECD_Inversion_chr12__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_pi_value.png", "chr12/2026-09-30_herring_SECD_Inversion_chr12__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_sample_count.png", "chr12/2026-09-30_herring_SECD_Inversion_chr12__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_unmasked.png", "chr12/2026-09-30_herring_SECD_Inversion_chr12__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_sample_count.png", "chr12/2026-09-30_herring_SECD_Inversion_chr12__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_raw_sample_map.png", "chr12/2026-09-30_herring_SECD_Inversion_chr12__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_window_preview_buffer_16.png"]}, {"gene_id": "Inversion_chr17", "n_variants": 223, "n_locations_used": 47, "n_individuals": {"initial": 4678, "retained": 4678, "vcf_error": 0, "coords_mismatch": 0}, "windows": {"variance": 0.00498035, "mean": 0.18264989, "median": 0.16234465, "min": 0.09583173, "max": 0.42230621}, "location": {"variance": 0.00456045, "mean": 0.18394669, "median": 0.16343583, "min": 0.09701046, "max": 0.36426223}, "latitude": {"window_pi_latitude_r2": 0.43979675, "window_pi_latitude_slope": -0.01674137}, "salinity": {"window_pi_salinity_r2": 0.35637546, "window_pi_salinity_slope": 0.02901405, "location_salinity_r2": 0.20331469, "location_salinity_slope": 0.0204665}, "water_temp_summer": {"window_pi_temp_summer_r2": 0.17921727, "window_pi_temp_summer_slope": 0.02213394, "location_temp_summer_r2": 0.08552427, "location_temp_summer_slope": 0.01486607}, "water_temp_winter": {"window_pi_temp_winter_r2": 0.33716805, "window_pi_temp_winter_slope": 0.026055, "location_temp_winter_r2": 0.1919519, "location_temp_winter_slope": 0.02207421}, "chlorophyll_a_log": {"window_pi_chl_log_r2": 0.03359723, "window_pi_chl_log_slope": -0.03650379, "location_chl_log_r2": 0.01100962, "location_chl_log_slope": 0.04144123}, "summary_path": "results/gene_catalog_herring_secd_complete_link/results/chr17/Inversion_chr17_gene_summary.json", "gene_dir": "results/gene_catalog_herring_secd_complete_link/results/chr17", "chr": "chr17", "plots": ["chr17/2026-09-30_herring_SECD_Inversion_chr17__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map.png", "chr17/2026-09-30_herring_SECD_Inversion_chr17__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_pi_value.png", "chr17/2026-09-30_herring_SECD_Inversion_chr17__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_sample_count.png", "chr17/2026-09-30_herring_SECD_Inversion_chr17__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_unmasked.png", "chr17/2026-09-30_herring_SECD_Inversion_chr17__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_sample_count.png", "chr17/2026-09-30_herring_SECD_Inversion_chr17__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_raw_sample_map.png", "chr17/2026-09-30_herring_SECD_Inversion_chr17__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_window_preview_buffer_16.png"]}, {"gene_id": "Inversion_chr23", "n_variants": 51, "n_locations_used": 47, "n_individuals": {"initial": 4678, "retained": 4678, "vcf_error": 0, "coords_mismatch": 0}, "windows": {"variance": 0.00375115, "mean": 0.22400353, "median": 0.22408964, "min": 0.06865546, "max": 0.43832866}, "location": {"variance": 0.00400408, "mean": 0.21333333, "median": 0.20838469, "min": 0.07870215, "max": 0.38084034}, "latitude": {"window_pi_latitude_r2": 0.08709484, "window_pi_latitude_slope": -0.00646567}, "salinity": {"window_pi_salinity_r2": 0.05411004, "window_pi_salinity_slope": 0.00981173, "location_salinity_r2": 0.20106066, "location_salinity_slope": 0.01907086}, "water_temp_summer": {"window_pi_temp_summer_r2": 0.01917163, "window_pi_temp_summer_slope": 0.00628276, "location_temp_summer_r2": 0.09367401, "location_temp_summer_slope": 0.01457835}, "water_temp_winter": {"window_pi_temp_winter_r2": 0.08253064, "window_pi_temp_winter_slope": 0.01118736, "location_temp_winter_r2": 0.25970611, "location_temp_winter_slope": 0.024059}, "chlorophyll_a_log": {"window_pi_chl_log_r2": 0.03856211, "window_pi_chl_log_slope": -0.03396485, "location_chl_log_r2": 0.00639266, "location_chl_log_slope": -0.0295893}, "summary_path": "results/gene_catalog_herring_secd_complete_link/results/chr23/Inversion_chr23_gene_summary.json", "gene_dir": "results/gene_catalog_herring_secd_complete_link/results/chr23", "chr": "chr23", "plots": ["chr23/2026-09-30_herring_SECD_Inversion_chr23__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map.png", "chr23/2026-09-30_herring_SECD_Inversion_chr23__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_pi_value.png", "chr23/2026-09-30_herring_SECD_Inversion_chr23__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_sample_count.png", "chr23/2026-09-30_herring_SECD_Inversion_chr23__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_unmasked.png", "chr23/2026-09-30_herring_SECD_Inversion_chr23__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_sample_count.png", "chr23/2026-09-30_herring_SECD_Inversion_chr23__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_raw_sample_map.png", "chr23/2026-09-30_herring_SECD_Inversion_chr23__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_window_preview_buffer_16.png"]}, {"gene_id": "Inversion_chr6", "n_variants": 99, "n_locations_used": 47, "n_individuals": {"initial": 4678, "retained": 4678, "vcf_error": 0, "coords_mismatch": 0}, "windows": {"variance": 0.00018211, "mean": 0.11165924, "median": 0.1084608, "min": 0.09102453, "max": 0.21651756}, "location": {"variance": 0.00012185, "mean": 0.11164574, "median": 0.10942761, "min": 0.09225108, "max": 0.14251563}, "latitude": {"window_pi_latitude_r2": 0.00098086, "window_pi_latitude_slope": -0.00015118}, "salinity": {"window_pi_salinity_r2": 0.00076899, "window_pi_salinity_slope": 0.00025772, "location_salinity_r2": 0.01295589, "location_salinity_slope": -0.00084452}, "water_temp_summer": {"window_pi_temp_summer_r2": 0.00190595, "window_pi_temp_summer_slope": 0.00043647, "location_temp_summer_r2": 0.00507209, "location_temp_summer_slope": 0.00059178}, "water_temp_winter": {"window_pi_temp_winter_r2": 0.00187235, "window_pi_temp_winter_slope": 0.00037127, "location_temp_winter_r2": 0.02010472, "location_temp_winter_slope": -0.00116776}, "chlorophyll_a_log": {"window_pi_chl_log_r2": 7.396e-05, "window_pi_chl_log_slope": 0.00032745, "location_chl_log_r2": 0.01043803, "location_chl_log_slope": -0.00659585}, "summary_path": "results/gene_catalog_herring_secd_complete_link/results/chr6/Inversion_chr6_gene_summary.json", "gene_dir": "results/gene_catalog_herring_secd_complete_link/results/chr6", "chr": "chr6", "plots": ["chr6/2026-09-30_herring_SECD_Inversion_chr6__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map.png", "chr6/2026-09-30_herring_SECD_Inversion_chr6__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_pi_value.png", "chr6/2026-09-30_herring_SECD_Inversion_chr6__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_sample_count.png", "chr6/2026-09-30_herring_SECD_Inversion_chr6__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_unmasked.png", "chr6/2026-09-30_herring_SECD_Inversion_chr6__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_sample_count.png", "chr6/2026-09-30_herring_SECD_Inversion_chr6__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_raw_sample_map.png", "chr6/2026-09-30_herring_SECD_Inversion_chr6__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_window_preview_buffer_16.png"]}, {"gene_id": "MYH_cluster", "n_variants": 99, "n_locations_used": 47, "n_individuals": {"initial": 4678, "retained": 4678, "vcf_error": 0, "coords_mismatch": 0}, "windows": {"variance": 0.00598427, "mean": 0.24795659, "median": 0.23731121, "min": 0.05485329, "max": 0.47229437}, "location": {"variance": 0.0049538, "mean": 0.23547112, "median": 0.23178451, "min": 0.12373256, "max": 0.40164983}, "latitude": {"window_pi_latitude_r2": 0.26505825, "window_pi_latitude_slope": 0.0142466}, "salinity": {"window_pi_salinity_r2": 0.31381709, "window_pi_salinity_slope": -0.02984476, "location_salinity_r2": 0.54760422, "location_salinity_slope": -0.03500723}, "water_temp_summer": {"window_pi_temp_summer_r2": 0.15477684, "window_pi_temp_summer_slope": -0.02254744, "location_temp_summer_r2": 0.21970693, "location_temp_summer_slope": -0.02483353}, "water_temp_winter": {"window_pi_temp_winter_r2": 0.23239244, "window_pi_temp_winter_slope": -0.02371124, "location_temp_winter_r2": 0.45215017, "location_temp_winter_slope": -0.03530983}, "chlorophyll_a_log": {"window_pi_chl_log_r2": 0.00653434, "window_pi_chl_log_slope": 0.01766936, "location_chl_log_r2": 0.18664911, "location_chl_log_slope": -0.17783806}, "summary_path": "results/gene_catalog_herring_secd_complete_link/results/chr12/MYH_cluster_gene_summary.json", "gene_dir": "results/gene_catalog_herring_secd_complete_link/results/chr12", "chr": "chr12", "plots": ["chr12/2026-09-30_herring_SECD_MYH_cluster__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map.png", "chr12/2026-09-30_herring_SECD_MYH_cluster__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_pi_value.png", "chr12/2026-09-30_herring_SECD_MYH_cluster__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_sample_count.png", "chr12/2026-09-30_herring_SECD_MYH_cluster__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_unmasked.png", "chr12/2026-09-30_herring_SECD_MYH_cluster__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_sample_count.png", "chr12/2026-09-30_herring_SECD_MYH_cluster__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_raw_sample_map.png", "chr12/2026-09-30_herring_SECD_MYH_cluster__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_window_preview_buffer_16.png"]}, {"gene_id": "SOX11B_gene_body", "n_variants": 1, "n_locations_used": 47, "n_individuals": {"initial": 4678, "retained": 4666, "vcf_error": 12, "coords_mismatch": 0}, "windows": {"variance": 0.00951259, "mean": 0.30178783, "median": 0.30714286, "min": 0.0, "max": 0.54285714}, "location": {"variance": 0.00890744, "mean": 0.31212766, "median": 0.32142857, "min": 0.1, "max": 0.5}, "latitude": {"window_pi_latitude_r2": 0.00459836, "window_pi_latitude_slope": 0.00236584}, "salinity": {"window_pi_salinity_r2": 0.00303053, "window_pi_salinity_slope": -0.00369771, "location_salinity_r2": 0.06515488, "location_salinity_slope": -0.01619218}, "water_temp_summer": {"window_pi_temp_summer_r2": 0.00252493, "window_pi_temp_summer_slope": -0.00363089, "location_temp_summer_r2": 0.00809467, "location_temp_summer_slope": -0.00639181}, "water_temp_winter": {"window_pi_temp_winter_r2": 1.43979845e-06, "window_pi_temp_winter_slope": 7.441e-05, "location_temp_winter_r2": 0.05317194, "location_temp_winter_slope": -0.01623689}, "chlorophyll_a_log": {"window_pi_chl_log_r2": 0.01986625, "window_pi_chl_log_slope": -0.03884157, "location_chl_log_r2": 0.11526636, "location_chl_log_slope": -0.18740037}, "summary_path": "results/gene_catalog_herring_secd_complete_link/results/chr15/SOX11B_gene_body_gene_summary.json", "gene_dir": "results/gene_catalog_herring_secd_complete_link/results/chr15", "chr": "chr15", "plots": ["chr15/2026-09-30_herring_SECD_SOX11B_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map.png", "chr15/2026-09-30_herring_SECD_SOX11B_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_pi_value.png", "chr15/2026-09-30_herring_SECD_SOX11B_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_sample_count.png", "chr15/2026-09-30_herring_SECD_SOX11B_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_unmasked.png", "chr15/2026-09-30_herring_SECD_SOX11B_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_sample_count.png", "chr15/2026-09-30_herring_SECD_SOX11B_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_raw_sample_map.png", "chr15/2026-09-30_herring_SECD_SOX11B_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_window_preview_buffer_16.png"]}, {"gene_id": "SOX11B_peak_region_incl_upstream", "n_variants": 26, "n_locations_used": 47, "n_individuals": {"initial": 4678, "retained": 4678, "vcf_error": 0, "coords_mismatch": 0}, "windows": {"variance": 0.00353628, "mean": 0.25248391, "median": 0.24879121, "min": 0.11181319, "max": 0.42930403}, "location": {"variance": 0.00253484, "mean": 0.2316768, "median": 0.23379121, "min": 0.13489011, "max": 0.37095238}, "latitude": {"window_pi_latitude_r2": 0.02093791, "window_pi_latitude_slope": 0.00307805}, "salinity": {"window_pi_salinity_r2": 0.01725823, "window_pi_salinity_slope": -0.00538017, "location_salinity_r2": 0.1008197, "location_salinity_slope": -0.01074492}, "water_temp_summer": {"window_pi_temp_summer_r2": 0.04951186, "window_pi_temp_summer_slope": -0.00980318, "location_temp_summer_r2": 0.03456568, "location_temp_summer_slope": -0.00704604}, "water_temp_winter": {"window_pi_temp_winter_r2": 0.01426999, "window_pi_temp_winter_slope": -0.00451672, "location_temp_winter_r2": 0.08560959, "location_temp_winter_slope": -0.01099061}, "chlorophyll_a_log": {"window_pi_chl_log_r2": 0.00052211, "window_pi_chl_log_slope": 0.00384455, "location_chl_log_r2": 0.00605722, "location_chl_log_slope": -0.02291683}, "summary_path": "results/gene_catalog_herring_secd_complete_link/results/chr15/SOX11B_peak_region_incl_upstream_gene_summary.json", "gene_dir": "results/gene_catalog_herring_secd_complete_link/results/chr15", "chr": "chr15", "plots": ["chr15/2026-09-30_herring_SECD_SOX11B_peak_region_incl_upstream__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map.png", "chr15/2026-09-30_herring_SECD_SOX11B_peak_region_incl_upstream__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_pi_value.png", "chr15/2026-09-30_herring_SECD_SOX11B_peak_region_incl_upstream__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_sample_count.png", "chr15/2026-09-30_herring_SECD_SOX11B_peak_region_incl_upstream__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_unmasked.png", "chr15/2026-09-30_herring_SECD_SOX11B_peak_region_incl_upstream__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_sample_count.png", "chr15/2026-09-30_herring_SECD_SOX11B_peak_region_incl_upstream__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_raw_sample_map.png", "chr15/2026-09-30_herring_SECD_SOX11B_peak_region_incl_upstream__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_window_preview_buffer_16.png"]}, {"gene_id": "TSHR_CEP128_GTF2A1_peak_region", "n_variants": 186, "n_locations_used": 47, "n_individuals": {"initial": 4678, "retained": 4678, "vcf_error": 0, "coords_mismatch": 0}, "windows": {"variance": 0.00512783, "mean": 0.19590095, "median": 0.18497184, "min": 0.06509985, "max": 0.38422171}, "location": {"variance": 0.005043, "mean": 0.18342599, "median": 0.1656554, "min": 0.06517921, "max": 0.33166923}, "latitude": {"window_pi_latitude_r2": 0.29745831, "window_pi_latitude_slope": 0.01397059}, "salinity": {"window_pi_salinity_r2": 0.37265729, "window_pi_salinity_slope": -0.03010551, "location_salinity_r2": 0.4616796, "location_salinity_slope": -0.03243174}, "water_temp_summer": {"window_pi_temp_summer_r2": 0.1245958, "window_pi_temp_summer_slope": -0.01872653, "location_temp_summer_r2": 0.20885028, "location_temp_summer_slope": -0.02442922}, "water_temp_winter": {"window_pi_temp_winter_r2": 0.28579497, "window_pi_temp_winter_slope": -0.02434063, "location_temp_winter_r2": 0.357579, "location_temp_winter_slope": -0.03168223}, "chlorophyll_a_log": {"window_pi_chl_log_r2": 0.01466208, "window_pi_chl_log_slope": 0.02443437, "location_chl_log_r2": 0.15027236, "location_chl_log_slope": -0.16100033}, "summary_path": "results/gene_catalog_herring_secd_complete_link/results/chr15/TSHR_CEP128_GTF2A1_peak_region_gene_summary.json", "gene_dir": "results/gene_catalog_herring_secd_complete_link/results/chr15", "chr": "chr15", "plots": ["chr15/2026-09-30_herring_SECD_TSHR_CEP128_GTF2A1_peak_region__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map.png", "chr15/2026-09-30_herring_SECD_TSHR_CEP128_GTF2A1_peak_region__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_pi_value.png", "chr15/2026-09-30_herring_SECD_TSHR_CEP128_GTF2A1_peak_region__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_sample_count.png", "chr15/2026-09-30_herring_SECD_TSHR_CEP128_GTF2A1_peak_region__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_unmasked.png", "chr15/2026-09-30_herring_SECD_TSHR_CEP128_GTF2A1_peak_region__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_sample_count.png", "chr15/2026-09-30_herring_SECD_TSHR_CEP128_GTF2A1_peak_region__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_raw_sample_map.png", "chr15/2026-09-30_herring_SECD_TSHR_CEP128_GTF2A1_peak_region__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_window_preview_buffer_16.png"]}, {"gene_id": "TSHR_gene_body", "n_variants": 24, "n_locations_used": 47, "n_individuals": {"initial": 4678, "retained": 4678, "vcf_error": 0, "coords_mismatch": 0}, "windows": {"variance": 0.00799897, "mean": 0.17419197, "median": 0.15767857, "min": 0.00625, "max": 0.40498016}, "location": {"variance": 0.0072748, "mean": 0.15784828, "median": 0.1360119, "min": 0.04404762, "max": 0.37619048}, "latitude": {"window_pi_latitude_r2": 0.20725512, "window_pi_latitude_slope": 0.01456481}, "salinity": {"window_pi_salinity_r2": 0.2757913, "window_pi_salinity_slope": -0.03234683, "location_salinity_r2": 0.35967418, "location_salinity_slope": -0.03438116}, "water_temp_summer": {"window_pi_temp_summer_r2": 0.06249243, "window_pi_temp_summer_slope": -0.01656417, "location_temp_summer_r2": 0.14085529, "location_temp_summer_slope": -0.02409599}, "water_temp_winter": {"window_pi_temp_winter_r2": 0.22580107, "window_pi_temp_winter_slope": -0.02702203, "location_temp_winter_r2": 0.27533205, "location_temp_winter_slope": -0.03339059}, "chlorophyll_a_log": {"window_pi_chl_log_r2": 0.01537492, "window_pi_chl_log_slope": 0.03138949, "location_chl_log_r2": 0.09097098, "location_chl_log_slope": -0.15045432}, "summary_path": "results/gene_catalog_herring_secd_complete_link/results/chr15/TSHR_gene_body_gene_summary.json", "gene_dir": "results/gene_catalog_herring_secd_complete_link/results/chr15", "chr": "chr15", "plots": ["chr15/2026-09-30_herring_SECD_TSHR_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map.png", "chr15/2026-09-30_herring_SECD_TSHR_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_pi_value.png", "chr15/2026-09-30_herring_SECD_TSHR_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_sample_points_by_sample_count.png", "chr15/2026-09-30_herring_SECD_TSHR_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_pi_map_unmasked.png", "chr15/2026-09-30_herring_SECD_TSHR_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_full_sample_count.png", "chr15/2026-09-30_herring_SECD_TSHR_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_raw_sample_map.png", "chr15/2026-09-30_herring_SECD_TSHR_gene_body__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_window_preview_buffer_16.png"]}]</script>
+<script id="gene-columns" type="application/json">[{"key": "gene_id", "label": "Gene", "numeric": false}, {"key": "chr", "label": "Chr", "numeric": false}, {"key": "n_variants", "label": "Variants", "numeric": true}, {"key": "n_locations_used", "label": "N sites", "numeric": true}, {"group": "N ind", "columns": [{"key": "n_individuals.retained", "label": "Retained", "numeric": true}, {"key": "n_individuals.initial", "label": "Initial", "numeric": true}, {"key": "n_individuals.vcf_error", "label": "VCF Error", "numeric": true}, {"key": "n_individuals.coords_mismatch", "label": "Coords Error", "numeric": true}]}, {"group": "Windows", "columns": [{"key": "windows.variance", "label": "Var", "numeric": true}, {"key": "windows.mean", "label": "Mean", "numeric": true}, {"key": "windows.median", "label": "Median", "numeric": true}, {"key": "windows.min", "label": "Min", "numeric": true}, {"key": "windows.max", "label": "Max", "numeric": true}]}, {"group": "Location", "columns": [{"key": "location.variance", "label": "Var", "numeric": true}, {"key": "location.mean", "label": "Mean", "numeric": true}, {"key": "location.median", "label": "Median", "numeric": true}, {"key": "location.min", "label": "Min", "numeric": true}, {"key": "location.max", "label": "Max", "numeric": true}]}, {"group": "Latitude", "columns": [{"key": "latitude.window_pi_latitude_r2", "label": "\u03c0~lat R\u00b2", "numeric": true}, {"key": "latitude.window_pi_latitude_slope", "label": "Slope", "numeric": true}]}, {"group": "Salinity", "columns": [{"group": "Window", "columns": [{"key": "salinity.window_pi_salinity_r2", "label": "pi r2", "numeric": true}, {"key": "salinity.window_pi_salinity_slope", "label": "slope", "numeric": true}]}, {"group": "Location", "columns": [{"key": "salinity.location_salinity_r2", "label": "pi r2", "numeric": true}, {"key": "salinity.location_salinity_slope", "label": "slope", "numeric": true}]}]}, {"group": "Water Temp Summer", "columns": [{"group": "Window", "columns": [{"key": "water_temp_summer.window_pi_temp_summer_r2", "label": "pi r2", "numeric": true}, {"key": "water_temp_summer.window_pi_temp_summer_slope", "label": "slope", "numeric": true}]}, {"group": "Location", "columns": [{"key": "water_temp_summer.location_temp_summer_r2", "label": "pi r2", "numeric": true}, {"key": "water_temp_summer.location_temp_summer_slope", "label": "slope", "numeric": true}]}]}, {"group": "Water Temp Winter", "columns": [{"group": "Window", "columns": [{"key": "water_temp_winter.window_pi_temp_winter_r2", "label": "pi r2", "numeric": true}, {"key": "water_temp_winter.window_pi_temp_winter_slope", "label": "slope", "numeric": true}]}, {"group": "Location", "columns": [{"key": "water_temp_winter.location_temp_winter_r2", "label": "pi r2", "numeric": true}, {"key": "water_temp_winter.location_temp_winter_slope", "label": "slope", "numeric": true}]}]}, {"group": "log(chlorophyll-a)", "columns": [{"group": "Window", "columns": [{"key": "chlorophyll_a_log.window_pi_chl_log_r2", "label": "pi r2", "numeric": true}, {"key": "chlorophyll_a_log.window_pi_chl_log_slope", "label": "slope", "numeric": true}]}, {"group": "Location", "columns": [{"key": "chlorophyll_a_log.location_chl_log_r2", "label": "pi r2", "numeric": true}, {"key": "chlorophyll_a_log.location_chl_log_slope", "label": "slope", "numeric": true}]}]}]</script>
+
+<script>
+'use strict';
+
+const rows = JSON.parse(document.getElementById('gene-data').textContent);
+const columnLayout = JSON.parse(document.getElementById('gene-columns').textContent);
+
+let decimals = 5;
+const DEFAULT_ORDER = [[1, 'asc']];   // column 0 is the thumbnail, column 1 is Gene
+
+// --- Error reporting ---------------------------------------------------------
+// DataTables' default is alert() - a modal popup that says nothing about what
+// to do next. Send its warnings to an inline banner and the console instead.
+function showError(message) {
+  const box = document.getElementById('table-error');
+  box.textContent = message;
+  box.hidden = false;
+}
+// The two libraries come from CDNs; opened offline (or behind a blocker) they
+// never arrive. Say so instead of leaving an empty page.
+if (typeof jQuery === 'undefined' || typeof DataTable === 'undefined') {
+  showError('jQuery / DataTables could not be loaded from their CDNs (code.jquery.com, cdn.datatables.net) '
+          + '- this page needs internet access to build the table.');
+  throw new Error('jQuery / DataTables not loaded');
+}
+DataTable.ext.errMode = function (settings, techNote, message) {
+  console.error(message);
+  showError(message);
+};
+
+// --- Cell rendering ----------------------------------------------------------
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+function fmt(v) {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'number') {
+    if (Number.isInteger(v)) return String(v);
+    if (v !== 0 && Math.abs(v) < 1e-6) return v.toExponential(2);
+    return v.toFixed(decimals);
+  }
+  return String(v);
+}
+
+// DataTables calls render() with type 'display' (what is shown), 'filter'
+// (what the search box matches against), and 'sort' / 'type' (what ordering
+// and type detection see). Only display/filter get the rounded text;
+// ordering always sees the raw number, so changing "Decimals" can never
+// reorder rows or create ties between values that differ beyond the
+// digits shown.
+function renderNumber(v, type) {
+  if (type === 'display' || type === 'filter') return fmt(v);
+  return v === null || v === undefined ? '' : v;
+}
+
+// A tiny inline placeholder (no network request, can't itself fail to
+// load) swapped in for any plot image that 404s or fails to decode, so a
+// broken PNG shows as a clear, deliberate "this didn't load" instead of
+// the browser's own broken-image icon - and so it can't silently vanish
+// from the layout while looking like nothing was ever there.
+const BROKEN_IMG_PLACEHOLDER = 'data:image/svg+xml;utf8,' + encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 28">'
+  + '<rect width="44" height="28" fill="#fee0e0"/>'
+  + '<text x="22" y="19" font-size="15" text-anchor="middle" fill="#b91c1c" font-family="sans-serif">?</text>'
+  + '</svg>'
+);
+
+function handleImgError(img) {
+  if (img.dataset.broken) return; // the placeholder itself never fails to load; this just guards belt-and-braces
+  const failedSrc = img.getAttribute('src');
+  img.dataset.broken = '1';
+  img.src = BROKEN_IMG_PLACEHOLDER;
+  img.title = 'Failed to load: ' + failedSrc.split('/').pop();
+}
+
+function renderThumb(plots, type, row) {
+  if (type !== 'display' || !plots || !plots.length) return '';
+  return `<img src="${escapeHtml(plots[0])}" alt="${escapeHtml(row.gene_id)}"`
+       + ` data-plots="${escapeHtml(JSON.stringify(plots))}" onerror="handleImgError(this)">`;
+}
+
+// --- Column layout tree ------------------------------------------------------
+// columnLayout can nest groups inside groups (a covariate's Window/Location
+// halves, say). Built once: every group knows its children and every leaf
+// beneath it (`leaves`); every leaf knows its DataTables column index
+// (`colIdx`) and whether it is currently shown (`visible`).
+function buildNode(node, parentPath) {
+  if (node.group) {
+    const path = parentPath ? `${parentPath} \u203a ${node.group}` : node.group;
+    const group = { isGroup: true, label: node.group, path, chip: null, children: [], leaves: [] };
+    group.children = node.columns.map((c) => buildNode(c, path));
+    for (const child of group.children) {
+      if (child.isGroup) group.leaves.push(...child.leaves);
+      else group.leaves.push(child);
+    }
+    return group;
+  }
+  return { isGroup: false, key: node.key, label: node.label, numeric: !!node.numeric, colIdx: -1, visible: true };
+}
+const tree = columnLayout.map((node) => buildNode(node, ''));
+
+// Every leaf, left to right. This is DataTables' column order, so
+// leaf i is DataTables column i + 1 (column 0 is the thumbnail).
+const leaves = [];
+(function collect(nodes) {
+  for (const n of nodes) {
+    if (n.isGroup) collect(n.children);
+    else leaves.push(n);
+  }
+})(tree);
+leaves.forEach((leaf, i) => { leaf.colIdx = i + 1; });
+
+function treeDepth(nodes) {
+  let max = 1;
+  for (const n of nodes) {
+    if (n.isGroup) max = Math.max(max, 1 + treeDepth(n.children));
+  }
+  return max;
+}
+const maxDepth = treeDepth(tree);
+
+function toDtColumn(leaf) {
+  return {
+    data: leaf.key,
+    className: leaf.numeric ? 'num' : (leaf.key === 'gene_id' ? 'gene-id' : ''),
+    type: leaf.numeric ? 'num' : 'string',
+    // A gene whose JSON lacks a field (e.g. it errored before computing that
+    // block) gets an empty cell rather than DataTables' "unknown parameter" error.
+    defaultContent: '',
+    // Text columns: escape, so a gene name containing "<" or "&" can't be
+    // read as markup (DataTables writes cell content with innerHTML).
+    render: leaf.numeric ? renderNumber : DataTable.render.text(),
+  };
+}
+
+// --- Header ------------------------------------------------------------------
+// The full multi-row <thead> is built ONCE, for every column, and never
+// rebuilt. Hiding and showing columns is DataTables' own job from here on
+// (columns().visible(), see setLeavesVisible): it re-computes each header
+// cell's colspan/rowspan from the columns still visible, and drops a group
+// cell entirely once nothing under it is visible.
+//
+// Why this is NOT done by destroying and re-initialising the table on every
+// toggle: destroy() puts the old rendered <tr> rows back into the <table>,
+// and DataTables' constructor then checks that first leftover row against
+// the new `columns` array. Hide a group and the leftover row has MORE cells
+// than there are columns -> "Incorrect column count" (tech note 18) and an
+// uncaught TypeError halfway through init, leaving a half-built table (and
+// a second toggle then removed the table from the page altogether).
+function buildHeader() {
+  const thead = document.querySelector('#catalog thead');
+  const headerRows = Array.from({ length: maxDepth }, () => document.createElement('tr'));
+
+  const thumbTh = document.createElement('th');
+  thumbTh.rowSpan = maxDepth;
+  headerRows[0].appendChild(thumbTh);
+
+  function place(node, row) {
+    const th = document.createElement('th');
+    th.textContent = node.label;
+    if (node.isGroup) {
+      th.colSpan = node.leaves.length;
+      th.className = 'group';
+      th.title = 'Click to hide this group';
+      // DataTables 2 attaches sorting to EVERY header cell, and a cell that
+      // spans several columns would multi-sort by all of them. This attribute
+      // opts group cells out: no sort arrows, and clicking one only hides it.
+      // (A mouse shortcut only - the toolbar buttons are the keyboard/screen-
+      // reader route to the same toggle.)
+      th.setAttribute('data-dt-order', 'disable');
+      th.addEventListener('click', () => hideGroup(node));
+      headerRows[row].appendChild(th);
+      for (const child of node.children) place(child, row + 1);
+    } else {
+      // A leaf spans down to the last header row, however deep its group is.
+      th.rowSpan = maxDepth - row;
+      if (node.numeric) th.className = 'num';
+      headerRows[row].appendChild(th);
+    }
+  }
+  for (const node of tree) place(node, 0);
+  for (const tr of headerRows) thead.appendChild(tr);
+}
+
+// --- Column visibility -------------------------------------------------------
+// A group's state is derived from its leaves - nothing is stored per group:
+//   'all'  every column under it is shown
+//   'none' every column under it is hidden
+//   'some' mixed (e.g. Salinity with only its Window half hidden)
+function groupState(group) {
+  const shown = group.leaves.filter((l) => l.visible).length;
+  if (shown === 0) return 'none';
+  return shown === group.leaves.length ? 'all' : 'some';
+}
+
+let dt = null;
+
+function setLeavesVisible(targets, show) {
+  const changed = targets.filter((l) => l.visible !== show);
+  if (!changed.length || !dt) return;
+  for (const leaf of changed) leaf.visible = show;
+  dt.columns(changed.map((l) => l.colIdx)).visible(show);
+  if (!show) dropHiddenSortColumns();
+  refreshToolbar();
+}
+
+// Ordering by a column the reader can no longer see would leave rows in an
+// order nothing on screen explains, so drop those sort keys (falling back to
+// the default order if none are left).
+function dropHiddenSortColumns() {
+  const current = dt.order();
+  const kept = current.filter(([idx]) => dt.column(idx).visible());
+  if (kept.length !== current.length) dt.order(kept.length ? kept : DEFAULT_ORDER).draw(false);
+}
+
+// Toolbar button: everything shown -> hide it all; otherwise (hidden or
+// mixed) -> show it all.
+function toggleGroup(group) {
+  setLeavesVisible(group.leaves, groupState(group) !== 'all');
+}
+// Header click: always "hide".
+function hideGroup(group) {
+  setLeavesVisible(group.leaves, false);
+}
+
+// --- Toolbar -----------------------------------------------------------------
+const GLYPH = { all: '\u2611 ', none: '\u2610 ', some: '\u25A3 ' }; // ballot box: checked / empty / partial
+
+// The DOM is built once, and refreshToolbar() only updates each button's
+// state in place - so a button keeps keyboard focus after you press it.
+function buildToolbar() {
+  if (!tree.some((n) => n.isGroup)) return;   // nothing to toggle - leave the toolbar empty
+  const container = document.getElementById('group-toolbar');
+  const label = document.createElement('span');
+  label.className = 'toolbar-label';
+  label.textContent = 'Columns:';
+  container.appendChild(label);
+
+  // One cluster per group: its button, then (if it has sub-groups) a nested
+  // container of clusters for those - recursive, so any depth reads right.
+  function clusterFor(group) {
+    const subgroups = group.children.filter((c) => c.isGroup);
+    const cluster = document.createElement('span');
+    cluster.className = 'cluster' + (subgroups.length ? ' has-children' : '');
+
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'chip';
+    chip.setAttribute('role', 'checkbox');
+    chip.title = `Show or hide: ${group.path}`;
+    chip.addEventListener('click', () => toggleGroup(group));
+    group.chip = chip;
+    cluster.appendChild(chip);
+
+    if (subgroups.length) {
+      const inner = document.createElement('span');
+      inner.className = 'cluster-children';
+      for (const sub of subgroups) inner.appendChild(clusterFor(sub));
+      cluster.appendChild(inner);
+    }
+    return cluster;
+  }
+  for (const node of tree) {
+    if (node.isGroup) container.appendChild(clusterFor(node));
+  }
+  refreshToolbar();
+}
+
+function refreshToolbar() {
+  (function walk(nodes) {
+    for (const n of nodes) {
+      if (!n.isGroup) continue;
+      const state = groupState(n);
+      n.chip.textContent = GLYPH[state] + n.label;
+      n.chip.classList.toggle('collapsed', state === 'none');
+      n.chip.setAttribute('aria-checked', state === 'all' ? 'true' : state === 'none' ? 'false' : 'mixed');
+      walk(n.children);
+    }
+  })(tree);
+}
+
+// --- Table -------------------------------------------------------------------
+try {
+  buildHeader();
+  dt = new DataTable('#catalog', {
+    data: rows,
+    columns: [
+      { data: 'plots', orderable: false, searchable: false, className: 'thumb', render: renderThumb },
+      ...leaves.map(toDtColumn),
+    ],
+    order: DEFAULT_ORDER,
+    pageLength: 25,
+    lengthMenu: [10, 25, 50, 100, 500],
+    autoWidth: false,
+  });
+  buildToolbar();
+} catch (err) {
+  console.error(err);
+  showError('The table could not be built: ' + err.message + ' (details in the browser console)');
+}
+
+// "Decimals": draw() alone only re-uses each cell's cached HTML, so the
+// numbers would not change. invalidate('data') makes DataTables call the
+// render functions again (for the cells already created, and for the search
+// cache), and draw(false) then repaints the current page in place.
+document.getElementById('decimals-input').addEventListener('input', (e) => {
+  const v = parseInt(e.target.value, 10);
+  if (!dt || Number.isNaN(v) || v < 0 || v > 10) return;
+  decimals = v;
+  dt.rows().invalidate('data').draw(false);
+});
+
+// --- Lightbox ----------------------------------------------------------
+const lightbox = document.getElementById('lightbox');
+const lightboxImg = document.getElementById('lightbox-img');
+const caption = lightbox.querySelector('.caption');
+let plotIdx = 0, plotList = [];
+
+lightboxImg.addEventListener('error', () => {
+  const failedSrc = plotList[plotIdx];
+  caption.textContent = `${plotIdx + 1} / ${plotList.length} — failed to load: ${failedSrc.split('/').pop()}`;
+  lightboxImg.src = BROKEN_IMG_PLACEHOLDER;
+});
+
+function showPlot() {
+  lightboxImg.src = plotList[plotIdx];
+  lightboxImg.alt = plotList[plotIdx].split('/').pop();
+  caption.textContent = `${plotIdx + 1} / ${plotList.length} — ${plotList[plotIdx].split('/').pop()}`;
+}
+
+lightboxImg.addEventListener('click', (e) => {
+  e.stopPropagation();
+  plotIdx = (plotIdx + 1) % plotList.length;
+  showPlot();
+});
+
+document.addEventListener('click', (e) => {
+  const img = e.target.closest('td.thumb img');
+  if (img) {
+    plotList = JSON.parse(img.dataset.plots);
+    plotIdx = 0;
+    showPlot();
+    lightbox.classList.add('open');
+  } else if (e.target === lightbox) {
+    lightbox.classList.remove('open');
+  }
+});
+document.addEventListener('keydown', (e) => {
+  if (!lightbox.classList.contains('open')) return;
+  if (e.key === 'Escape') lightbox.classList.remove('open');
+  if (e.key === 'ArrowRight') { plotIdx = (plotIdx + 1) % plotList.length; showPlot(); }
+  if (e.key === 'ArrowLeft') { plotIdx = (plotIdx - 1 + plotList.length) % plotList.length; showPlot(); }
+});
+</script>
+</body>
+</html>

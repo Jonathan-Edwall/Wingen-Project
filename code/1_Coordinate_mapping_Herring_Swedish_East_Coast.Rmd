@@ -1,0 +1,217 @@
+```{r}
+# Build a geographic coordinate file for individuals in a VCF.
+# The script was built for the genotype dataset from Goodall et al. 2026 PNAS (pnas.2526500123.sd02.xlsx).
+
+library(vcfR)
+library(readxl)
+library(dplyr)
+library(writexl)
+
+#github_repository_path <- "/mnt/c/Users/jonat/pipeline/GitHub/Wingen-Project"
+github_repository_path <- file.path("/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project")
+
+vcf_file <- file.path(
+  github_repository_path,
+  "data/raw/herring_2026_Swedish_East_Coast/Goodall2025_Swedish_East_Coast_Dataset_BalticSea_Herring.vcf.gz"
+)
+
+coords_file <- file.path(
+  github_repository_path,
+  "data/raw/herring_2026_Swedish_East_Coast/pnas.2526500123.sd02.xlsx"
+)
+
+output_file <- file.path(
+  github_repository_path,
+  "data/raw/herring_2026_Swedish_East_Coast/individuals_w_mapped_geographical_coordinates_Goodall2025_Swedish_East_Coast_Dataset_BalticSea_Herring.xlsx"
+)
+```
+
+# Extract individuals and Capture_Population from the VCF
+Individual IDs come straight from the VCF's #CHROM header row.
+```{r}
+vcf_header <- read.vcfR(vcf_file, nrows = 1, verbose = FALSE) # nrows = 1: Parse the meta/header lines in full but only one variant record (all we need for just fetching the sample names)
+
+individuals <- colnames(vcf_header@gt)[-1]  # drop the "FORMAT" column
+
+cat(sprintf("%d individuals found in the VCF header\n", length(individuals)))
+```
+
+```{r, eval=FALSE}
+# Only run this instead of the chunk above if vcf_file is a true .bcf, because read.vcfR() only supports VCF/VCF.gz, not BCF.
+# individuals <- system2("bcftools", c("query", "-l", vcf_file), stdout = TRUE) # Use bcftools query -l
+```
+
+Splitting on the first underscore turned out to be too simple: cross-referencing every unmatched individual against `pnas.2526500123.sd02.xlsx`'s `Replicates(n)` column (see chat for the derivation) turned up several genuine historical naming quirks in the raw VCF sample IDs, not typos:
+
+- Stray separators/case inside the code itself (`GA-v1`, `GA_v22` -> `GAV01`, `GAV22`) and missing zero-padding (`Kal6` -> `KAL06`).
+- Six sites use a legacy `A-ST#` code instead of the published `OST0#` - very likely an old encoding issue with "Öst" (Swedish for "east") where only the "Ö" was corrupted to "A" and "ST" came through intact. Confirmed 1:1 by exact individual-count match against Dataset S2's `Replicates(n)` for the otherwise-unclaimed OST codes (15, 11, 50, 19, 24 individuals <-> OST01/02/03/05/06).
+- One site code itself contains an underscore (`OST10_BLE40`, two merged catches), which "before the first underscore" truncates to just `OST10`.
+- `STH36` is split into `STH36A`/`STH36B` (23 vs. 49 replicates) in the coordinates file with no way to tell them apart from the site code alone - a trailing `_a` before `.CEL` is the only signal, and it lines up exactly with `STH36A`'s count.
+
+This resolves all 4,678 individuals against all 150 coordinate rows with zero count mismatches - worth a sanity check against lab records before trusting it fully, since the "why" (especially the Ö theory) is inferred from the data, not confirmed from documentation.
+```{r}
+zero_pad_trailing_digit <- function(x) {
+  # "KAL6" -> "KAL06", but leaves already-2-digit endings like "KAL12" alone
+  ifelse(
+    grepl("[0-9]$", x) & !grepl("[0-9]{2}$", x),
+    sub("([0-9])$", "0\\1", x),
+    x
+  )
+}
+
+individuals_df <- data.frame(Individual = individuals) %>%
+  mutate(
+    has_a_suffix = grepl("_a\\.CEL$", Individual, ignore.case = TRUE),  # needed for the STH36A/B split below
+    Capture_Population = Individual %>%
+      sub("\\.CEL$", "", ., ignore.case = TRUE) %>%
+      sub("_a$", "", .) %>%                    # trailing replicate marker
+      sub("[_-][0-9]+$", "", .) %>%             # trailing individual number
+      gsub("[_-]", "", .) %>%                   # separators inside the code itself
+      toupper() %>%
+      zero_pad_trailing_digit() %>%
+      sub("^AST", "OST", .) %>%                 # legacy code, see note above
+      sub("^OST10BLE40$", "OST10_BLE40", .)      # restore the one compound code
+  ) %>%
+  mutate(
+    Capture_Population = case_when(
+      Capture_Population == "STH36" & has_a_suffix  ~ "STH36A",
+      Capture_Population == "STH36" & !has_a_suffix ~ "STH36B",
+      TRUE ~ Capture_Population
+    )
+  ) %>%
+  select(-has_a_suffix)
+
+# sample counts per population - sanity check, also handy for a figure legend
+individuals_df %>%
+  count(Capture_Population, sort = TRUE, name = "n_individuals") %>%
+  print(n = Inf)
+```
+
+# Read coordinates file
+```{r}
+excel_sheets(coords_file)
+
+pop_coords_raw <- read_excel(coords_file, skip = 1)
+
+colnames(pop_coords_raw)
+```
+
+# Standardize column names
+```{r}
+col_population <- "Capture_Population"
+col_lat        <- "Latitude"
+col_lon        <- "Longitude"
+
+missing_cols <- setdiff(c(col_population, col_lat, col_lon), colnames(pop_coords_raw))
+
+if (length(missing_cols) > 0) {
+  stop(
+    "Column(s) not found in ", basename(coords_file), ": ",
+    paste(missing_cols, collapse = ", "), "\n",
+    "Available columns: ", paste(colnames(pop_coords_raw), collapse = ", ")
+  )
+}
+
+pop_coords <- pop_coords_raw %>%
+  transmute(
+    Capture_Population = as.character(.data[[col_population]]),
+    Latitude            = as.numeric(.data[[col_lat]]),
+    Longitude           = as.numeric(.data[[col_lon]])
+  ) %>%
+  distinct()  # collapse exact duplicate rows
+```
+
+# Check for conflicting Capture_Population entries
+Error check if individuals maps to more than one *distinct* coordinate pair (one individual -> multiple rows).
+```{r}
+dup_pops <- pop_coords %>% count(Capture_Population) %>% filter(n > 1)
+
+cat(sprintf(
+  "Capture_Population values with conflicting coordinates: %d\n\n",
+  nrow(dup_pops)
+))
+
+if (nrow(dup_pops) > 0) {
+  print(pop_coords %>% filter(Capture_Population %in% dup_pops$Capture_Population))
+  stop("Resolve the conflicting Capture_Population rows above in the coordinates file before joining.")
+}
+```
+
+# Join
+left_join() keeps individuals_df's row order, i.e. the VCF's sample order. Maintaining the same sample order as the VCF is required since wingen's window_gd() takes "coords" as a plain matrix aligned positionally to the VCF samples (it's not matching based on sample ID).
+```{r}
+geo_coords <- individuals_df %>%
+  left_join(pop_coords, by = "Capture_Population")
+
+stopifnot(nrow(geo_coords) == length(individuals))
+```
+
+# Overlap statistics
+If nothing at all matched, that's almost always a formatting mismatch (case, whitespace, a different code scheme) rather than genuinely disjoint sets, so this compares the raw values directly instead of guessing again.
+```{r}
+n_matched <- sum(!is.na(geo_coords$Latitude))
+n_total   <- nrow(geo_coords)
+
+cat(sprintf(
+  "Individuals matched to coordinates: %d out of %d\n\n",
+  n_matched, n_total
+))
+
+if (n_matched == 0) {
+  cat("VCF-derived Capture_Population (sample):\n")
+  print(head(sort(unique(individuals_df$Capture_Population)), 15))
+
+  cat("\ncoordinates file Capture_Population (sample):\n")
+  print(head(sort(unique(pop_coords$Capture_Population)), 15))
+
+  n_fuzzy <- sum(
+    trimws(toupper(individuals_df$Capture_Population)) %in%
+      trimws(toupper(pop_coords$Capture_Population))
+  )
+  cat(sprintf(
+    "\n%d / %d individuals would match ignoring case and whitespace\n",
+    n_fuzzy, n_total
+  ))
+} else if (n_matched < n_total) {
+  unmatched_pops <- geo_coords %>%
+    filter(is.na(Latitude)) %>%
+    distinct(Capture_Population)
+
+  cat("Capture_Population codes with no match in the coordinates file:\n")
+  print(unmatched_pops)
+}
+
+# Extra QC: cross-check individual counts per population against
+# Replicates(n) in the coordinates file, if present - this is exactly what
+# uncovered the naming-quirk fixes above, worth keeping as an ongoing check
+# in case the VCF is ever updated.
+if ("Replicates(n)" %in% colnames(pop_coords_raw)) {
+  rep_check <- geo_coords %>%
+    count(Capture_Population, name = "n_in_vcf") %>%
+    left_join(
+      pop_coords_raw %>%
+        transmute(
+          Capture_Population = as.character(.data[[col_population]]),
+          n_expected = `Replicates(n)`
+        ),
+      by = "Capture_Population"
+    ) %>%
+    filter(n_in_vcf != n_expected | is.na(n_expected))
+
+  if (nrow(rep_check) > 0) {
+    cat("\nPopulation(s) where the individual count doesn't match Replicates(n):\n")
+    print(rep_check)
+  } else {
+    cat("\nAll population counts match Replicates(n) in the coordinates file.\n")
+  }
+}
+```
+
+# Save the mapped coordinate file
+Individuals with no match are still written out (with NA coordinates) rather than dropped, so they stay visible for follow-up instead of silently disappearing.
+```{r}
+write_xlsx(geo_coords, output_file)
+
+cat("\nCoordinate file written to:\n")
+cat(output_file, "\n")
+```

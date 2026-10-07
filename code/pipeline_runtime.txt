@@ -1,0 +1,2 @@
+Pipeline Runtimes:
+Step 1: filter_vcf_by_chr_or_gene.sh Runtime: 7 seconds

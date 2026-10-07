@@ -1,0 +1,118 @@
+# env_presets.yaml - which Copernicus Marine datasets the pipeline downloads environmental values from
+# =====================================================================================================
+# Pick one with ENV_PRESET in config/config.yaml (under wingen_params), e.g.   ENV_PRESET: baltic
+# Nothing in the Rmd needs editing to switch. To use another dataset, add a new entry below.
+#
+# What a preset contains
+#   physics:  salinity, temperature (winter + summer means), and eastward/northward current components
+#   oxygen:   dissolved oxygen from a biogeochemical dataset, at ENV_OXYGEN_DEPTH_M or ENV_DEPTH_M
+#   chl:      one satellite dataset that supplies chlorophyll-a (the pipeline takes log() of it)
+#   product / layer   Copernicus Marine product id and dataset (layer) id - see the product's page on
+#                     https://data.marine.copernicus.eu  ("Data access" tab) or run
+#                     CopernicusMarine::cms_product_services("<PRODUCT_ID>") in R
+#   *_var / variable  variable name inside that dataset
+#   first_year / last_year   full calendar years the dataset can supply (null = no limit). The baseline you ask
+#                     for (ENV_BASELINE_START_YEAR / ENV_BASELINE_END_YEAR in config.yaml) is trimmed to this
+#                     range, with a message in the log, so a too-wide request never fails and never silently
+#                     averages over a partial year. The years actually used are written to each gene's JSON
+#                     (run_settings) and are part of the cached file names.
+#
+# Things that apply to every preset
+#   * The downloaded layers are cached in {results_dir}/temp/env_cache. The file names contain product, depth and
+#     years, so switching preset or years downloads new layers instead of reusing old ones. They do NOT contain
+#     the winter/summer month definitions (ENV_WINTER_MONTHS / ENV_SUMMER_MONTHS in the Rmd): if you change those,
+#     use a fresh results_dir.
+#   * The first run with a new preset downloads the data. Test it on one gene first (gene_list_limit: 1 in
+#     config.yaml) so that two genes do not start the same download at the same time.
+#   * Depth: ENV_DEPTH_M: 0 in config.yaml means "top layer". It has only been exercised against the global
+#     GLORYS dataset. If the Baltic preset stops with "Dimension 'elevation' not within available range", set
+#     ENV_DEPTH_M to the centre of the Baltic dataset's first layer (about 0.5) - the error is loud, not silent.
+# =====================================================================================================
+
+presets:
+
+  global:
+    label: "Global: GLORYS12V1 physics (~8 km) + biogeochemical oxygen (1/4 deg) + GlobColour ocean colour (4 km)"
+    use_when: >-
+      Samples outside the Baltic (Atlantic, North Sea). Used for the first prototype catalog. In the Baltic its
+      ~8 km grid misses much of the archipelago coast (many sampling sites then receive a neighbour-filled
+      value), and the global chlorophyll algorithm is known to struggle in the CDOM-rich Baltic coastal water.
+    physics:
+      product: GLOBAL_MULTIYEAR_PHY_001_030
+      layer: cmems_mod_glo_phy_my_0.083deg_P1M-m
+      salinity_var: so
+      temperature_var: thetao
+      current_eastward_var: uo
+      current_northward_var: vo
+      first_year: 1993
+      last_year: 2024
+    oxygen:
+      product: GLOBAL_MULTIYEAR_BGC_001_029
+      layer: cmems_mod_glo_bgc_my_0.25deg_P1M-m
+      variable: o2
+      first_year: 1993
+      last_year: 2024
+    chl:
+      product: OCEANCOLOUR_GLO_BGC_L4_MY_009_104
+      layer: cmems_obs-oc_glo_bgc-plankton_my_l4-multi-4km_P1M
+      variable: CHL
+      first_year: 1998
+      last_year: 2024
+
+  baltic:
+    label: "Baltic: NEMO physics and ERGOM oxygen (~1 nautical mile, 56 levels) + Baltic ocean colour (1 km)"
+    use_when: >-
+      All samples inside the Baltic Sea. Finer grid and a chlorophyll algorithm tuned for Baltic water. Covers
+      roughly 53-65.9 N and 9-30 E, so it returns nothing for e.g. the Skagerrak, and the northern edge sits right
+      at the top of the Bothnian Bay - check "Sample points falling on a masked/NA environmental cell" in the log
+      for the northernmost sites.
+    physics:
+      product: BALTICSEA_MULTIYEAR_PHY_003_011
+      layer: cmems_mod_bal_phy_my_P1M-m
+      salinity_var: so
+      temperature_var: thetao
+      current_eastward_var: uo
+      current_northward_var: vo
+      first_year: 1993
+      last_year: 2024
+    oxygen:
+      product: BALTICSEA_MULTIYEAR_BGC_003_012
+      layer: cmems_mod_bal_bgc_my_P1M-m
+      variable: o2
+      first_year: 1993
+      last_year: 2024
+    chl:
+      product: OCEANCOLOUR_BAL_BGC_L4_MY_009_134
+      layer: cmems_obs-oc_bal_bgc-plankton_my_l4-multi-1km_P1M
+      variable: CHL
+      first_year: 1998
+      last_year: 2024
+
+  # Template for your own preset (copy, rename, fill in; remove the leading '#'):
+  #
+  # my_preset:
+  #   label: "short description shown in the log"
+  #   use_when: "when to use it"
+  #   physics: {product: ..., layer: ..., salinity_var: so, temperature_var: thetao, current_eastward_var: uo, current_northward_var: vo, first_year: 1993, last_year: 2024}
+  #   oxygen:  {product: ..., layer: ..., variable: o2, first_year: 1993, last_year: 2024}
+  #   chl:     {product: ..., layer: ..., variable: CHL, first_year: 1998, last_year: 2024}
+
+# Current speed is sqrt(uo^2 + vo^2) for each monthly layer, then averaged across the baseline.
+# It describes monthly mean flow strength (m/s), not instantaneous speed or the magnitude of the long-term vector.
+# Oxygen is dissolved oxygen concentration (mmol/m^3), averaged across the baseline, without a log transform.
+# Sources: https://documentation.marine.copernicus.eu/PUM/CMEMS-BAL-PUM-003-011-012.pdf
+#          https://documentation.marine.copernicus.eu/PUM/CMEMS-GLO-PUM-001-029.pdf
+
+# =====================================================================================================
+# Other Copernicus Marine variables that exist but are NOT wired in. Checked against the product
+# pages; confirm layer ids with cms_product_services() before use.
+#
+#   BALTICSEA_MULTIYEAR_PHY_003_011 / cmems_mod_bal_phy_my_P1M-m   (already used above, other variables)
+#       bottomT  bottom temperature        siconc  sea-ice concentration (0-1)
+#   BALTICSEA_MULTIYEAR_BGC_003_012 / cmems_mod_bal_bgc_my_P1M-m   (model reanalysis, 56 depth levels)
+#       chl chlorophyll-a (model)   no3 nitrate   nppv net primary production
+#       zsd Secchi depth (water transparency)      (the product also holds phosphate, ammonium, pH, pCO2)
+#   Daily versions (cmems_mod_bal_phy_my_P1D-m, cmems_mod_bal_bgc_my_P1D-m) allow variability measures
+#   (e.g. the standard deviation of salinity across years or months) instead of only means.
+# Adding any of these needs code in section 2.6 of the Rmd (a new layer, cache entry, per-fish value and fit).
+# =====================================================================================================

@@ -1,0 +1,28 @@
+digraph snakemake_dag {
+    graph[bgcolor=white, margin=0];
+    node[shape=box, style=rounded, fontname=sans,                 fontsize=10, penwidth=2];
+    edge[penwidth=2, color=grey];
+	0[label = "all", color = "0.07 0.6 0.85", style="rounded"];
+	1[label = "build_gene_catalog_html", color = "0.13 0.6 0.85", style="rounded"];
+	2[label = "aggregate_gene_summaries", color = "0.00 0.6 0.85", style="rounded"];
+	3[label = "run_wingen_report", color = "0.60 0.6 0.85", style="rounded"];
+	4[label = "filter_vcf_for_gene", color = "0.27 0.6 0.85", style="rounded"];
+	5[label = "extract_neutral_pool", color = "0.20 0.6 0.85", style="rounded"];
+	6[label = "normalize_neutral_markers", color = "0.47 0.6 0.85", style="rounded"];
+	7[label = "plan_neutral_subsets", color = "0.53 0.6 0.85", style="rounded"];
+	8[label = "materialize_neutral_vcfs", color = "0.33 0.6 0.85", style="rounded"];
+	1 -> 0
+	2 -> 0
+	2 -> 1
+	3 -> 2
+	4 -> 3
+	8 -> 3
+	5 -> 3
+	7 -> 3
+	6 -> 5
+	4 -> 7
+	5 -> 7
+	4 -> 8
+	5 -> 8
+	7 -> 8
+}            

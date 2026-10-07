@@ -1,0 +1,19 @@
+# Baltic herring SECD chip - candidate gene/region intervals (Ensembl Ch_v2.0.2, release 108 coordinates)
+# 1-based inclusive coords from Goodall et al. 2026 PNAS (gene rows) and the authors' plotting scripts
+# (inversion rows), converted to 0-based half-open BED. Chromosomes are bare integers, matching the Ensembl
+# GTF and the chip data in the authors' code; if your VCF uses "chr" prefixes: sed 's/^/chr/'.
+# Not yet cross-checked against the real GTF. HERPUD2 = ENSCHAG00020012530 (authors' Fig.5 script).
+# Rows named *_peak_region_* are the wider spans the paper gives for the same locus; Inversion_* rows are
+# multi-Mb regions, not genes.
+6	22282764	24868581	Inversion_chr6
+12	15540271	16261070	MYH_cluster
+12	17826317	25603093	Inversion_chr12
+15	7717898	7721161	SOX11B_gene_body
+15	7717898	7806161	SOX11B_peak_region_incl_upstream
+15	8813383	9323382	TSHR_CEP128_GTF2A1_peak_region
+15	8873381	8908516	TSHR_gene_body
+15	10897682	10910686	ESR2A_gene_body
+17	25805444	27568510	Inversion_chr17
+19	20476428	20622999	HERPUD2_peak_region_incl_lncRNAs
+19	20605933	20613811	HERPUD2_gene_body
+23	16226442	17604273	Inversion_chr23

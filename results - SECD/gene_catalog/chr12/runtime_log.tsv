@@ -1,0 +1,1 @@
+2026-09-28_herring_SECD_MYH_cluster__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_: script runtime: 1753.7	read.vcfR runtime=0.2, wkrig_gd runtime=145.4, window_gd_runtime=110.9, distance_masking_runtime=1358.3, plotting_runtime=81.3

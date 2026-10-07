@@ -1,0 +1,221 @@
+# config.yaml - Wingen gene-catalog pipeline
+
+# Root directory for THIS gene catalog's entire output tree, split into
+# four siblings once a run actually happens:
+#   {results_dir}/.snakemake_gene_catalog/  - Snakemake's own per-gene .done markers
+#   {results_dir}/benchmarks/               - per-gene runtime/memory (Snakemake --benchmark)
+#   {results_dir}/temp/                     - working data: filtered_vcf/, env_cache/, ne_cache/
+#   {results_dir}/results/                  - the deliverable: per-chrom PNGs/JSON,
+#                                              gene_catalog.duckdb/.tsv/.html
+# Nothing under one results_dir is ever read, written, or globbed by a run
+# pointed at a different one, so this is the one knob to change to keep
+# two catalogs from colliding - whether that's two different datasets
+# (herring vs. krill) or two variants of the SAME dataset (e.g. a "cds"
+# catalog and a "body" catalog run from the same input_vcf, which WOULD
+# otherwise share gene IDs and silently overwrite each other's files).
+#
+# Recommended shape: nest under a shared "results/" parent, one subfolder
+# per catalog, rather than sitting bare at the repo root or nesting under
+# "gene_catalog/" instead - "results/" is already the long-standing,
+# .gitignore-able convention for "pipeline output, not pipeline code", one
+# entry covers every current and future catalog, and nesting under
+# "gene_catalog/" would just reintroduce the "gene_catalog/gene_catalog..."
+# stutter that naming the deliverable subfolder "results/" (above) removes:
+#   results_dir: "results/gene_catalog_herring_cds"
+#   results_dir: "results/gene_catalog_herring_body"
+#   results_dir: "results/gene_catalog_krill"
+# Relative paths are resolved against wherever you run `snakemake` from
+# (the repo root, by convention here); an absolute path works too.
+# results_dir: "results/gene_catalog"
+# results_dir: "results/gene_catalog_herring_secd"
+# results_dir: "results/gene_catalog_herring_secd_complete_link"
+# results_dir: "results/gene_catalog_herring_secd_compl_no_strat_AR"
+
+# New folder for the run with the Baltic environmental layers / wider baseline / seed / location rarefaction "auto", so that run is not overwritten:
+# results_dir: "gene_catalog/herring_secd_pi_balt"
+# results_dir: "gene_catalog/herring_secd_pi_rar_10"
+# results_dir: "gene_catalog/herring_secd_ar_rar_10"
+results_dir: "gene_catalog/herring_secd_pi_neutral_v6"
+# Paths - mirrors the old raw_data_dir-based paths directly
+# input_vcf: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/head_chr1_1-1e6_herring_sentieon_125ind_231031.newID.filter.setGT.noIndels.minDP3.0maxDP3.0avg.snpEff.biallelic.vcf.gz"
+# input_vcf: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/herring_sentieon_125ind_231031.newID.filter.setGT.noIndels.minDP3.0maxDP3.0avg.snpEff.biallelic.vcf.gz" # Herring SECD
+input_vcf: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/Goodall2025_Swedish_East_Coast_Dataset_BalticSea_Herring.vcf.gz" # Herring SECD
+
+# sample_coordinates_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/125_individual_info_list_shared_with_media_coordinates.xlsx"
+sample_coordinates_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/individuals_w_mapped_geographical_coordinates_Goodall2025_Swedish_East_Coast_Dataset_BalticSea_Herring.xlsx" # Herring SECD
+
+# domain_type
+#   "ocean" (default) - marine/aquatic species: keep sea cells, mask out land
+#   "land"         - terrestrial species: keep land cells, mask out ocean
+domain_type: "ocean"
+
+# study_species: herring_sentieon_125ind
+study_species: herring_SECD # Herring SECD
+# gene_list_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/unique_genes.txt"  
+gene_list_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/herring_SECD_candidate_genes.bed"  # Herring SECD
+
+# gene_chrom_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/gene_chrom.tsv"  # required if the gene list comes from a txt file or or array; built by code/build_gene_chrom_map.py.
+gene_chrom_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/gene_chrom.tsv"  # Herring SECD
+
+# genes:
+#   - ENSCHAG00000000003
+#   - ENSCHAG00000000004
+
+# optional - caps the resolved gene list to its first N genes, for a
+# quick test run without needing a separate small gene_list_file
+# gene_list_limit: 9
+# gene_list_limit: 1
+
+
+# "all" (default) | "body" | "exonic" | "cds" - narrows each gene's
+# filtered VCF down to a specific annotation scope before it reaches the
+# Rmd, via filter_vcf_by_scope.sh. Requires vcf_annotation_format: snpeff
+# (the "bed" pathway has no ANN to check scope against). See
+# filter_vcf_by_scope.sh's own header comment for what each scope means.
+gene_scope: all
+
+# "snpeff": hand the gene ID and chromosome to filter_vcf_by_chr_or_gene.sh in
+#           gene mode - that script does its own SnpEff-ANN-vs-fallback
+#           detection from the VCF header, not from this flag (see its
+#           own header comment - this name is a bit of a misnomer now)
+# "bed":    a .bed gene_list_file maps each gene to a chr:start-end region, script
+#           is called in chr mode with that region instead
+# vcf_annotation_format: snpeff
+vcf_annotation_format: bed # Herring SECD
+
+
+# Genetic diversity statistic to map, which will be handed to wingen's window_gd(stat) and then carried through everything downstream.
+#   "pi"                 - nucleotide diversity (default)
+#   "Ho"                 - average observed heterozygosity
+#   "biallelic_richness" - average allelic richness across biallelic SNPs
+gd_stat: "pi" # "pi"/"Ho"/"biallelic_richness"
+# gd_stat: "biallelic_richness" # "pi"/"Ho"/"biallelic_richness"
+
+# Optional text overrides (leave commented out to get the defaults below)
+#   gd_label       - long form: plot titles and the heading of gene_catalog.html
+#   gd_label_short - short form: colour-bar/legend titles and the column
+#                    headers in gene_catalog.html (e.g. "π r2", "Ho r2")
+# Defaults:
+#   gd_stat              gd_label                         gd_label_short
+#   pi                   Nucleotide diversity (π)         π
+#   Ho                   Observed heterozygosity (Ho)     Ho
+#   biallelic_richness   Allelic richness (biallelic)     AR
+gd_label: "Nucleotide diversity (π)"
+gd_label_short: "π"
+# gd_label: "Allelic richness (biallelic)"
+# gd_label_short: "AR"
+
+calc_gen_diversity_stats: TRUE
+use_copernicus_marine: TRUE
+
+# Neutral simulations; users provide positions on the cohort VCF's coordinates.
+# Scripts: 1 reads optional marker tables, 2 prepares VCFs with bcftools,
+# 3 samples reproducible subsets; 2 then extracts the planned subset VCFs.
+run_neutral_sim: true  # single toggle for neutral Snakemake rules and RUN_NEUTRAL_SIM in the Rmd
+# markers_file is required only when run_neutral_sim is true and neutral_vcf is unset.
+# Accepts an annotated table, a table already containing only neutral markers,
+# a headerless 1-based CHROM/POS list, or single-base BED intervals.
+markers_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/pnas.2526500123.sd03.xlsx"
+neutral_vcf: null  # already-neutral BGZF VCF; when provided, markers_file and its table settings are ignored
+input_format: "auto"  # auto: .bed[.gz] -> bed, otherwise table; use positions for a headerless CHROM/POS list
+sheet: "Sheet1"
+header_row: "auto"  # detect coordinate headers in XLSX/TSV/CSV; or set a 1-based row number
+chrom_column: 1  # 1-based column number or header name
+pos_column: 2
+# Select the annotation column by its header name (case-insensitive), e.g. TYPE,
+# or by its 1-based column number, e.g. 5 means the fifth column.
+marker_label_column: "TYPE"
+# Keep rows whose marker_label_column equals this text, ignoring case and surrounding whitespace.
+# This is an annotation label, not the toggle that enables neutral simulations.
+neutral_marker_label: "NEUTRAL"
+neutral_only: false  # true: table already contains only neutral markers; ignore marker_label_column/neutral_marker_label
+technical_replicates: 1000  # number of random neutral SNP sets; one saved subset VCF per set
+seed: 42  # configurable base seed; deterministic gene-specific RNG advances between random sets
+# Minimum fraction of requested replicates with a finite correlation, separately
+# for each environmental variable and Pearson/Spearman. 0.9 means >=90 of 100.
+# Missing/non-finite diversity or zero variance can make a correlation undefined;
+# insufficient valid replicates gives unavailable p neutral and neutral thresholds.
+# File/extraction errors stop the workflow; they are not tolerated by this setting.
+min_valid_fraction: 0.9
+extreme_value_percentiles: [95, 99]  # percentile levels for neutral |r| and |rho| cutoffs; e.g. [95], [90, 97.5], or []
+
+
+
+
+
+# # Region of interest, WGS84
+# lat_min: 30 # herring_sentieon_125ind
+# lat_max: 72 # herring_sentieon_125ind
+# lon_min: -25 # herring_sentieon_125ind
+# lon_max: 60 # herring_sentieon_125ind
+
+# Wingen tuning knobs - passed straight through as env vars the Rmd reads
+# via Sys.getenv(). Anything left commented out here falls back to
+# whatever default is hardcoded in the Rmd itself - exactly like leaving
+# the matching export commented out in 2_wingen_create_gene_catalog.sh
+# does today. Only these two are currently active there, so only these
+# two are set here - uncomment more as you actually start tuning them.
+wingen_params:
+  GRD_DISAGG_FACTOR: 3
+  # RESOLUTION_KM: 5 # Good for herring_sentieon_125ind
+
+  # CTR_DISAGG:
+  # WDIM:
+  # FACT:
+  # MIN_N_SAMPLES_PER_CALC:
+  USE_RARIFY: TRUE # TRUE/FALSE
+  RARIFY_N: 10  
+  # RARIFY_N_ITERATIONS:
+  USE_WEIGHTED_KRIGING: TRUE # TRUE/FALSE
+  NMAX_NEIGHBOURS: 15
+  # MAX_INTERP_DIST_MODE:
+  # MAX_INTERP_DIST_KM:
+  # MAX_INTERP_DIST_SCALE:
+  # MAXDIST:
+  # MAX_RANGE_FRAC:
+  # MIN_SAMPLE_COUNT_MODE: # "hardcoded"/"none"
+  # MIN_SAMPLE_COUNT:
+  # MASKING_POLYGON:
+  # SHOW_SAMPLE_POINTS: # # "All"/"count"/"value"
+  # SAMPLE_POINT_SIZE_BY:
+  # SPHERICAL_GRID:
+  HEATMAP_COLOR_PALETTE: "turbo" # "inferno" (default), "mako", "rocket", "turbo", "cividis", "plasma", "viridis" "magma".
+  # CLUSTER_SAMPLE_POINTS:
+  # CLUSTER_SAMPLE_POINTS_KM:
+
+  # LOCATION_RARIFY decides whether the per-LOCATION values (the "Location" columns, and every location-level R2/r/p) are
+  # rarefied to RARIFY_N individuals like the window values are. auto retains all eligible fish for pi and Ho and uses
+  # individual subsampling for biallelic_richness when USE_RARIFY is on. Subsampling changes the estimate with the seed
+  # and can reduce differences in sample size, but smaller clusters retain all fish and genotype call rates can differ.
+  # It does not guarantee equal precision; current location correlations give each eligible cluster equal weight.
+  #   auto  - rarefy locations only for biallelic_richness (when USE_RARIFY is on)   <- recommended
+  #   TRUE  - always, like the windows      FALSE - never
+  LOCATION_RARIFY: auto
+
+  # ---- Reproducibility ---------------------------------------------------------------------------------------
+  # window_gd() rarefies by drawing random individuals, so the window values (maps, window R2) used to change slightly on every
+  # re-run. With a seed they are identical every time. Change the number to see how much they depend on the draw.
+  SEED: 42
+
+  # ---- Environmental data from Copernicus Marine -------------------------------------------------------------
+  # ENV_PRESET picks the datasets: "global" (what the prototype used) or "baltic" - see config/env_presets.yaml for exactly
+  # which products each uses, what they cover, and how to add your own.
+  ENV_PRESET: baltic
+  # Baseline = the years the environmental values are averaged over. Trimmed automatically to what each dataset covers
+  # (the trimming is announced in the log and the years used are written to the gene's JSON). 1998 is the first full year
+  # of the ocean-colour products; 25 years is a defensible "typical conditions" window.
+  ENV_BASELINE_START_YEAR: 1998
+  ENV_BASELINE_END_YEAR: 2022
+  # ENV_DEPTH_M: 0   # top layer for salinity, temperature and current speed
+  ENV_OXYGEN_ENABLED: TRUE
+  ENV_CURRENT_SPEED_ENABLED: TRUE
+  # Oxygen uses the preset's biogeochemical product; current speed uses its physics product.
+  # Both use the baseline above. Oxygen defaults to the same depth as ENV_DEPTH_M.
+  # ENV_OXYGEN_DEPTH_M: 0   # optional oxygen-specific depth, in metres below the surface
+
+  # ---- Optional outputs - set to FALSE to switch one off (no code editing needed) ------------------------------
+  WRITE_PER_LOCATION_TSV: TRUE   # {gene}_per_location.tsv next to the plots: one row per location (the audit trail)
+  WRITE_LOCATION_STATS: TRUE     # n, signed r, 95% CI, p and Spearman rho of each location-level fit -> JSON/TSV/catalog
+  WRITE_RUN_SETTINGS: TRUE       # the settings that produced each gene's numbers -> JSON
+
+

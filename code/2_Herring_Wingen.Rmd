@@ -1,0 +1,3189 @@
+---
+title: "Wingen Genetic Diversity Map"
+output: html_document
+date: "2026-09-27"
+---
+# Preparation
+```{r setup, echo = FALSE, results = 'hide', warning = FALSE}
+# Clean the working environment
+rm(list = ls())
+gc()
+
+#######################################
+# Input Files / Directories:
+######################################
+if (Sys.getenv("ROOT") != "") {
+  github_repository_path <- file.path(Sys.getenv("ROOT"))
+} else {
+  #github_repository_path <- file.path("/mnt/c/Users/jonat/pipeline/GitHub/Wingen-Project")
+  github_repository_path <- file.path("/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project")
+}
+if (!file.exists(github_repository_path)) {
+  stop("Github Repo path not found: ", github_repository_path)
+}
+
+if (Sys.getenv("filtered_vcf_file") != "") {
+  input_vcf_file <- Sys.getenv("filtered_vcf_file")
+} else {
+  # input_vcf_file <- file.path(github_repository_path,"data/raw/genetic_variation_herring/head_chr1_1-1e6_herring_sentieon_125ind_231031.newID.filter.setGT.noIndels.minDP3.0maxDP3.0avg.snpEff.biallelic.vcf.gz")
+  input_vcf_file <- file.path(github_repository_path, "data/raw/herring_2026_Swedish_East_Coast/Goodall2025_Swedish_East_Coast_Dataset_BalticSea_Herring.vcf.gz")
+    # input_vcf_file <- file.path(github_repository_path, "data/raw/zostera_marina/zostera_monitoring_230504_2138_SNPs_all_no_replicates.vcf")
+  #input_vcf_file <- file.path(github_repository_path, "data/preprocessed/gene_test.vcf")
+}
+if (!file.exists(input_vcf_file)) {
+  stop("VCF file not found: ", input_vcf_file)
+}
+
+if (Sys.getenv("sample_coordinates_file") != "") {
+  input_coordinate_file_path <- Sys.getenv("sample_coordinates_file")
+} else {
+  #input_coordinate_file_path <- file.path(github_repository_path,  "data/raw/genetic_variation_herring/125_individual_info_list_shared_with_media_coordinates.xlsx")
+  input_coordinate_file_path <- file.path(github_repository_path,"data/raw/herring_2026_Swedish_East_Coast/individuals_w_mapped_geographical_coordinates_Goodall2025_Swedish_East_Coast_Dataset_BalticSea_Herring.xlsx")
+  # input_coordinate_file_path <- file.path(github_repository_path,"data/raw/zostera_marina/individuals_w_mapped_geographical_coordinates_pop_info.csv")
+  }
+if (!file.exists(input_coordinate_file_path)) {
+  stop("Coordinate file not found: ", input_coordinate_file_path)
+}
+
+study_species <- Sys.getenv("study_species", unset = "Herring_SECD") # dataset_species_name
+
+vcf_filter_value <- Sys.getenv("vcf_filter_value", unset = "") # contains gene name/CHR region etc.
+
+if (Sys.getenv("wingen_output_dir") != "") {
+  output_dir <- Sys.getenv("wingen_output_dir")
+} else {
+  output_dir <- file.path(github_repository_path, "results")
+}
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+#######################################
+# Input Parameters:
+######################################
+
+compute_genetic_diversity_statistics <- as.logical(Sys.getenv("calc_gen_diversity_stats", unset = FALSE)) # [Default: FALSE] 
+
+
+# --- Region of interest (optional) ---
+# Set all four to numeric WGS84 degrees to restrict the analysis to a
+# geographic subpopulation (what used to be the separate Subpopulation
+# script). Leave any of them NULL to run on the full, unfiltered
+# dataset instead (what used to be the separate FullDataset script) -
+# this one script now covers both; nothing else below needs to change
+# between the two cases, since everything from section 1b onward
+# already operates generically on vcf/coords_file_df/sample_order.
+LAT_MIN <- as.numeric(Sys.getenv("LAT_MIN", unset = NA))
+LAT_MAX <- as.numeric(Sys.getenv("LAT_MAX", unset = NA))
+LON_MIN <- as.numeric(Sys.getenv("LON_MIN", unset = NA))
+LON_MAX <- as.numeric(Sys.getenv("LON_MAX", unset = NA))
+ROI_ACTIVE <- !any(is.na(c(LAT_MIN, LAT_MAX, LON_MIN, LON_MAX)))
+######### Defining Raster Creation Parameters for (coords_to_raster) #########
+ctr_disagg <- Sys.getenv("CTR_DISAGG", unset = "") # coords_to_raster(disagg): Disaggregation factor to apply to raster (defaults to NULL) [Default: NULL]
+ctr_disagg <- if (ctr_disagg == "") NULL else as.numeric(ctr_disagg)
+
+# ctr_disagg <- 2
+
+# Set raster resolution
+#
+# Like wdim_value/fact_value above, this is a per-dataset tuning knob, not
+# a universal constant - 2.5 km was arrived at for SECD specifically (see
+# the commented history in the build-raster chunk below: 20 -> 10 -> 5 ->
+# 2.5 km, refined down via preview_gd() as this moved from the original
+# globally-dispersed dataset to SECD's much denser Baltic coastline). A
+# dataset spanning thousands of km at 2.5 km cells produces a grid cell
+# too small to even see in preview_gd() (confirmed: ~1200 cells span the
+# 125-individual dataset's own N-S extent alone, each ~0.08% of a plot's
+# height) - and, more importantly, silently shrinks MAX_INTERP_DIST's
+# window-based default to a small fraction of that dataset's real spacing,
+# which is the same masking failure mode fixed earlier, recurring here for
+# the same underlying reason. RESOLUTION_KM overrides the default below;
+# re-check with preview_gd() (section 2.4) whenever the active dataset
+# changes, same as wdim_value/fact_value.
+
+resolution_m <- as.numeric(Sys.getenv("RESOLUTION_KM", unset = 2.5)) * 1e3 # To-do: Accept decimal inputs of both "." and ","
+
+
+######### Genetic diversity statistic (window_gd(stat = ...)) #########
+# Which statistic window_gd() maps: "pi", "Ho" or "biallelic_richness", unset falls back to "pi"
+#   gd_stat        - Decides what is computed and is the source of gd_key below
+#   gd_label       - long display text: plot titles (Also used as the heading of gene_catalog.html (GD_LABEL))
+#   gd_label_short - short display text: colour-bar/legend titles (Also used as the column headers of gene_catalog.html (GD_LABEL_SHORT))
+# gd_label & gd_label_short are display text only and is what ends up in a file name or a field name.
+# PNG names, the gene_summary.json keys and so, downstream, the TSV headers is built from gd_key instead
+# Note: Comments further talking about "pi" actually references "the chosen statistic" (gd_stat) (with one exception where pi is used as a constant)
+GD_STAT_DEFAULTS <- list(
+  pi                 = list(label = "Nucleotide diversity (\u03c0)", short = "\u03c0"),
+  Ho                 = list(label = "Observed heterozygosity (Ho)", short = "Ho"),
+  biallelic_richness = list(label = "Allelic richness (biallelic)",  short = "AR")
+)
+getenv_utf8 <- function(name) { x <- Sys.getenv(name, unset = ""); Encoding(x) <- "UTF-8"; x }
+
+gd_stat_requested <- getenv_utf8("GD_STAT")
+if (!nzchar(gd_stat_requested)) gd_stat_requested <- "pi"
+# case-insensitive, mapped back to wingen's exact spelling ("ho" -> "Ho")
+gd_stat <- names(GD_STAT_DEFAULTS)[match(tolower(gd_stat_requested), tolower(names(GD_STAT_DEFAULTS)))]
+if (is.na(gd_stat)) {
+  stop("GD_STAT (gd_stat in config.yaml) must be one of: ", paste(names(GD_STAT_DEFAULTS), collapse = ", "),
+       " - got '", gd_stat_requested, "'")
+}
+gd_label <- getenv_utf8("GD_LABEL")
+if (!nzchar(gd_label)) gd_label <- GD_STAT_DEFAULTS[[gd_stat]]$label
+gd_label_short <- getenv_utf8("GD_LABEL_SHORT")
+if (!nzchar(gd_label_short)) gd_label_short <- GD_STAT_DEFAULTS[[gd_stat]]$short
+gd_key <- tolower(gd_stat)   # "pi", "ho", "biallelic_richness": file names and gene_summary.json field names
+
+
+######### Defining Window settings for window_gd() #########
+#### Window settings for window_gd() ####
+#
+# wdim = 7 was tuned for the full, globally-dispersed dataset's sample
+# density; a tighter region of interest will usually support a smaller
+# wdim (denser local sampling, less need to reach far for a window's
+# worth of samples) - re-check with the preview_gd() grid search in
+# section 2.4 whenever LAT/LON_MIN/MAX change.
+wdim_value <- as.numeric(Sys.getenv("WDIM", unset = 7))
+fact_value <- as.numeric(Sys.getenv("FACT", unset = 3))
+min_n_samples_per_calc <- as.numeric(Sys.getenv("MIN_N_SAMPLES_PER_CALC", unset = 2)) # Minimum number of samples to use in calculations (any focal cell with a window containing less than this number of samples will be assigned a value of NA; defaults to 2). [Default: 2]
+
+use_rarify <- as.logical(Sys.getenv("USE_RARIFY", unset = FALSE)) # [Default: FALSE] 
+# use_rarify <- TRUE
+rarify_n <- as.numeric(Sys.getenv("RARIFY_N", unset = min_n_samples_per_calc)) # rarify_n: If rarify = TRUE, number of points to use for rarefaction (defaults to min_n). [Default: min_n]
+# rarify_n <- 4
+rarify_n_iterations <- as.numeric(Sys.getenv("RARIFY_N_ITERATIONS", unset = 5)) # If rarify = TRUE, number of iterations to use for rarefaction (defaults to 5). Can also be set to "all" to use all possible combinations of samples of size rarify_n within the window. [Default: 5]
+# rarify_n_iterations <-"all" # use all possible combinations of samples of size rarify_n within the window
+
+
+######### Reproducibility + optional outputs (all set in config.yaml -> wingen_params) #########
+# SEED: window_gd() rarefies by drawing random subsets of individuals (rarify_n individuals x rarify_n_iterations draws per
+# window), so without a fixed seed every re-run of the same gene gives slightly different window values.
+# set.seed(seed_value) is called immediately before window_gd() in section 3, and again before the per-location
+# values in section 4. The per-location (Track B) values involve random numbers only when LOCATION_RARIFY (below)
+# rarefies them; by default (pi, Ho) they are computed from all individuals and never change between runs.
+seed_value <- as.integer(Sys.getenv("SEED", unset = 42))
+
+# Optional outputs. Each can be switched off from config.yaml without editing any code (FALSE = skipped):
+#   WRITE_PER_LOCATION_TSV - {gene}_per_location.tsv next to the plots: one row per location (audit trail)
+#   WRITE_LOCATION_STATS   - n, signed r, 95% CI, p and Spearman rho of each location-level fit, added to the JSON
+#   WRITE_RUN_SETTINGS     - the settings that produced this gene's numbers, added to the JSON
+# LOCATION_RARIFY: whether the per-location values (the "Location" columns, and everything fitted against the
+# environment at location level) are rarefied to rarify_n individuals like the window values are. "auto" (default) = only
+# for biallelic_richness, which depends on sample size; pi and Ho are computed from all individuals, which keeps them
+# deterministic and as precise as the data allow. TRUE/FALSE force it either way. See section 4 for the details.
+location_rarify_setting <- tolower(Sys.getenv("LOCATION_RARIFY", unset = "auto"))
+location_rarify <- switch(location_rarify_setting,
+  auto    = use_rarify && gd_stat == "biallelic_richness",
+  "true"  = TRUE,
+  "false" = FALSE,
+  stop("LOCATION_RARIFY must be auto, TRUE or FALSE - got '", location_rarify_setting, "'"))
+cat("Rarefaction: windows =", use_rarify, "| locations =", location_rarify, "(LOCATION_RARIFY =", location_rarify_setting, ")\n")
+if (gd_stat == "biallelic_richness" && !location_rarify) {
+  message("WARNING: gd_stat = biallelic_richness with an un-rarefied location statistic - richness grows with the number ",
+          "of individuals, so locations with different numbers of individuals are not comparable. Use LOCATION_RARIFY: auto or TRUE.")
+}
+
+WRITE_PER_LOCATION_TSV <- as.logical(Sys.getenv("WRITE_PER_LOCATION_TSV", unset = TRUE))
+WRITE_LOCATION_STATS   <- as.logical(Sys.getenv("WRITE_LOCATION_STATS",   unset = TRUE))
+WRITE_RUN_SETTINGS     <- as.logical(Sys.getenv("WRITE_RUN_SETTINGS",     unset = TRUE))
+
+
+######### Defining kriging parameters for wkrig_gd() #########
+# grd_disagg_factor (previously used in krig_gd(disagg_grd), here used in terra:s disagg function instead since wkrigd_gd lacks this functionality:
+# subdivides each lyr cell into grd_disagg_factor^2 sub-cells for smoothing (finer pixel spacing) in the kriging prediction grid  
+# To disable (grd stays at lyr's native resolution), set to 1.
+grd_disagg_factor <- as.numeric(Sys.getenv("GRD_DISAGG_FACTOR", unset = 3)) # Ries et al.: disagg_grd = 3-5
+# grd_disagg_factor <- 7
+
+use_weighted_kriging <- as.logical(Sys.getenv("USE_WEIGHTED_KRIGING", unset = FALSE))
+# use_weighted_kriging <- TRUE
+
+nmax_neighbours <- as.numeric(Sys.getenv("NMAX_NEIGHBOURS", unset = Inf))
+# nmax_neighbours <- 15 # wkrig_gd(nmax): Maximum number of neighboring observations to use for kriging at each prediction location
+
+# weight_r: Optional SpatRaster with sample counts per cell, used to compute location-specific measurement variance and weights for kriging. If NULL (default), no weighting is applied. [Default: NULL]
+
+# MAX_INTERP_DIST_MODE picks how the interpolation distance-from-sample cutoff  (section 5's final mask_gd(..., dist_to_sample, maxval = MAX_INTERP_DIST)) gets set:
+#   "computed"  - window-footprint reach (default) - see window_based_reach_km below
+#   "clustered" - median nearest-neighbor distance between clustered sample locations (clustered_reach_km below).
+              # computed on cluster CENTROIDS (see CLUSTER_THRESHOLD_KM / centroids_v above), specifically so near-duplicate points at the same site don't deflate the median.
+              # Representing the "typical real spacing between sampling sites" 
+#   "hardcoded" - predefined MAX_INTERP_DIST_KM value you choose
+#   "none"      - unlimited distance value (No distance based pruning) -> mask_gd's maxval=Inf
+#                 In this case, only a species-range polygon for masking would prune away interpolated values from the map or a sample-count cutoff of any kind, which would then create a fully smoothed continous heatmap with "no gaps"
+MAX_INTERP_DIST_MODE <- Sys.getenv("MAX_INTERP_DIST_MODE", unset = "computed")
+MAX_INTERP_DIST_OVERRIDE_KM <- as.numeric(Sys.getenv("MAX_INTERP_DIST_KM", unset = NA))
+
+# Simple variable used for "growing the interpolated area by X%".
+# This variable multiplies works on whatever MAX_INTERP_DIST mode (see above) lands on.
+# MAX_INTERP_DIST_SCALE is here used as a linear factor, so for sqrt(1 + X) (e.g. 1.2247 would roughly increase the area by a nominal +50%) 
+MAX_INTERP_DIST_SCALE <- as.numeric(Sys.getenv("MAX_INTERP_DIST_SCALE", unset = 1))
+
+# maxdist here is a SEPARATE knob from MAX_INTERP_DIST (not a duplicate, easy to conflate since both are "how far is too far"). maxdist only reaches gstat's neighbor search inside
+# wkrig_gd() (r_pts there is built from wgd_confident[[gd_layer_name]]'s CELL
+# CENTROIDS, via terra::as.data.frame(r, xy = TRUE) - confirmed from
+# wkrig_gd.R source), i.e. "how far from a surviving WINDOW CELL is this
+# prediction". MAX_INTERP_DIST's final mask instead measures distance to
+# the nearest actual raw sample coordinate (dist_to_sample, from
+# coords_wgs84). A window cell's centroid can sit up to roughly half a
+# window-width from the real samples that fed it, so these are not the
+# same test and one is not redundant with the other.
+# see the note by the final mask in section 5. Defaults to a computed
+# value derived once MAX_INTERP_DIST is known (section 1.4, right after
+# MAX_INTERP_DIST_SCALE is applied) - not resolved here, since that
+# depends on values not computed yet at this point in the script. Set
+# MAXDIST explicitly (including to Inf, wingen's own raw default) to
+# skip that and use your own value instead.
+
+maxdist <- as.numeric(Sys.getenv("MAXDIST", unset = NA)) # Maximum distance to consider for neighboring observations. Left NA here (resolved in section 1.4) unless explicitly set. If set together with nmax, both parameters limit the number of neighbors. [Default when explicitly set to Inf: Inf]
+max_range_frac <- as.numeric(Sys.getenv("MAX_RANGE_FRAC", unset = 0.5)) # Numeric. Maximum fraction of the range parameter to consider for neighboring observations (default: 0.5). This can help to limit the influence of distant points. [Default: 0.5]
+
+######### Defining Masking parameters for mask_gd() #########
+# MIN_SAMPLE_COUNT_MODE picks how minval_sample_count gets set. It's used
+# in TWO places with two different roles:
+#   * pre-kriging  (wgd_confident): protects the variogram fit itself, since
+#     gstat::variogram() uses every non-NA cell in r regardless of maxdist/
+#     nmax -> this is the only "lever" that keeps a low-support cell from
+#     shaping the fitted spatial model.
+#   * post-kriging (mgd_honest): re-applies that same coarse-cell verdict to
+#     the fine kriged surface via nearest-neighbor resample - a proxy for
+#     "was the nearest original window well-supported", not an independent
+#     measure of THIS pixel's own interpolation uncertainty (wkrig_gd()
+#     computes kriging variance internally via gstat but never returns it,
+#     confirmed from source - var1.var is discarded, only var1.pred is
+#     kept, even with model_output = TRUE - so no more direct per-pixel
+#     measure is available through wingen as it stands).
+# Modes:
+#   "hardcoded" - User set value for MIN_SAMPLE_COUNT_VALUE will be used (default, matches prior
+#                 behavior; see the sample-count-at-real-points diagnostic
+#                 above for picking a defensible one from real numbers
+#                 rather than a guess)
+#   "none"      - no sample-count-based masking at all, at either stage.
+#                 mask_gd's minval = 0 is a no-op (sample_count is never
+#                 negative). Together with MAX_INTERP_DIST_MODE = "none",
+#                 this reproduces a fully smoothed and continous heatmap where only a species-range polygon constrained the map,
+#                 nothing else. Kept as a genuinely separate toggle from
+#                 MAX_INTERP_DIST_MODE on purpose, same reasoning as
+#                 maxdist above: one is about distance, this is about
+#                 sample count, and folding them into one flag would
+#                 recreate the exact conflation both toggles exist to
+#                 untangle.
+MIN_SAMPLE_COUNT_MODE <- Sys.getenv("MIN_SAMPLE_COUNT_MODE", unset = "none") # "hardcoded"/"none"
+MIN_SAMPLE_COUNT_VALUE <- as.numeric(Sys.getenv("MIN_SAMPLE_COUNT", unset = 2))
+
+minval_sample_count <- switch(MIN_SAMPLE_COUNT_MODE,
+  "none" = {
+    cat("MIN_SAMPLE_COUNT_MODE = 'none': no sample-count-based masking, at either stage (Ries et al. (2023)-style)\n")
+    0
+  },
+  "hardcoded" = {
+    cat("Using MIN_SAMPLE_COUNT:", MIN_SAMPLE_COUNT_VALUE, "\n")
+    MIN_SAMPLE_COUNT_VALUE
+  },
+  stop("MIN_SAMPLE_COUNT_MODE must be 'hardcoded' or 'none' - got: '", MIN_SAMPLE_COUNT_MODE, "'")
+) # mask_gd(minval): If y is a Raster object, value of y below which to mask.
+
+masking_polygon_file_path <- Sys.getenv("MASKING_POLYGON", unset = NA)
+# masking_polygon_file_path <- file.path(github_repository_path,"data/raw/herring_2026_Swedish_East_Coast/potential_spawning_areas_for_herring_PBS_EFH/EFH_Herring.tif") 
+
+# Checking if the masking file exist
+if (!is.na(masking_polygon_file_path)) {
+    if (!file.exists(masking_polygon_file_path)) {
+    stop("Masking polygon file not found: ", masking_polygon_file_path)
+  }
+} 
+
+#### Plot Display settings ####
+# Option for overlaying the sample locations of the empirical data points on the final masked pi map (section 6), where the size of the data points is proportional to the number of individuals sharing each coordinate
+# TRUE/FALSE only.
+SHOW_SAMPLE_POINTS <- as.logical(Sys.getenv("SHOW_SAMPLE_POINTS", unset = TRUE))
+# SHOW_SAMPLE_POINTS <- "FALSE"
+
+# Which statistic controls dot size when SHOW_SAMPLE_POINTS is on:
+#   "count" - number of individuals sharing each location (or cluster)
+#   "value" - the empirical, pre-kriging pi value there instead (from wgd). Lets the user compare the raw windowed value directly against the interpolated surface.
+#   "All"   - Creates both "count" and "value" plots
+# Only read when SHOW_SAMPLE_POINTS is TRUE; "count" or "value" only.
+SAMPLE_POINT_SIZE_BY <- Sys.getenv("SAMPLE_POINT_SIZE_BY", unset = "All") # "All"/"count"/"value"
+
+# Renders plots with an orthographic display projection instead of plain
+# lat/long - curves the graticule (grid lines), visually emphasizing that
+# the map is a 2D projection of a 3D surface. Display-only: doesn't touch
+# any underlying raster or computation, purely how coord_sf() draws it.
+# TRUE/FALSE only, same as SHOW_SAMPLE_POINTS.
+SPHERICAL_GRID <- as.logical(Sys.getenv("SPHERICAL_GRID", unset = FALSE))
+
+# Color scale of the heatmaps (This setting won't however affect the sample-count layer map, since it keeps its own separate "viridis" choice regardless)
+# Values: Any scale_fill_viridis_c() option works: "inferno" (default), "mako", "rocket", "turbo", "cividis", "plasma", "viridis" "magma".
+# mako/rocket are good options for avoiding the default inferno's tendency to have the highest intensity of bright-yellow to blend into the light background.
+HEATMAP_COLOR_PALETTE <- Sys.getenv("HEATMAP_COLOR_PALETTE", unset = "inferno") # "inferno"/"mako"/"rocket"/"turbo"/"cividis"/"plasma"/"viridis"/"magma".
+# HEATMAP_COLOR_PALETTE <- "turbo"
+# HEATMAP_COLOR_PALETTE <- "mako"
+# HEATMAP_COLOR_PALETTE <- "rocket"
+
+# Optional: instead of one dot per raw distinct coordinate, group sites
+# within CLUSTER_SAMPLE_POINTS_KM of each other into a single dot
+# (centroid position, summed count) before plotting - repeat visits to
+# the same ground can sit just metres to a couple km apart (see section
+# 1.4's clustering note) and would otherwise draw as overlapping or
+# misleading dots at map scale. A fully separate computation from section
+# 1.4's own clustering (CLUSTER_THRESHOLD_KM) - independent on purpose,
+# so changing one never silently changes the other. Off by default: shows
+# every raw distinct coordinate as its own dot. TRUE/FALSE only, same as
+# SHOW_SAMPLE_POINTS.
+CLUSTER_SAMPLE_POINTS <- as.logical(Sys.getenv("CLUSTER_SAMPLE_POINTS", unset = FALSE))
+CLUSTER_SAMPLE_POINTS_KM <- as.numeric(Sys.getenv("CLUSTER_SAMPLE_POINTS_KM", unset = 2))
+
+
+# # Naming prefix for every output file - encodes region (full vs subpop)
+# # and window settings, so batch runs across different ROIs/wdim/fact
+# # combinations never collide.
+# region_tag <- if (ROI_ACTIVE) "subpop" else "full"
+# #output_prefix <- paste0(format(Sys.Date(), "%Y-%m-%d"), "_herring_", region_tag, "_wdim", wdim_value, "_fact", fact_value, "_")
+# 
+# # Studied species, for plot titles
+# #study_species <- "Herring"
+# study_species <- "Herring (SECD)"
+# 
+# # Define naming prefix of every output file
+# if (Sys.getenv("vcf_filter_mode") != "" & Sys.getenv("vcf_filter_value") != "") {
+#   output_prefix <- paste0(format(Sys.Date(), "%Y-%m-%d"),"_",study_species,"_subpop_gene_test_bp_")
+#   output_prefix <- paste0(format(Sys.Date(), "%Y-%m-%d"),"_",study_species,"_subpop_",vcf_filter_value,"_")
+# } else {
+#     #output_prefix <- paste0(format(Sys.Date(), "%Y-%m-%d"),"_herring_subpop_gene_test_bp_")
+#     #output_prefix <- paste0(format(Sys.Date(), "%Y-%m-%d"),"_herring_subpop_chr_1_bp_")
+#     output_prefix <- paste0(format(Sys.Date(), "%Y-%m-%d"),"_",study_species,"_subpop_","wdim",wdim_value,"_fact",fact_value,"_chr_1_bp_")
+# }
+
+############ Herring Temporary #############
+# MIN_SAMPLE_COUNT_MODE <- "none"
+# minval_sample_count <- 0
+# MAX_INTERP_DIST_SCALE <- 1.5
+# # SPHERICAL_GRID <- TRUE
+# study_species <- "Herring_SECD"
+####################################
+
+# Define region tag for filenames
+# TRUE  -> "_subpop_"
+# FALSE -> "_"
+region_tag <- if (ROI_ACTIVE) "_subpop_" else "_"
+
+
+######### Temporary code to easily run the 125 ind dataset #########
+# input_vcf_file <- file.path(github_repository_path,"data/raw/genetic_variation_herring/head_chr1_1-1e6_herring_sentieon_125ind_231031.newID.filter.setGT.noIndels.minDP3.0maxDP3.0avg.snpEff.biallelic.vcf.gz")
+# #input_vcf_file <- file.path(github_repository_path,"data/raw/genetic_variation_herring/herring_sentieon_125ind_231031.newID.filter.setGT.noIndels.minDP3.0maxDP3.0avg.snpEff.biallelic.vcf.gz")
+# input_coordinate_file_path <- file.path(github_repository_path,  "data/raw/genetic_variation_herring/125_individual_info_list_shared_with_media_coordinates.xlsx")
+# resolution_m <- 5 * 1e3
+# study_species <- "Herring_125_ind_"
+# # Define the coordinates for the studied geographical region of interest in (regular) WGS84 coordinates (latitude, longitude)
+# # Latitude Coordinates
+# LAT_MIN <- 30
+# LAT_MAX <- 72
+# # Longitude Coordinates
+# LON_MIN <- -25
+# LON_MAX <- 60 # Ural mountains in Russia roughly
+# ROI_ACTIVE <- !any(is.na(c(LAT_MIN, LAT_MAX, LON_MIN, LON_MAX)))
+# region_tag <- if (ROI_ACTIVE) "_subpop_" else "_"
+#####################################################################
+######### Temporary code to easily run zostera marina dataset #########
+# input_vcf_file <- file.path(github_repository_path, "data/raw/zostera_marina/zostera_monitoring_230504_2138_SNPs_all_no_replicates.vcf")
+# input_coordinate_file_path <- file.path(github_repository_path,"data/raw/zostera_marina/individuals_w_mapped_geographical_coordinates_pop_info.csv")
+# # SPHERICAL_GRID <- TRUE
+# MIN_SAMPLE_COUNT_MODE <- "none"
+# minval_sample_count <- 0
+# MAX_INTERP_DIST_SCALE <- 1.5
+# compute_genetic_diversity_statistics <- TRUE
+# study_species <- paste0("zostera_marina")
+
+# # Ries et al mimic with masking polygon:
+# MAX_INTERP_DIST_MODE <- "none"
+# MIN_SAMPLE_COUNT_MODE <- "none"
+# masking_polygon_file_path <- file.path(github_repository_path,"data/raw/zostera_marina/zostera_marina_distribution_2016-2021_HOLAS_3/EC_22.tif")
+# input_vcf_file <- file.path(github_repository_path, "data/raw/zostera_marina/zostera_monitoring_230504_2138_SNPs_all_no_replicates.vcf")
+# input_coordinate_file_path <- file.path(github_repository_path,"data/raw/zostera_marina/individuals_w_mapped_geographical_coordinates_pop_info.csv")
+# study_species <- "zostera_marina_cont_interpol_"
+# study_species <- "zostera_marina_ries_window_test_",
+#####################################################################
+#####################################################################
+######### Temporary code to easily run fucus vesiculosus dataset #########
+# input_vcf_file <- file.path(github_repository_path, "data/raw/fucus_vesiculosus/Fucus_vesiculosus_SNP_data.vcf")
+# input_coordinate_file_path <- file.path(github_repository_path,"data/raw/fucus_vesiculosus/individuals_w_mapped_geographical_coordinates_fucus_vesiculosus_table_s1_coordinates.xlsx")
+# # Andreas preferred study region:
+# #grd_disagg_factor <- 1 # Temp for speeding up computation
+# # Latitude Coordinates
+# LAT_MIN <- 53
+# LAT_MAX <- 70
+# # Longitude Coordinates
+# LON_MIN <- 9.5 # Splits danmark in half
+# LON_MAX <- 35 # Sankt petersburg roughly
+# ROI_ACTIVE <- !any(is.na(c(LAT_MIN, LAT_MAX, LON_MIN, LON_MAX)))
+# region_tag <- if (ROI_ACTIVE) "_subpop_" else "_"
+# 
+# MIN_SAMPLE_COUNT_MODE <- "none"
+# minval_sample_count <- 0
+# MAX_INTERP_DIST_SCALE <- 1.5
+# # SPHERICAL_GRID <- TRUE
+# study_species <- "fucus_vesiculosus"
+#####################################################################
+#####################################################################
+######### Temporary code to easily run idotea balthica dataset #########
+# input_vcf_file <- file.path(github_repository_path, "data/raw/idotea_balthica/doi_10_5061_dryad_xksn02vbk__v20191223/Ibalthica_2014_final_genotype_dataset_33774loci.vcf")
+# input_coordinate_file_path <- file.path(github_repository_path,"data/raw/idotea_balthica/doi_10_5061_dryad_xksn02vbk__v20191223/individuals_w_mapped_geographical_coordinates_idotea_balthica_table1_coordinates.xlsx")
+
+# study_species <- "idotea_balthica"
+# MIN_SAMPLE_COUNT_MODE <- "none"
+# minval_sample_count <- 0
+# MAX_INTERP_DIST_SCALE <- 1.5
+# # SPHERICAL_GRID <- TRUE
+######################################################################
+
+if (use_weighted_kriging){
+  weighted_kriging_text <- "_wkriging"
+} else {
+  weighted_kriging_text <- ""
+}
+
+if (use_rarify){
+  rarify_window_calc_text <- paste0("_rarify_n",rarify_n,"_it",rarify_n_iterations)
+} else {
+  rarify_window_calc_text <- ""
+}
+
+if (!is.null(ctr_disagg)) {
+  coords_to_raster_disagg_text <-  paste0("ctr_disagg",ctr_disagg,"_")
+} else {
+  coords_to_raster_disagg_text <- ""
+}
+# File prefix text describing the plot settings + resolution
+if (SPHERICAL_GRID){
+  plot_settings_text <- paste0("spherical_palet_",HEATMAP_COLOR_PALETTE,"_",MAX_INTERP_DIST_SCALE,"_scale_", signif(resolution_m /1e3, digits=2),"km_res")
+} else {
+  plot_settings_text <- paste0("palet_",HEATMAP_COLOR_PALETTE,"_",MAX_INTERP_DIST_SCALE,"_scale_", signif(resolution_m /1e3, digits=2),"km_res")
+}
+
+
+if (compute_genetic_diversity_statistics == TRUE) {
+  date_txt <-"" # Skipping dating for gene catalog runs
+} else {
+  date_txt <- paste0(format(Sys.Date(), "%Y-%m-%d"),"_")
+ }
+
+
+# Define naming prefix of the output files
+if (Sys.getenv("vcf_filter_mode") != "" & Sys.getenv("vcf_filter_value") != "" & Sys.getenv("gene_scope") != "all") {
+  
+  output_prefix <- paste0(
+    date_txt,
+    study_species,
+    "_", Sys.getenv("vcf_filter_value"),
+    "_", Sys.getenv("gene_scope"),
+    region_tag,
+    plot_settings_text,
+    coords_to_raster_disagg_text,
+    "wdim", wdim_value,
+    "_fact", fact_value,
+    "_minn",min_n_samples_per_calc,
+    rarify_window_calc_text,
+    "_disagg_grd", grd_disagg_factor,
+    weighted_kriging_text,
+    "_nmax", nmax_neighbours,
+    "_minval", minval_sample_count,    
+    "_"
+  )
+  
+} else if (Sys.getenv("vcf_filter_mode") != "" & Sys.getenv("vcf_filter_value") != "") {
+  
+  output_prefix <- paste0(
+    date_txt,
+    study_species,
+    "_", Sys.getenv("vcf_filter_value"),
+    region_tag,
+    plot_settings_text,
+    coords_to_raster_disagg_text,
+    "wdim", wdim_value,
+    "_fact", fact_value,
+    "_minn",min_n_samples_per_calc,
+    rarify_window_calc_text,
+    "_disagg_grd", grd_disagg_factor,
+    weighted_kriging_text,
+    "_nmax", nmax_neighbours,
+    "_minval", minval_sample_count,    
+    "_"
+  )
+  
+} else {
+  
+  output_prefix <- paste0(
+    date_txt,
+    study_species,
+    region_tag,
+    plot_settings_text,
+    coords_to_raster_disagg_text,
+    "wdim", wdim_value,
+    "_fact", fact_value,
+    "_minn",min_n_samples_per_calc,
+    rarify_window_calc_text,
+    "_disagg_grd", grd_disagg_factor,
+    weighted_kriging_text,
+    "_nmax", nmax_neighbours,
+    "_minval", minval_sample_count,
+    "_"
+  
+  )
+}
+
+
+# ---------------------------------------------------------------------------
+# Plot titles for chromosome-/coordinate-/gene-filtered runs
+# ---------------------------------------------------------------------------
+# When the VCF was filtered (vcf_filter_mode AND vcf_filter_value both set -
+# the same condition that puts the filter value into output_prefix above),
+# the final pi maps say WHAT was filtered in the title itself, not only in
+# the filename:
+#
+#   <filter> <study_species> : Nucleotide diversity (pi) (Subpop)
+#
+#   <filter>   vcf_filter_value as given: a gene ID (ENSCHAG00000000002), a
+#              chromosome (chr12) or a region (chr8:1000000-5000000). A
+#              gene_scope other than "all" is appended in parentheses,
+#              e.g. "ENSCHAG00000000002 (exonic)".
+#   (Subpop)   only when the lat/long region of interest is active
+#              (LAT_MIN/LAT_MAX/LON_MIN/LON_MAX all set).
+#
+# Unfiltered runs are unchanged: with no filter active, make_gd_title()
+# returns whatever title it is handed, so those keep their existing titles.
+filter_active <- Sys.getenv("vcf_filter_mode") != "" && Sys.getenv("vcf_filter_value") != ""
+
+# Unset and empty gene_scope both mean "no narrowing", same as "all".
+gene_scope_value <- Sys.getenv("gene_scope", unset = "all")
+if (gene_scope_value == "") gene_scope_value <- "all"
+gene_scope_labels <- c(body = "gene body", exonic = "exonic", cds = "CDS")  # how each scope reads in a title
+
+filter_label <- ""
+if (filter_active) {
+  filter_label <- Sys.getenv("vcf_filter_value")
+  if (gene_scope_value != "all") {
+    scope_label <- if (gene_scope_value %in% names(gene_scope_labels)) gene_scope_labels[[gene_scope_value]] else gene_scope_value
+    filter_label <- paste0(filter_label, " (", scope_label, ")")
+  }
+}
+
+# Longer titles get a line break after the colon. Measured on a 10 in wide figure: a one-line
+# title of ~80 characters fits, but with a gene scope added ("ENSCHAG00000000002 (gene body) ...",
+# ~90 characters) it reaches or runs past the right edge on tall/narrow map panels (e.g. the Baltic).
+max_title_chars <- 82
+
+# default_title: the title the plot had before this feature (used as-is when no filter is active).
+# suffix: extra text for a plot variant that must be told apart from the final map (the unmasked one).
+make_gd_title <- function(default_title, suffix = "") {
+  if (!filter_active) return(default_title)
+  title_head <- paste0(filter_label, " ", study_species, " :")
+  title_tail <- paste0(gd_label, if (ROI_ACTIVE) " (Subpop)" else "", suffix)
+  one_line   <- paste(title_head, title_tail)
+  if (nchar(one_line) > max_title_chars) paste(title_head, title_tail, sep = "\n") else one_line
+}
+
+
+knitr::opts_chunk$set(echo = TRUE)
+start_time <- Sys.time()
+```
+
+<!--
+One script, two modes, controlled entirely by LAT/LON_MIN/MAX above:
+  - all four NULL  -> full, unfiltered dataset
+  - all four set   -> restricted to that lat/long box (a "subpopulation")
+Everything from section 1b onward is unchanged either way - it already
+operates generically on vcf/coords_file_df/sample_order, so restricting
+those three objects once, early (section 1.2), is enough.
+
+Two automatic masks are used for display:
+  minval_sample_count - cells with too few real samples nearby
+  MAX_INTERP_DIST  - cells too far from any real sample at all
+-->
+# Loading Libraries
+```{r libraries}
+library(terra)
+library(rnaturalearth)
+library(wingen)
+library(vcfR)
+library(sf)
+library(readxl)
+library(ggplot2)
+library(CopernicusMarine)  # environmental layers - section 2.6
+library(lubridate)         # month() extraction for the winter/summer split - section 2.6
+```
+# 1. Data Preparation
+
+```{r location_statistics_functions, include=FALSE}
+# Location estimators used by the observed gene analysis and, when requested,
+# by neutral subsets. These are available regardless of RUN_NEUTRAL_SIM.
+make_location_draws <- function(groups, samples, min_n, rarefy, rarefy_n, iterations, seed) {
+  if (length(seed) != 1L || !is.finite(seed) || seed < 0 || seed > .Machine$integer.max ||
+      min_n < 1 || rarefy_n < 1 || iterations < 1) stop("Invalid location sampling settings")
+  set.seed(seed)
+  lapply(groups, function(ids) {
+    ids <- intersect(ids, samples)
+    if (length(ids) < max(min_n, 2)) return(list())
+    if (!rarefy || length(ids) <= rarefy_n) return(list(ids))
+    replicate(iterations, sample(ids, rarefy_n), simplify = FALSE)
+  })
+}
+
+location_gd_from_draws <- function(x, draws, statistic) {
+  vapply(draws, function(location) {
+    if (!length(location)) return(NA_real_)
+    values <- vapply(location, function(ids) statistic(x[ids, , drop = FALSE]), numeric(1))
+    # Retain the existing policy: a failed draw makes that location unavailable.
+    mean(values)
+  }, numeric(1))
+}
+
+location_association <- function(y, x) {
+  keep <- is.finite(y) & is.finite(x)
+  out <- list(n = sum(keep), r = NA_real_, r_ci_lo = NA_real_, r_ci_hi = NA_real_,
+              p = NA_real_, rho = NA_real_)
+  if (out$n < 3 || sd(x[keep]) == 0 || sd(y[keep]) == 0) return(out)
+  test <- stats::cor.test(x[keep], y[keep], method = "pearson")
+  out$r <- unname(test$estimate)
+  out$p <- test$p.value
+  if (!is.null(test$conf.int)) {
+    out$r_ci_lo <- test$conf.int[1]
+    out$r_ci_hi <- test$conf.int[2]
+  }
+  out$rho <- suppressWarnings(stats::cor(x[keep], y[keep], method = "spearman"))
+  out
+}
+```
+```{r 1.0 gd_stat validation}
+# Per-population counterpart of the chosen statistic, for the gene summary (section 7). pi goes straight through
+# hierfstat::pi.dosage() there; Ho and biallelic_richness reuse wingen's own (unexported) per-subset functions,
+# so a population's value is defined exactly like a window's. Looked up here, at the start of the run, so a
+# wingen without them stops it here.
+gd_wingen_internal <- function(fn_name) {
+  tryCatch(utils::getFromNamespace(fn_name, "wingen"), error = function(e) {
+    wingen_version <- tryCatch(as.character(utils::packageVersion("wingen")), error = function(e) "(not installed)")
+    stop("gd_stat = '", gd_stat, "' needs wingen's internal ", fn_name, "(), which wingen ", wingen_version,
+         " does not have (written against 2.2.0). Use gd_stat: pi, or install wingen 2.2.0.", call. = FALSE)
+  })
+}
+gd_subset_fun <- switch(gd_stat,
+  pi                 = NULL,
+  Ho                 = gd_wingen_internal("calc_mean_het"),
+  biallelic_richness = gd_wingen_internal("calc_mean_biar"))
+gd_het_fun <- if (gd_stat == "Ho") gd_wingen_internal("vcf_to_het") else NULL
+
+
+```
+## 1.1 Loading the Datasets
+### 1.1.1 Load VCF
+```{r 1.1.1 Load VCF}
+start_vcf_load_time <- Sys.time()
+
+# vcf <- read.vcfR(input_vcf_file)
+# sample_order <- colnames(vcf@gt)[-1]
+
+vcf <- read.vcfR(input_vcf_file)
+sample_order <- colnames(vcf@gt)[-1]
+cat("input_vcf_file:", input_vcf_file, "\n", file = stderr())
+cat("variant rows:", nrow(vcf@fix), "| samples found:", length(sample_order), "\n", file = stderr())
+
+vcf_runtime <- difftime(Sys.time(), start_vcf_load_time , units = "secs")
+message("read.vcfR runtime: ", round(vcf_runtime, 2), " seconds")
+```
+### 1.1.2 Loading coordinates (+matched and aligned)
+```{r 1.1.2 Loading coordinates}
+
+# Determining the file type of the input coordinate file (excel or csv)
+file_ext <- tolower(tools::file_ext(input_coordinate_file_path))
+
+if (file_ext %in% c("xls", "xlsx")) {
+  coords_file_df <- readxl::read_excel(input_coordinate_file_path)
+  
+} else if (file_ext == "csv") {
+  coords_file_df <- readr::read_delim(input_coordinate_file_path)
+  
+} else {
+  stop("Unsupported coordinate file format: .", file_ext)
+}
+
+# Standardizes column names across coordinate files that don't share a
+# schema (this project alone now has "sample_name" / "Longtitude(+E,
+# -W)" in one file and "Individual" / "Latitude" / "Longitude" in
+# another). Hardcoding one file's exact names, as this used to do,
+# fails silently rather than loudly on any file that doesn't match:
+# names(df)[names(df) == "a name that isn't there"] <- "new name" is a
+# no-op in R, not an error - so a differently-shaped file quietly kept
+# its ORIGINAL column names, "Sample ID" didn't exist at all, match()
+# against a NULL column returned all-NA, and coords_file_df silently
+# became rows of nothing that "matched" every VCF sample to no
+# coordinate at all. That's what actually broke - several steps
+# downstream of the real problem, and with no error message pointing
+# at the real cause.
+#
+# ID: assumed to be the first column, regardless of its name - simpler
+# and more robust across different collaborators' spreadsheets than
+# enumerating every name anyone might use for "individual ID".
+# Latitude/longitude: detected by searching column NAMES (not values)
+# for a matching substring, case-insensitively. "longtitude" stays one
+# of the longitude patterns specifically because it's this project's
+# own original file - a transposed-letter misspelling, not a
+# different naming convention, so still worth matching.
+standardize_coord_columns <- function(df) {
+  cn <- names(df)
+
+  id_col <- cn[1]
+
+  lat_matches <- cn[grepl("latitude|latitud", cn, ignore.case = TRUE)]
+  lon_matches <- cn[grepl("longitude|longitud|longtitude", cn, ignore.case = TRUE)]
+
+  if (length(lat_matches) == 0) {
+    stop("No latitude column found in ", input_coordinate_file_path,
+         ". Columns present: ", paste(cn, collapse = ", "))
+  }
+  if (length(lon_matches) == 0) {
+    stop("No longitude column found in ", input_coordinate_file_path,
+         ". Columns present: ", paste(cn, collapse = ", "))
+  }
+  if (length(lat_matches) > 1) {
+    warning("Multiple possible latitude columns (", paste(lat_matches, collapse = ", "),
+            ") - using the first: '", lat_matches[1], "'")
+  }
+  if (length(lon_matches) > 1) {
+    warning("Multiple possible longitude columns (", paste(lon_matches, collapse = ", "),
+            ") - using the first: '", lon_matches[1], "'")
+  }
+
+  lat_col <- lat_matches[1]
+  lon_col <- lon_matches[1]
+
+  cat("Standardizing coordinate columns for this file:\n",
+      "  Sample ID <- '", id_col,  "'\n",
+      "  Latitude  <- '", lat_col, "'\n",
+      "  Longitude <- '", lon_col, "'\n", sep = "")
+
+  names(df)[names(df) == id_col]  <- "Sample ID"
+  names(df)[names(df) == lat_col] <- "Latitude"
+  names(df)[names(df) == lon_col] <- "Longitude"
+  df
+}
+
+coords_file_df <- standardize_coord_columns(coords_file_df)
+
+coords_file_df$Latitude  <- as.numeric(coords_file_df$Latitude)
+coords_file_df$Longitude <- as.numeric(coords_file_df$Longitude)
+
+bad <- is.na(coords_file_df$Latitude) | is.na(coords_file_df$Longitude)
+if (any(bad)) warning(sum(bad), " coordinate row(s) failed numeric conversion")
+
+coords_file_df <- coords_file_df[match(sample_order, coords_file_df$`Sample ID`), ]
+
+n_unmatched <- sum(is.na(match(sample_order, coords_file_df$`Sample ID`)))
+if (n_unmatched > 0) {
+  warning(n_unmatched, " VCF sample(s) had no matching row in coords_file_df$`Sample ID`")
+}
+# Every sample failing to match is categorically different from a few
+# legitimately missing ones - almost certainly means the two ID
+# columns don't actually contain the same values (check the
+# "Standardizing coordinate columns" message above first), not that
+# coordinates are genuinely missing for the whole dataset. Stopping
+# here turns that into an immediate, specific error instead of a
+# confusing crash somewhere downstream once coords_file_df is already
+# silently empty.
+if (n_unmatched == length(sample_order)) {
+  stop("Every VCF sample failed to match a coordinate row, for vcf-file:",input_vcf_file ,"This is almost always an ID-column ",
+       "mismatch (different formatting/casing between the VCF sample names and the coordinate ",
+       "file's ID column), not missing data - check the columns picked above against ",
+       input_coordinate_file_path, " before going further.")
+}
+```
+### 1.1.3 Pruning datapoints with missing geographical coordinates 
+```{r 1.1.3 Pruning datapoints with missing geographical coordinates}
+# Extracting individuals with missing geographical coordinates
+rows_with_na <- coords_file_df[
+  is.na(coords_file_df$Latitude) | is.na(coords_file_df$Longitude),
+]
+
+# Filtering away individuals with missing geographical coordinates
+coords_file_df <- coords_file_df[
+  !is.na(coords_file_df$Latitude) & !is.na(coords_file_df$Longitude),
+]
+
+#print(rows_with_na)
+# Removing individuals with missing geographical coordinates from the vcfR object
+if (nrow(rows_with_na) > 0) {
+for (i in 1:nrow(rows_with_na)) {
+  row <- rows_with_na[i,]
+  print(row)
+  sample_id <- as.character(row$`Sample ID`)
+  print(paste("Removing Sample ID",sample_id, "from the vcfR object"))
+  
+  vcf <- vcf[, colnames(vcf@gt) != sample_id]
+  #sample_id %in% colnames(vcf@gt)
+
+}
+}
+# vcf <- vcf[, colnames(vcf@gt) != "FVES-11"]
+# "FVES-11" %in% colnames(vcf@gt)
+# "FVES-11" %in% coords_file_df$`Sample ID`
+# vcf
+
+```
+## 1.2 (Optional) Restrict to a geographic subpopulation (lat/long box)
+```{r 1.2 geographic-filter}
+if (ROI_ACTIVE) {
+  in_range <- coords_file_df$Latitude  >= LAT_MIN & coords_file_df$Latitude  <= LAT_MAX &
+              coords_file_df$Longitude >= LON_MIN & coords_file_df$Longitude <= LON_MAX
+  in_range[is.na(in_range)] <- FALSE  # missing/unmatched coordinates ---> excluded
+
+  cat(sum(in_range), "of", length(in_range),
+      "samples fall inside the requested lat/long range and will be kept.\n")
+
+  # vcf and coords_file_df have to shrink together, in the same order.
+  # coords_file_df's rows and the VCF's genotype columns are two
+  # separate objects with no structural link between them - the only
+  # thing keeping row i of coords_file_df paired with the right
+  # individual's genotypes is that both are ordered by sample_order.
+  # Filter one without re-deriving gt_col_idx from the SAME filtered
+  # sample_order and that pairing silently breaks: latitude/longitude
+  # get assigned to whichever individual now happens to sit at that
+  # row, not the individual that coordinate actually belongs to - wrong
+  # answers with no error or warning, since both objects stay
+  # internally valid, just no longer aligned with each other.
+  coords_file_df <- coords_file_df[in_range, ]
+  sample_order   <- sample_order[in_range]
+
+  gt_col_idx <- match(sample_order, colnames(vcf@gt))
+  vcf <- vcf[, c(1, gt_col_idx)]
+} else {
+  cat("No region-of-interest set - using the full,", length(sample_order), "-sample dataset.\n")
+}
+```
+### Spot-check: are there really samples near a given location?
+A reusable template, not a one-off - point this at whatever location a
+map makes you suspicious about, and check directly rather than reading
+it off a color. (Originally written to confirm no real samples exist
+near Iceland, despite an earlier bug making it look like some did - see
+section 4's WGS84_DIST_PAD comment.)
+```{r spot-check}
+spot_check_lat_range <- c(62, 67)
+spot_check_lon_range <- c(-25, -12)
+
+near_spot <- coords_file_df[
+  coords_file_df$Latitude  > spot_check_lat_range[1] & coords_file_df$Latitude  < spot_check_lat_range[2] &
+  coords_file_df$Longitude > spot_check_lon_range[1] & coords_file_df$Longitude < spot_check_lon_range[2], ]
+near_spot[, c("Sample ID", "Latitude", "Longitude")]
+```
+## 1.3 Plotting sample locations
+```{r 1.3 Plotting sample locations, fig.width = 10, fig.height = 6}
+world_map_scale <- 10 # 10 (large) = 1:10 million; ne_download(scale): The scale of map to return, one of '110', '50', '10' or 'small', 'medium', 'large'.
+map_type_world_map <- "land" # ne_download(type): type of natural earth file to download one of 'countries', 'map_units', 'map_subunits', 'sovereignty', 'states' OR the portion of any natural earth vector url after the scale and before the . e.g. for 'ne_50m_urban_areas.zip' this would be 'urban_areas'. See Details. OR the raster filename e.g. for 'MSR_50M.zip' this would be 'MSR_50M'
+
+# returnclass: A string determining the spatial object to return. Either "sf" for for simple feature (from 'sf', the default) or "sv" for a 'SpatVector' (from 'terra').
+
+# ne_cache_dir persists ACROSS runs and across every gene's render - every
+# gene would otherwise re-download the exact same land/ocean polygons,
+# which don't depend on the gene at all (same reasoning as env_cache_dir
+# in section 2.6 below). Deliberately one level up from output_dir (which
+# is per-chromosome, see the Snakefile's outdir_abs), so it's shared by
+# every chromosome, not just this one.
+#
+# ne_download() itself has no built-in "skip if already downloaded"
+# behavior - destdir only says where to SAVE, not to check first (confirmed
+# against its own docs) - so the skip has to happen here: try ne_load()
+# from the cache first, and only fall through to ne_download() (which
+# writes to destdir, making it tomorrow's cache) if that read fails, e.g.
+# because nothing has been cached yet.
+ne_cache_dir <- Sys.getenv("NE_CACHE_DIR", unset = file.path(dirname(output_dir), "ne_cache"))
+dir.create(ne_cache_dir, showWarnings = FALSE, recursive = TRUE)
+
+ne_get <- function(type, category, scale, returnclass) {
+  tryCatch(
+    ne_load(type = type, category = category, scale = scale, destdir = ne_cache_dir, returnclass = returnclass),
+    error = function(e) ne_download(type = type, category = category, scale = scale, destdir = ne_cache_dir, returnclass = returnclass)
+  )
+}
+# world_land <- ne_download(type = map_type_world_map, category = "physical", scale = world_map_scale, returnclass = "sf")
+world_land <- ne_get(type = map_type_world_map, category = "physical", scale = world_map_scale, returnclass = "sf")
+# Natural Earth data is always WGS84/EPSG:4326 - if a download (fresh or
+# cached) ever comes back without a CRS attached, that's a defect in the
+# fetch, not an actual ambiguity about what the CRS should be, so assert it
+# rather than let coord_sf()'s internal st_transform() crash on it later.
+if (is.na(sf::st_crs(world_land))) world_land <- sf::st_set_crs(world_land, 4326)
+
+coords_raw_sf <- st_as_sf(coords_file_df, coords = c("Longitude", "Latitude"), crs = 4326)
+
+bb_raw    <- st_bbox(coords_raw_sf)
+pad_raw_x <- 0.05 * (bb_raw[["xmax"]] - bb_raw[["xmin"]])
+pad_raw_y <- 0.05 * (bb_raw[["ymax"]] - bb_raw[["ymin"]])
+
+raw_map <- ggplot() +
+  geom_sf(data = world_land, fill = "grey85", color = "grey60", linewidth = 0.2) +
+  geom_sf(data = coords_raw_sf, size = 1.8, alpha = 0.7, color = "#B2182B") +
+  coord_sf(xlim = c(bb_raw[["xmin"]] - pad_raw_x, bb_raw[["xmax"]] + pad_raw_x),
+           ylim = c(bb_raw[["ymin"]] - pad_raw_y, bb_raw[["ymax"]] + pad_raw_y)) +
+  labs(title = paste0("Sample locations, ", region_tag, " (n = ", nrow(coords_file_df), ")")) +
+  theme_minimal(base_size = 12) +
+  theme(panel.background = element_rect(fill = "aliceblue", color = NA),
+        panel.grid = element_line(color = "white"),
+        axis.title = element_blank())
+
+raw_map
+ggsave(file.path(output_dir, paste0(output_prefix, "raw_sample_map.png")), raw_map,
+       width = 10, height = 6, dpi = 300)
+```
+## 1.4 Computing sample distances (MAX_INTERP_DIST)
+Computed here, before the raster gets built, so both the raster's own
+extent (section 2) and the final distance mask (section 5.2.2) tie back to
+the same real number, rather than each being picked independently.
+```{r 1.4 Computing sample distances (MAX_INTERP_DIST)}
+coords_wgs84 <- vect(coords_file_df, geom = c("Longitude", "Latitude"), crs = "EPSG:4326")
+nn_dist <- apply(as.matrix(distance(coords_wgs84)), 1, function(d) min(d[d > 0]))
+summary(nn_dist / 1e3)  # km, per individual - kept for reference only
+
+# Per-individual nearest-neighbor distance is the wrong basis for a spacing
+# figure here: up to 50 individuals share one Capture_Population's
+# coordinates, and many Capture_Population codes are repeat visits to the
+# same ground on a different week/year rather than genuinely distinct
+# locations - e.g. BLE09 and BLE19 are both "Dynan", 11 days apart.
+# Confirmed: the 150 sites collapse to just ~82 distinct location-clusters at
+# a 2 km merge distance, some clusters absorbing up to 12 separate
+# Capture_Population codes. The naive median comes out ~1.5-1.8 km regardless
+# of individual- or site-level weighting, so almost nothing survived a mask
+# built on that number - this was tuned assuming a few far-away OUTLIERS
+# inflate a mean (median chosen to resist that), when the actual problem here
+# is many near-DUPLICATE points deflating the median instead - the opposite
+# failure mode.
+#
+# Fix: cluster sites within CLUSTER_THRESHOLD_KM of each other (single-
+# linkage) before computing spacing, so repeat visits to the same ground
+# count once, not once per visit. Deduplicating by (Latitude, Longitude)
+# directly, not by a named grouping column like Capture_Population - a
+# named column varies by dataset (this project alone has had
+# Capture_Population, and separately "Location" as a coarser text
+# descriptor covering multiple distinct coordinates - 16 Location values
+# for 36 actual distinct coordinates in the 125-individual dataset) or may
+# not exist at all, and coords_file_df is only guaranteed to have
+# Latitude/Longitude, standardized above regardless of source file.
+# Confirmed this generalizes safely: on the 125-individual global dataset
+# (no Capture_Population column at all - hardcoding that reference is what
+# actually broke there), the 125 individuals collapse to 36 distinct
+# coordinates, already all more than 2 km apart from each other, so
+# clustering is a no-op there and the median comes out 157.6 km - within
+# 0.4 km of the uncontaminated original per-individual figure for that
+# dataset. CLUSTER_THRESHOLD_KM is a real judgment call, not a computed
+# fact - 2 km is chosen to roughly match resolution_m
+
+CLUSTER_THRESHOLD_KM <- 2
+
+site_coords   <- coords_file_df[!duplicated(coords_file_df[, c("Latitude", "Longitude")]), ]
+site_v        <- vect(site_coords, geom = c("Longitude", "Latitude"), crs = "EPSG:4326")
+site_dist_km  <- as.dist(as.matrix(distance(site_v)) / 1e3)
+# site_clusters <- cutree(hclust(site_dist_km, method = "single"), h = CLUSTER_THRESHOLD_KM)
+site_clusters <- cutree(hclust(site_dist_km, method = "complete"), h = CLUSTER_THRESHOLD_KM)
+
+cluster_centroid <- function(i) {
+  rows <- site_clusters == i
+  c(lon = mean(site_coords$Longitude[rows]), lat = mean(site_coords$Latitude[rows]))
+}
+centroids       <- as.data.frame(t(sapply(sort(unique(site_clusters)), cluster_centroid)))
+centroids_v     <- vect(centroids, geom = c("lon", "lat"), crs = "EPSG:4326")
+cluster_nn_dist <- apply(as.matrix(distance(centroids_v)), 1, function(d) min(d[d > 0]))
+
+cat(nrow(coords_file_df), "individuals share", nrow(site_coords), "distinct coordinates, collapsing into",
+    length(unique(site_clusters)), "location-clusters at a",
+    CLUSTER_THRESHOLD_KM, "km merge threshold\n")
+cat("median nn-distance, per-individual (naive):     ", round(median(nn_dist) / 1e3, 2), "km\n")
+cat("median nn-distance, clustered locations:        ", round(median(cluster_nn_dist) / 1e3, 2), "km\n")
+
+# --- Deciding MAX_INTERP_DIST here, not in section 5 ---
+# buffer_m (section 2.3, raster extent margin) and the final display cutoff
+# (section 5) both need to tie back to the SAME number - that was always the
+# point of computing this here rather than in two places. MAX_INTERP_DIST IS
+# that number now, decided once, immediately below.
+#
+# Two candidates, answering different questions:
+#   window-based: how far window_gd() itself looks (wdim aggregated cells,
+#     each fact_value*resolution_m wide; radius = half the window's width) -
+#     ignores where real samples actually are. More permissive.
+#   clustered:    real median spacing between the ~82 distinct sampling
+#     locations above. More conservative/protective, since it's grounded in
+#     actual data density rather than the window's own mechanics.
+# These come out roughly 5x apart here (~26 km vs ~4.6 km) - that gap is
+# expected, not a red flag, since the two numbers are answering genuinely
+# different questions. Default below is window-based; set
+# MAX_INTERP_DIST_MODE = "clustered" to switch to the other one directly,
+# or "hardcoded" + MAX_INTERP_DIST_KM to override with any other value.
+
+window_based_reach_km <- (wdim_value / 2) * fact_value * resolution_m / 1e3
+clustered_reach_km    <- median(cluster_nn_dist) / 1e3
+
+cat("window-footprint-based reach:  ", round(window_based_reach_km, 2), "km\n")
+cat("clustered-location-based reach:", round(clustered_reach_km, 2), "km\n")
+
+MAX_INTERP_DIST <- switch(MAX_INTERP_DIST_MODE,
+  "none" = {
+    cat("MAX_INTERP_DIST_MODE = 'none': no display-distance cutoff (Ries et al. (2023)-style)\n")
+    Inf
+  },
+  "hardcoded" = {
+    if (is.na(MAX_INTERP_DIST_OVERRIDE_KM)) stop("MAX_INTERP_DIST_MODE = 'hardcoded' requires MAX_INTERP_DIST_KM to be set")
+    cat("Using MAX_INTERP_DIST_KM override:", MAX_INTERP_DIST_OVERRIDE_KM, "km\n")
+    MAX_INTERP_DIST_OVERRIDE_KM * 1e3
+  },
+  "computed" = {
+    cat("Using window-footprint reach (set MAX_INTERP_DIST_MODE = 'clustered' for the more conservative clustered figure,",
+        "'hardcoded' + MAX_INTERP_DIST_KM for any other value, or 'none' for no cutoff)\n")
+    window_based_reach_km * 1e3
+  },
+  "clustered" = {
+    cat("Using clustered-location reach:", round(clustered_reach_km, 1), "km\n")
+    clustered_reach_km * 1e3
+  },
+  stop("MAX_INTERP_DIST_MODE must be 'computed', 'clustered', 'hardcoded', or 'none' - got: '", MAX_INTERP_DIST_MODE, "'")
+)
+MAX_INTERP_DIST <- MAX_INTERP_DIST * MAX_INTERP_DIST_SCALE
+if (MAX_INTERP_DIST_SCALE != 1) cat("MAX_INTERP_DIST_SCALE =", MAX_INTERP_DIST_SCALE, "applied - final MAX_INTERP_DIST:", round(MAX_INTERP_DIST / 1e3, 2), "km\n")
+
+# maxdist speed default, resolved here rather than in the settings block
+# because it needs MAX_INTERP_DIST and window_based_reach_km, both only known once real data is loaded.
+# This controls how many cell centroids wkrig_gd() bothers considering per prediction, purely for computational efficiency of the kriging.
+#
+# wkrig_gd()'s maxdist measures distance from a prediction location to the nearest surviving CELL CENTROID. A real sample that ends up within MAX_INTERP_DIST of that prediction location (i.e. close enough to survive section 5's mask) can itself sit up to window_based_reach_km from ITS OWN cell's centroid, since window_gd() pools samples from anywhere in the full window, not just the centroid cell.
+# By the triangle inequality, the prediction location can then be up to MAX_INTERP_DIST + window_based_reach_km from that centroid and still be relevant
+# -> So that sum is the smallest maxdist guaranteed to never exclude a centroid a surviving prediction might actually need. Any centroid farther than that literally cannot matter, however this run's specific data happens to be arranged.
+if (is.na(maxdist)) {
+  maxdist <- if (is.finite(MAX_INTERP_DIST)) MAX_INTERP_DIST + (window_based_reach_km * 1e3) else Inf
+  cat("maxdist not set - defaulting to MAX_INTERP_DIST + window_based_reach_km =", round(maxdist / 1e3, 2), "km (set MAXDIST to override, e.g. to Inf for wingen's own raw default)\n")
+}
+
+MAX_INTERP_DIST
+```
+## 1.5 (Optional) Neutral simulations
+This adds a neutral reference for the gene's location correlations. Enable it with
+`run_neutral_sim: true` in config.yaml; Snakemake prepares the subset VCFs and
+passes the same toggle as `RUN_NEUTRAL_SIM`. The gene analysis runs without it.
+
+```{r neutral_model_functions, include=FALSE}
+RUN_NEUTRAL_SIM <- toupper(trimws(Sys.getenv("RUN_NEUTRAL_SIM", unset = "FALSE")))
+if (!RUN_NEUTRAL_SIM %in% c("TRUE", "FALSE")) {
+  stop("RUN_NEUTRAL_SIM must be TRUE or FALSE")
+}
+RUN_NEUTRAL_SIM <- as.logical(RUN_NEUTRAL_SIM)
+
+if (RUN_NEUTRAL_SIM) {
+  neutral_plan_path <- Sys.getenv("NEUTRAL_PLAN", unset = "")
+  neutral_metadata_path <- Sys.getenv("NEUTRAL_PLAN_METADATA", unset = "")
+  neutral_prepared_manifest_path <- Sys.getenv("NEUTRAL_PREPARED_MANIFEST", unset = "")
+  if (!compute_genetic_diversity_statistics || !all(file.exists(c(neutral_plan_path,
+      neutral_metadata_path, neutral_prepared_manifest_path)))) {
+    stop("Neutral simulations need location statistics and existing plan/metadata/prepared VCF files")
+  }
+
+  validate_extreme_value_percentiles <- function(percentiles) {
+    percentiles <- suppressWarnings(as.numeric(percentiles))
+    if (any(!is.finite(percentiles)) ||
+        any(percentiles <= 0 | percentiles >= 100)) {
+      stop("Neutral reference percentiles must be numbers strictly between 0 and 100")
+    }
+    # The same six-decimal convention is used for output field names in Python.
+    percentiles <- round(percentiles, 6)
+    if (any(percentiles <= 0 | percentiles >= 100) || anyDuplicated(percentiles)) {
+      stop("Neutral reference percentiles must be distinct at six-decimal precision")
+    }
+    percentiles
+  }
+
+  neutral_percentile_labels <- function(percentiles) {
+    vapply(validate_extreme_value_percentiles(percentiles), function(p) {
+      label <- sub("\\.?0+$", "", sprintf("%.6f", p))
+      label
+    }, character(1), USE.NAMES = FALSE)
+  }
+
+  neutral_percentile_fields <- function(percentiles, prefix) {
+    labels <- neutral_percentile_labels(percentiles)
+    if (!length(labels)) return(character())
+    paste0(prefix, "q", gsub(".", "_", labels, fixed = TRUE))
+  }
+
+  neutral_tail <- function(observed, null, requested, min_valid_fraction = 0.9,
+                           extreme_value_percentiles = c(95, 99)) {
+    extreme_value_percentiles <- validate_extreme_value_percentiles(extreme_value_percentiles)
+    null <- abs(null[is.finite(null)])
+    n <- length(null)
+    status <- if (!is.finite(observed)) "undefined_observed_correlation" else if (
+      n < ceiling(requested * min_valid_fraction)) "too_few_valid_replicates" else "ok"
+    p <- if (status == "ok") (1 + sum(null >= abs(observed) - 1e-12)) / (n + 1) else NA_real_
+    # Quantiles describe the reference distribution; they are not p-values.
+    # Interpolation and the add-one tail score need not have identical boundaries.
+    cutoffs <- if (!length(extreme_value_percentiles)) numeric() else if (status == "ok")
+      unname(stats::quantile(null, extreme_value_percentiles / 100)) else
+      rep(NA_real_, length(extreme_value_percentiles))
+    c(list(status = status, n = n, p = p, median = if (n) median(null) else NA_real_),
+      setNames(as.list(cutoffs), neutral_percentile_fields(extreme_value_percentiles, "")))
+  }
+
+  compare_neutral_locations <- function(observed, predictors, null_gd, requested, min_valid_fraction = 0.9,
+                                        extreme_value_percentiles = c(95, 99)) {
+    extreme_value_percentiles <- validate_extreme_value_percentiles(extreme_value_percentiles)
+    if (nrow(null_gd) != length(observed)) stop("Neutral and observed location counts differ")
+    result <- list()
+    replicate_rows <- list()
+    for (variable in names(predictors)) {
+      x <- predictors[[variable]]
+      if (length(x) != length(observed)) stop("Predictor and location counts differ")
+      # Freeze the observed complete-case mask. Replicates cannot select easier locations.
+      keep <- is.finite(observed) & is.finite(x)
+      obs <- location_association(observed[keep], x[keep])
+      r <- rho <- rep(NA_real_, ncol(null_gd))
+      if (sum(keep) >= 3 && sd(x[keep]) > 0) {
+        for (b in seq_len(ncol(null_gd))) {
+          y <- null_gd[keep, b]
+          if (all(is.finite(y)) && sd(y) > 0) {
+            r[b] <- cor(x[keep], y, method = "pearson")
+            rho[b] <- cor(x[keep], y, method = "spearman")
+          }
+        }
+      }
+      pearson <- neutral_tail(obs$r, r, requested, min_valid_fraction, extreme_value_percentiles)
+      spearman <- neutral_tail(obs$rho, rho, requested, min_valid_fraction, extreme_value_percentiles)
+      cutoff_names <- neutral_percentile_fields(extreme_value_percentiles, "")
+      result[[variable]] <- list(n_locations = obs$n, p_neutral = pearson$p,
+        p_neutral_rho = spearman$p, neutral_n_valid = pearson$n,
+        neutral_n_valid_rho = spearman$n, neutral_abs_r_median = pearson$median,
+        neutral_status = pearson$status,
+        neutral_rho_status = spearman$status)
+      result[[variable]] <- c(result[[variable]],
+        setNames(pearson[cutoff_names], neutral_percentile_fields(extreme_value_percentiles, "neutral_abs_r_")),
+        setNames(spearman[cutoff_names], neutral_percentile_fields(extreme_value_percentiles, "neutral_abs_rho_")))
+      replicate_rows[[variable]] <- data.frame(variable = variable, replicate = seq_along(r),
+        n_locations = obs$n, r = r, rho = rho)
+    }
+    list(fields = result, replicates = do.call(rbind, replicate_rows))
+  }
+
+  neutral_integer_indices <- function(indices, label = "Neutral marker indices") {
+    values <- suppressWarnings(as.numeric(unlist(indices, use.names = FALSE)))
+    if (!length(values) || any(!is.finite(values)) || any(values < 1 | values != floor(values)) ||
+        any(values > .Machine$integer.max) || anyDuplicated(values)) {
+      stop(paste(label, "must be distinct positive integer record indices"))
+    }
+    as.integer(values)
+  }
+
+  neutral_column_indices <- function(selected, pool_indices, expected_k, pool_n_matched = Inf) {
+    selected <- neutral_integer_indices(selected, "Neutral subset indices")
+    pool_indices <- neutral_integer_indices(pool_indices, "Prepared VCF pool indices")
+    if (length(selected) != expected_k || any(selected > pool_n_matched) ||
+        any(pool_indices > pool_n_matched)) stop("Neutral subset count or pool index range is invalid")
+    columns <- match(selected, pool_indices)
+    if (anyNA(columns)) stop("Prepared VCF is missing SNP records required by the neutral plan")
+    columns
+  }
+
+  check_neutral_fingerprint <- function(path, expected, label) {
+    if (length(expected) != 1L || !is.character(expected) ||
+        !grepl("^[a-fA-F0-9]{32}$", expected) || !file.exists(path) ||
+        !identical(unname(tools::md5sum(path)), tolower(expected))) {
+      stop(paste(label, "is missing or stale; regenerate neutral preparation"))
+    }
+  }
+
+  neutral_prepared_inventory <- function(manifest, manifest_path, plan_path, target_path, expected_pool_md5,
+                                          status, requested, pool_n_matched = Inf) {
+    check_neutral_fingerprint(plan_path, manifest$plan_md5, "Prepared subset plan")
+    check_neutral_fingerprint(target_path, manifest$gene_vcf_md5, "Prepared target VCF")
+    # Preparation verified the full pool. R consumes the frozen prepared VCFs and
+    # verifies those files, avoiding another whole-genome scan for every report.
+    if (length(expected_pool_md5) != 1L || !is.character(expected_pool_md5) ||
+        !grepl("^[a-fA-F0-9]{32}$", expected_pool_md5) ||
+        !identical(manifest$pool_md5, expected_pool_md5)) {
+      stop("Prepared neutral pool provenance differs from subset plan")
+    }
+    if (!identical(manifest$status, status)) stop("Prepared VCF status differs from subset plan")
+    if (length(manifest$n_technical_replicates) != 1L ||
+        !is.numeric(manifest$n_technical_replicates) ||
+        !is.finite(manifest$n_technical_replicates) ||
+        manifest$n_technical_replicates < 0 ||
+        manifest$n_technical_replicates != floor(manifest$n_technical_replicates)) {
+      stop("Prepared technical replicate count must be a nonnegative integer")
+    }
+    if (status != "ok") {
+      if (manifest$n_technical_replicates != 0 || length(manifest$vcfs) || length(manifest$replicate_files)) {
+        stop("Unavailable neutral plan must not contain prepared VCF files")
+      }
+      return(list(entries = list(), replicate_files = character()))
+    }
+    if (manifest$n_technical_replicates != requested) {
+      stop("Prepared VCF count differs from requested technical replicates")
+    }
+    if (!length(manifest$vcfs)) stop("Prepared manifest has no neutral VCF files")
+    entries <- lapply(manifest$vcfs, function(entry) {
+      filename <- entry$filename
+      if (length(filename) != 1L || !is.character(filename) || !nzchar(filename) ||
+          grepl("^[A-Za-z]:", filename) || startsWith(filename, "/") || startsWith(filename, "\\") ||
+          any(strsplit(gsub("\\", "/", filename, fixed = TRUE), "/", fixed = TRUE)[[1]] == "..")) {
+        stop("Prepared VCF filenames must be relative paths inside the manifest directory")
+      }
+      entry$path <- file.path(dirname(manifest_path), filename)
+      check_neutral_fingerprint(entry$path, entry$md5, paste("Prepared VCF", filename))
+      entry$pool_indices <- neutral_integer_indices(entry$pool_indices, "Prepared VCF pool indices")
+      if (any(entry$pool_indices > pool_n_matched)) stop("Prepared VCF index exceeds neutral pool size")
+      entry
+    })
+    filenames <- vapply(entries, function(entry) entry$filename, character(1))
+    if (anyDuplicated(filenames)) stop("Duplicate prepared VCF filenames in manifest")
+    names(entries) <- filenames
+    replicate_files <- unlist(manifest$replicate_files, use.names = FALSE)
+    if (!is.character(replicate_files) || length(replicate_files) != requested ||
+        !all(replicate_files %in% filenames) || !all(filenames %in% replicate_files) ||
+        length(filenames) != requested || anyDuplicated(replicate_files)) {
+      stop("Prepared manifest does not cover every planned neutral replicate")
+    }
+    list(entries = entries, replicate_files = replicate_files)
+  }
+
+  run_neutral_model <- function(plan_path, metadata_path, target_path, vcf, samples, draws,
+                                observed, predictors, gd_stat, statistic, het_fun, output_prefix,
+                                min_valid_fraction = 0.9, prepared_manifest_path,
+                                extreme_value_percentiles = c(95, 99)) {
+    extreme_value_percentiles <- validate_extreme_value_percentiles(extreme_value_percentiles)
+    metadata <- jsonlite::read_json(metadata_path, simplifyVector = TRUE)
+    check_neutral_fingerprint(target_path, metadata$gene_vcf_md5, "Neutral subset plan target VCF")
+    if (!is.null(metadata$plan_md5)) check_neutral_fingerprint(plan_path, metadata$plan_md5, "Neutral subset plan")
+    if (metadata$n_variants != nrow(vcf@fix)) stop("Neutral plan and target variant counts differ")
+    pool_n_matched <- if (!is.null(metadata$pool_n_matched)) metadata$pool_n_matched else
+      metadata$n_available + metadata$n_excluded_overlap
+    metadata$pool_n_matched <- pool_n_matched
+    manifest <- jsonlite::read_json(prepared_manifest_path, simplifyVector = FALSE)
+    inventory <- neutral_prepared_inventory(manifest, prepared_manifest_path, plan_path, target_path,
+      metadata$pool_md5, metadata$status, metadata$technical_replicates_requested, pool_n_matched)
+    metadata$prepared_manifest_md5 <- unname(tools::md5sum(prepared_manifest_path))
+    metadata$pool_validation <- "prepared_manifest_matches_subset_plan"
+    metadata$extreme_value_percentiles <- paste(neutral_percentile_labels(extreme_value_percentiles), collapse = ",")
+    metadata$comparison <- "upper_tail_absolute_correlation"
+    metadata$min_valid_fraction <- min_valid_fraction
+    metadata$location_mask <- "observed_complete_cases_fixed_per_predictor"
+    metadata$common_individual_draws <- TRUE
+    if (metadata$status != "ok") {
+      # Replace stale replicate results on a rerun with an unavailable target.
+      write.table(data.frame(variable = character(), replicate = integer(),
+        n_locations = integer(), r = numeric(), rho = numeric()),
+        paste0(output_prefix, "_neutral_replicates.tsv"), sep = "\t", quote = FALSE, row.names = FALSE)
+      write.table(data.frame(cluster_id = character(), replicate = integer(), gd = numeric()),
+        paste0(output_prefix, "_neutral_locations.tsv"), sep = "\t", quote = FALSE, row.names = FALSE)
+      fields <- lapply(predictors, function(x) c(list(p_neutral = NA_real_, p_neutral_rho = NA_real_,
+        neutral_n_valid = 0L, neutral_n_valid_rho = 0L, neutral_abs_r_median = NA_real_,
+        neutral_status = metadata$status, neutral_rho_status = metadata$status),
+        setNames(as.list(rep(NA_real_, length(extreme_value_percentiles))),
+          neutral_percentile_fields(extreme_value_percentiles, "neutral_abs_r_")),
+        setNames(as.list(rep(NA_real_, length(extreme_value_percentiles))),
+          neutral_percentile_fields(extreme_value_percentiles, "neutral_abs_rho_"))))
+      return(list(fields = fields, metadata = metadata))
+    }
+    plan <- read.delim(plan_path, colClasses = "character", check.names = FALSE)
+    if (!all(c("replicate", "marker_indices") %in% names(plan)) ||
+        nrow(plan) != metadata$technical_replicates_requested ||
+        !identical(plan$replicate, as.character(seq_len(nrow(plan)))) ||
+        any(!grepl("^[1-9][0-9]*(,[1-9][0-9]*)*$", plan$marker_indices))) {
+      stop("Incomplete or malformed neutral subset plan")
+    }
+    indices <- lapply(strsplit(plan$marker_indices, ",", fixed = TRUE), neutral_integer_indices)
+    if (any(lengths(indices) != metadata$n_variants) ||
+        any(unlist(indices, use.names = FALSE) > pool_n_matched)) stop("Invalid neutral subset count or pool index range")
+    # Canonicalize the chr prefix exactly as the preparation stage does.
+    positions <- function(fix) paste(sub("^chr", "", fix[, "CHROM"], ignore.case = TRUE),
+                                     fix[, "POS"], sep = ":")
+    overlap_positions <- positions(vcf@fix)
+    read_matrix <- function(path, pool_indices) {
+      pool_vcf <- vcfR::read.vcfR(path, verbose = FALSE)
+      if (nrow(pool_vcf@fix) != length(pool_indices)) stop("Prepared VCF and manifest record counts differ")
+      if (any(positions(pool_vcf@fix) %in% overlap_positions)) stop("Prepared neutral VCF overlaps target positions")
+      pool_samples <- colnames(pool_vcf@gt)[-1]
+      if (anyDuplicated(pool_samples) || anyDuplicated(samples) || !all(samples %in% pool_samples)) {
+        stop("Neutral VCF sample IDs do not match the target")
+      }
+      pool_vcf <- pool_vcf[, c(1L, match(samples, pool_samples) + 1L)]
+      x <- if (gd_stat == "Ho") het_fun(pool_vcf) else wingen::vcf_to_dosage(pool_vcf)
+      if (nrow(x) != length(samples) || ncol(x) != length(pool_indices)) {
+        stop("Neutral genotype matrix dimensions differ from prepared VCF")
+      }
+      rownames(x) <- samples
+      x
+    }
+    null_gd <- matrix(NA_real_, nrow = length(observed), ncol = length(indices))
+    # Load one k-SNP VCF per technical replicate; retain only the location results.
+    for (b in seq_along(indices)) {
+      entry <- inventory$entries[[inventory$replicate_files[b]]]
+      if (length(entry$pool_indices) != metadata$n_variants) stop("Prepared replicate VCF has the wrong SNP count")
+      i <- neutral_column_indices(indices[[b]], entry$pool_indices, metadata$n_variants, pool_n_matched)
+      x <- read_matrix(entry$path, entry$pool_indices)
+      null_gd[, b] <- location_gd_from_draws(x[, i, drop = FALSE], draws, statistic)
+      rm(x)
+    }
+    comparison <- compare_neutral_locations(observed, predictors, null_gd, nrow(plan), min_valid_fraction,
+                                            extreme_value_percentiles)
+    write.table(comparison$replicates, paste0(output_prefix, "_neutral_replicates.tsv"), sep = "\t", quote = FALSE, row.names = FALSE, na = "NA")
+    per_location <- data.frame(cluster_id = rep(names(draws), times = ncol(null_gd)),
+      replicate = rep(seq_len(ncol(null_gd)), each = nrow(null_gd)), gd = as.vector(null_gd))
+    write.table(per_location, paste0(output_prefix, "_neutral_locations.tsv"), sep = "\t", quote = FALSE, row.names = FALSE, na = "NA")
+    list(fields = comparison$fields, metadata = metadata)
+  }
+}
+```
+
+# 2. Raster Creation
+## 2.1 Sample-driven raster, world CRS, no named-region boundary
+Mollweide, not the wingen vignette's Goode Homolosine: Goode Homolosine
+is interrupted specifically to keep landmasses whole, which means its
+cuts land in the ocean instead - not ideal for a marine dataset.
+Mollweide is uninterrupted and equal-area, at the cost of more shape
+distortion far from the map's center. That trade-off is acceptable here
+specifically because of the masking in section 4 below - nothing is
+allowed to interpolate far enough for the distortion to matter.
+```{r world-crs}
+world_crs <- "+proj=moll"
+```
+```{r sample-points}
+coords_v  <- vect(coords_file_df, geom = c("Longitude", "Latitude"), crs = "EPSG:4326")
+coords_v_mollweide  <- project(coords_v, world_crs)
+coords_sf_mollweide <- st_as_sf(coords_v_mollweide)  # wingen wants sf/data.frame/matrix, not SpatVector
+```
+## 2.2 Ocean Layer
+```{r 2.2 Ocean Layer}
+ocean_map_scale <- 10 # ne_download(scale): The scale of map to return, one of '110', '50', '10' or 'small', 'medium', 'large'.
+map_type <- "ocean" # ne_download(type): type of natural earth file to download one of 'countries', 'map_units', 'map_subunits', 'sovereignty', 'states' OR the portion of any natural earth vector url after the scale and before the . e.g. for 'ne_50m_urban_areas.zip' this would be 'urban_areas'. See Details. OR the raster filename e.g. for 'MSR_50M.zip' this would be 'MSR_50M'
+# ocean <- ne_download(type = map_type, category = "physical", scale = ocean_map_scale, returnclass = "sv")
+ocean <- ne_get(type = map_type, category = "physical", scale = ocean_map_scale, returnclass = "sv")  # ne_get(): defined in section 1.3, same cache
+# Same reasoning as world_land above, but terra's CRS getter can come back
+# as either NA or an empty string for "undefined" depending on version, so
+# both are checked here.
+ocean_crs <- terra::crs(ocean)
+if (is.na(ocean_crs) || nchar(ocean_crs) == 0) terra::crs(ocean) <- "EPSG:4326"
+
+
+# Crop to a generous box around the actual samples before reprojecting
+# (avoids reprojecting irrelevant, distant coastline).
+bb  <- as.vector(ext(project(coords_v_mollweide, crs(ocean))))
+pad <- 10  # degrees
+zoom_area <- ext(bb["xmin"] - pad, bb["xmax"] + pad, bb["ymin"] - pad, bb["ymax"] + pad)
+ocean <- crop(ocean, zoom_area)
+ocean <- project(ocean, world_crs)
+```
+## 2.3 (coords_to_raster) Building the raster
+```{r 2.3 (coords_to_raster) Building the raster}
+# resolution_m <- 20 * 1e3            # 20 km; revisit after preview_gd() below
+# resolution_m <- 10 * 1e3            # 10 km; revisit after preview_gd() below
+# resolution_m <- 5 * 1e3            # 10 km; revisit after preview_gd() below
+#resolution_m <- 2.5 * 1e3            # 10 km; revisit after preview_gd() below
+
+# buffer_m needs to stay finite even when MAX_INTERP_DIST doesn't
+# (mode = "none") - coords_to_raster() can't extend a raster by an
+# infinite margin, and Inf * 1.5 is still Inf. Falls back to the
+# window-footprint reach specifically (always finite, since wdim_value/
+# fact_value/resolution_m never are) as a sensible minimum margin
+# regardless of which masking mode is active - not a flat distance
+# regardless of local sample density either way.
+buffer_basis_m <- if (is.finite(MAX_INTERP_DIST)) MAX_INTERP_DIST else (window_based_reach_km * 1e3)
+buffer_m     <- buffer_basis_m * 1.5  # margin past the eventual display cutoff (section 4),
+
+# coords_to_raster()'s `buffer` argument is in CELLS (it's passed
+# straight to terra::extend(), which treats a bare number as rows/
+# columns to add per side), not map units - convert once here so the
+# rest of the script can keep thinking in meters via buffer_m.
+# buffer_cells <- round(buffer_m / resolution_m)
+buffer_cells <- ceiling(buffer_m / resolution_m)
+
+#buffer_cells <- 1 #  Ries et al. (2023)
+
+# plot = TRUE gives an immediate sanity check of resolution/extent
+# against the sample points, without a separate manual plot() call.
+lyr <- coords_to_raster(coords_v_mollweide, buffer = buffer_cells, disagg = ctr_disagg, res = resolution_m, plot = TRUE)
+```
+## 2.4 Masking the raster using the ocean layer
+```{r 2.4 build-raster-ocean-masking}
+# mask_gd(), not terra::mask() directly: mask_gd() has no `touches`
+# argument, so it always calls terra::mask(x, y) with terra's own
+# default, touches = TRUE - a cell survives if it merely overlaps the
+# ocean polygon at all. That matters here specifically because `lyr`
+# defines window_gd()'s entire working domain (which cells can even be
+# considered as window centers), not just how the final map looks.
+# The stricter option (touches = FALSE, only reachable via
+# terra::mask() directly - a cell survives only if its centre is in
+# the ocean polygon) leaves zero valid cells across anything narrower
+# than ~resolution_m end-to-end (straits, fjords, many island coasts) -
+# a gap the na.rm = TRUE fix in section 3 can't rescue, since there's
+# nothing non-NA left in that neighborhood to average over in the
+# first place. Section 4 masks kgd/ocean through mask_gd() too, for the
+# same reason and the same touches = TRUE treatment - see the comment
+# there for the coastline-sharpness trade-off that implies.
+lyr <- mask_gd(lyr, ocean)
+```
+## 2.5 (preview_gd) Raster preview before trusting wdim/fact
+```{r 2.5 preview_gd}
+# preview_gd(lyr, coords_sf_mollweide, wdim = wdim_value, fact = fact_value, sample_count = TRUE, min_n = 2)
+
+# preview_gd() prints its own plot directly as a side effect (a genuine
+# ggplot under the hood - the "Ignoring unknown labels" message is a
+# ggplot2 warning firing during that internal print), but RETURNS the
+# underlying sample_count SpatRaster, not the plot object itself -
+# assigning that return value and ggsave()-ing it fails with "no
+# applicable method for 'grid.draw' applied to an object of class
+# SpatRaster". Saving the actual plot as a file instead means calling
+# this twice: once for the normal inline display (unchanged), once
+# wrapped in an explicit PNG device purely to redirect that same drawing
+# to a file. A little redundant computation, but preview_gd() is meant
+# to be fast to iterate with, and this sidesteps needing to know its
+# exact internal plotting mechanism to capture it correctly.
+
+# Note: maxdist is only built for method = "circle"/"resist". 
+# Closest equivalent of neighborhood-size for window_gd() would be wdim/fact
+preview_gd(lyr, coords_sf_mollweide, method = "window", wdim = wdim_value, fact = fact_value, sample_count = TRUE, min_n = min_n_samples_per_calc)
+
+window_preview_output_filename <- paste0(output_prefix,"window_preview","_buffer_",buffer_cells,".png")
+png(file.path(output_dir, window_preview_output_filename), width = 10, height = 6, units = "in", res = 300)
+preview_gd(lyr, coords_sf_mollweide, method = "window", wdim = wdim_value, fact = fact_value, sample_count = TRUE, min_n = min_n_samples_per_calc)
+invisible(dev.off())
+
+# Optional grid search across wdim x fact combinations - useful when
+# retuning for a new region of interest, safe to comment out for a
+# routine rerun once wdim_value/fact_value above are already trusted.
+# for (w in c(3, 5, 7)) {
+#   for (f in c(3, 5, 7)) {
+#     print(preview_gd(lyr, coords_sf_mollweide, wdim = w, fact = f, sample_count = TRUE, min_n = 2))
+#   }
+# }
+```
+## 2.6 Environmental layers (salinity, temperature, chlorophyll, oxygen, current speed)
+CopernicusMarine downloads the products selected by `ENV_PRESET` in
+`config/env_presets.yaml`. Physics supplies salinity, temperature and the
+eastward/northward current components. Dissolved oxygen comes from the
+separate biogeochemical reanalysis; chlorophyll remains the satellite
+ocean-colour product. Oxygen and current speed have their own config toggles.
+
+All layers use the selected baseline years. Oxygen is the mean dissolved
+oxygen concentration (mmol/m³). Current speed (m/s) is calculated as
+`sqrt(uo^2 + vo^2)` for each monthly time step, then averaged across the
+baseline. Monthly mean components cannot resolve faster changes in speed
+or direction. Calculating the magnitude before the baseline mean avoids
+cancellation between months with opposing currents.
+
+This section builds the layers and extracts values at each individual's
+coordinates. Section 7 calculates window Pearson correlations at the raw
+diversity cell centres, and location Pearson/Spearman associations against
+the environmental values averaged over each cluster's member individuals.
+The optional neutral comparisons use those same location predictors.
+
+Credentials are never hardcoded here: cms_download_subset() picks them up
+automatically from the COPERNICUSMARINE_SERVICE_USERNAME /
+COPERNICUSMARINE_SERVICE_PASSWORD environment variables (set once in your
+shell profile or the batch script - see cms_set_username()/
+cms_set_password() to store them that way from an interactive session).
+
+Note: this section is written and checked against the package's documented
+API and source, but not run end-to-end here against the live Copernicus
+service (no account/network access in this environment) - the diagnostic
+prints below (dimension names, NA counts) are there specifically so the
+first real run surfaces a wrong depth/variable-name guess immediately
+instead of silently producing a flat or empty layer.
+```{r 2.6 Environmental layers}
+USE_COPERNICUS_MARINE <- as.logical(Sys.getenv("USE_COPERNICUS_MARINE", unset = "FALSE"))
+# USE_COPERNICUS_MARINE <- TRUE
+if (USE_COPERNICUS_MARINE) {
+  # ---- cache dir: same reasoning as ne_cache_dir above - shared across every
+  # gene's render and across chromosomes, since none of this depends on the
+  # gene at all (only on the sample coordinates and the config below) ----
+  env_cache_dir <- Sys.getenv("ENV_CACHE_DIR", unset = file.path(dirname(output_dir), "env_cache"))
+  dir.create(env_cache_dir, showWarnings = FALSE, recursive = TRUE)
+
+  # Requested physics depth also applies to currents. Oxygen defaults to
+  # the same depth; ENV_OXYGEN_DEPTH_M can select a different layer.
+  ENV_DEPTH_M <- as.numeric(Sys.getenv("ENV_DEPTH_M", unset = 0))
+  ENV_OXYGEN_DEPTH_M <- as.numeric(Sys.getenv("ENV_OXYGEN_DEPTH_M", unset = as.character(ENV_DEPTH_M)))
+  read_environment_toggle <- function(name) {
+    value <- tolower(trimws(Sys.getenv(name, unset = "FALSE")))
+    if (!(value %in% c("true", "false"))) stop(name, " must be TRUE or FALSE")
+    value == "true"
+  }
+  ENV_OXYGEN_ENABLED <- read_environment_toggle("ENV_OXYGEN_ENABLED")
+  ENV_CURRENT_SPEED_ENABLED <- read_environment_toggle("ENV_CURRENT_SPEED_ENABLED")
+  if (!is.finite(ENV_DEPTH_M) || ENV_DEPTH_M < 0 ||
+      (ENV_OXYGEN_ENABLED && (!is.finite(ENV_OXYGEN_DEPTH_M) || ENV_OXYGEN_DEPTH_M < 0))) {
+    stop("Environmental depths must be finite, non-negative metres")
+  }
+
+  # Multi-year window the winter/summer/overall means are computed over - several years, not one, so a single
+  # unusual year doesn't dominate. Set ENV_BASELINE_START_YEAR / ENV_BASELINE_END_YEAR in config.yaml
+  # (wingen_params); each dataset's own coverage limits are applied further down (env_presets.yaml), so a range
+  # that reaches past a dataset's end is trimmed instead of failing. The 2019-2022 fallback below was a
+  # first-test placeholder to keep the first download small - a longer climatology (10-30 years) is a more
+  # defensible proxy for the conditions the species are adapted to.
+  # If you change ENV_WINTER_MONTHS / ENV_SUMMER_MONTHS below, use a new results_dir (or delete the cached
+  # temp_* files): the cache file names carry product, depth and years, but not the months.
+  ENV_BASELINE_START_YEAR <- as.numeric(Sys.getenv("ENV_BASELINE_START_YEAR", unset = 2019))
+  ENV_BASELINE_END_YEAR   <- as.numeric(Sys.getenv("ENV_BASELINE_END_YEAR",   unset = 2022))
+
+  # split water temperature into a "winter" and a "summer" metric,
+  # winter roughly Nov-Jan (species assumed less active then).
+  # Summer will here be defined as Jun-Aug.
+  ENV_WINTER_MONTHS <- c(11, 12, 1)
+  ENV_SUMMER_MONTHS <- c(6, 7, 8)
+
+  # >>> [env-presets] ---------------------------------------------------------------------------------------
+  # ---- product/layer choice - the ONE place this is decided ----
+  # Choose a preset with ENV_PRESET in config.yaml (wingen_params). The presets themselves - product, layer,
+  # variable names, the years each dataset covers, and notes on when to use which - live in
+  # config/env_presets.yaml. To use another Copernicus Marine dataset, add an entry there: no edit to this file.
+  ENV_PRESET       <- Sys.getenv("ENV_PRESET", unset = "global")
+  ENV_PRESETS_FILE <- Sys.getenv("ENV_PRESETS_FILE",
+                                 unset = file.path(github_repository_path, "config", "env_presets.yaml"))
+  if (!file.exists(ENV_PRESETS_FILE)) stop("Environmental presets file not found: ", ENV_PRESETS_FILE)
+  env_presets <- yaml::read_yaml(ENV_PRESETS_FILE)$presets
+  if (!(ENV_PRESET %in% names(env_presets))) {
+    stop("ENV_PRESET '", ENV_PRESET, "' is not defined in ", ENV_PRESETS_FILE,
+         ". Available presets: ", paste(names(env_presets), collapse = ", "))
+  }
+  env_preset <- env_presets[[ENV_PRESET]]
+
+  ENV_PHYSICS_PRODUCT <- env_preset$physics$product            # salinity + temperature + currents
+  ENV_PHYSICS_LAYER   <- env_preset$physics$layer
+  ENV_SALINITY_VAR    <- env_preset$physics$salinity_var
+  ENV_TEMPERATURE_VAR <- env_preset$physics$temperature_var
+  ENV_CHL_PRODUCT     <- env_preset$chl$product                # satellite chlorophyll-a
+  ENV_CHL_LAYER       <- env_preset$chl$layer
+  ENV_CHL_VARIABLE    <- env_preset$chl$variable
+  env_preset_fields <- list(ENV_PHYSICS_PRODUCT, ENV_PHYSICS_LAYER, ENV_SALINITY_VAR, ENV_TEMPERATURE_VAR,
+                            ENV_CHL_PRODUCT, ENV_CHL_LAYER, ENV_CHL_VARIABLE)
+  if (any(vapply(env_preset_fields, function(x) is.null(x) || !nzchar(x), logical(1)))) {
+    stop("Preset '", ENV_PRESET, "' in ", ENV_PRESETS_FILE, " must define physics: product, layer, salinity_var, ",
+         "temperature_var and chl: product, layer, variable")
+  }
+  if (ENV_CURRENT_SPEED_ENABLED) {
+    ENV_CURRENT_EASTWARD_VAR <- env_preset$physics$current_eastward_var
+    ENV_CURRENT_NORTHWARD_VAR <- env_preset$physics$current_northward_var
+    if (any(vapply(list(ENV_CURRENT_EASTWARD_VAR, ENV_CURRENT_NORTHWARD_VAR),
+                   function(x) is.null(x) || !nzchar(x), logical(1)))) {
+      stop("Preset '", ENV_PRESET, "' must define physics: current_eastward_var and current_northward_var")
+    }
+  }
+  if (ENV_OXYGEN_ENABLED) {
+    ENV_OXYGEN_PRODUCT <- env_preset$oxygen$product
+    ENV_OXYGEN_LAYER <- env_preset$oxygen$layer
+    ENV_OXYGEN_VARIABLE <- env_preset$oxygen$variable
+    if (any(vapply(list(ENV_OXYGEN_PRODUCT, ENV_OXYGEN_LAYER, ENV_OXYGEN_VARIABLE),
+                   function(x) is.null(x) || !nzchar(x), logical(1)))) {
+      stop("Preset '", ENV_PRESET, "' must define oxygen: product, layer and variable")
+    }
+  }
+  cat("Environmental data preset:", ENV_PRESET, "-", env_preset$label, "\n")
+  cat("(available presets in", basename(ENV_PRESETS_FILE), ":", paste(names(env_presets), collapse = ", "), ")\n")
+
+  # Years actually requested from each dataset: the requested baseline (ENV_BASELINE_START/END_YEAR above),
+  # trimmed to the coverage the preset declares for that dataset (first_year / last_year in env_presets.yaml;
+  # null = no limit). Trimming is announced, and the years used end up in the cache file names and in the gene's
+  # JSON (run_settings), so a catalog always says which years its environmental values are averages over.
+  clamp_env_years <- function(first_year, last_year, what) {
+    start <- ENV_BASELINE_START_YEAR
+    end   <- ENV_BASELINE_END_YEAR
+    if (!is.null(first_year)) start <- max(start, first_year)
+    if (!is.null(last_year))  end   <- min(end,   last_year)
+    if (start > end) {
+      stop(what, ": the requested baseline ", ENV_BASELINE_START_YEAR, "-", ENV_BASELINE_END_YEAR,
+           " does not overlap this dataset's coverage (", first_year, "-", last_year, ")")
+    }
+    if (start != ENV_BASELINE_START_YEAR || end != ENV_BASELINE_END_YEAR) {
+      message("NOTE (", what, "): requested baseline ", ENV_BASELINE_START_YEAR, "-", ENV_BASELINE_END_YEAR,
+              " trimmed to ", start, "-", end, " to fit the dataset's coverage")
+    }
+    c(start, end)
+  }
+  env_years_physics <- clamp_env_years(env_preset$physics$first_year, env_preset$physics$last_year, "physics")
+  env_years_chl     <- clamp_env_years(env_preset$chl$first_year,     env_preset$chl$last_year,     "chlorophyll")
+  if (ENV_OXYGEN_ENABLED) {
+    env_years_oxygen <- clamp_env_years(env_preset$oxygen$first_year, env_preset$oxygen$last_year, "oxygen")
+    cat("Oxygen baseline years:", paste(env_years_oxygen, collapse = "-"), "\n")
+  }
+  cat("Baseline years used - physics:", paste(env_years_physics, collapse = "-"),
+      "| chlorophyll:", paste(env_years_chl, collapse = "-"), "\n")
+  # <<< [env-presets] ---------------------------------------------------------------------------------------
+
+  # Reuses section 1.3's own padded sample-point bounding box (bb_raw/
+  # pad_raw_x/pad_raw_y) rather than recomputing it - one bounding box, one
+  # place it's derived, same reasoning as MAX_INTERP_DIST being computed
+  # once in section 1.4 rather than independently wherever it's needed.
+  # cms_download_subset()'s `region` is documented as xmin, ymin, xmax, ymax.
+  env_region        <- c(bb_raw[["xmin"]] - pad_raw_x, bb_raw[["ymin"]] - pad_raw_y,
+                          bb_raw[["xmax"]] + pad_raw_x, bb_raw[["ymax"]] + pad_raw_y)
+  env_verticalrange <- c(-ENV_DEPTH_M, -ENV_DEPTH_M)  # package docs: values below the surface must be NEGATIVE
+
+  # Loads a previously-cached layer if one exists at cache_path, otherwise
+  # calls `build()` (a zero-arg closure doing the actual download) and
+  # writes the result there for every later gene's render to reuse - the
+  # "fetch once" behavior, done as a simple on-disk check rather than a new
+  # Snakemake rule, so it doesn't require restructuring the DAG right now.
+  cached_env_raster <- function(cache_path, build) {
+    if (file.exists(cache_path)) return(terra::rast(cache_path))
+    r <- build()
+    # Write to a temporary name first and rename when finished: file.rename() is atomic within one folder, so a
+    # gene rendering at the same moment never opens a half-written cache file. Then read the layer back from disk so
+    # EVERY gene works with the same stored values (writeRaster stores 32-bit floats - returning the in-memory
+    # 64-bit `r` here would have given the very first gene values that differ from everyone else's in the 7th digit).
+    tmp_path <- sub("\\.tif$", paste0(".", Sys.getpid(), ".tmp.tif"), cache_path)
+    terra::writeRaster(r, tmp_path, overwrite = TRUE)
+    file.rename(tmp_path, cache_path)
+    terra::rast(cache_path)
+  }
+
+  # Retain monthly time steps so vector components can be combined before
+  # temporal averaging. NetCDF preserves the timestamps for alignment.
+  download_env_series <- function(product, layer, variable, years, vertical = env_verticalrange) {
+    raw <- cms_download_subset(
+      product = product, layer = layer, variable = variable,
+      region = env_region,
+      timerange = c(sprintf("%d-01-01", as.integer(years[1])), sprintf("%d-12-31", as.integer(years[2]))),
+      verticalrange = vertical,
+      progress = FALSE
+    )
+    nc_tmp <- tempfile(fileext = ".nc")
+    cms_write_ncdf(raw, nc_tmp)
+    r <- terra::rast(nc_tmp)
+    cat(layer, "/", variable, ": downloaded", terra::nlyr(r), "time step(s) - layer names:",
+        paste(names(r), collapse = ", "), "\n")
+    r
+  }
+  download_env_climatology <- function(product, layer, variable, months, years, vertical = env_verticalrange) {
+    r <- download_env_series(product, layer, variable, years, vertical)
+    layer_months <- lubridate::month(terra::time(r))
+    r <- terra::mean(r[[layer_months %in% months]], na.rm = TRUE)
+    terra::project(r, world_crs)
+  }
+
+  env_salinity <- cached_env_raster(
+    file.path(env_cache_dir, sprintf("salinity_%s_depth%gm_%d-%d.tif", ENV_PHYSICS_PRODUCT, ENV_DEPTH_M, env_years_physics[1], env_years_physics[2])),
+    function() download_env_climatology(
+      product = ENV_PHYSICS_PRODUCT, layer = ENV_PHYSICS_LAYER, years = env_years_physics,
+      variable = ENV_SALINITY_VAR, months = 1:12  # no seasonal split requested for salinity - averaged over the whole baseline window
+    )
+  )
+
+  env_temp_winter <- cached_env_raster(
+    file.path(env_cache_dir, sprintf("temp_winter_%s_depth%gm_%d-%d.tif", ENV_PHYSICS_PRODUCT, ENV_DEPTH_M, env_years_physics[1], env_years_physics[2])),
+    function() download_env_climatology(
+      product = ENV_PHYSICS_PRODUCT, layer = ENV_PHYSICS_LAYER, years = env_years_physics,
+      variable = ENV_TEMPERATURE_VAR, months = ENV_WINTER_MONTHS
+    )
+  )
+
+  env_temp_summer <- cached_env_raster(
+    file.path(env_cache_dir, sprintf("temp_summer_%s_depth%gm_%d-%d.tif", ENV_PHYSICS_PRODUCT, ENV_DEPTH_M, env_years_physics[1], env_years_physics[2])),
+    function() download_env_climatology(
+      product = ENV_PHYSICS_PRODUCT, layer = ENV_PHYSICS_LAYER, years = env_years_physics,
+      variable = ENV_TEMPERATURE_VAR, months = ENV_SUMMER_MONTHS
+    )
+  )
+
+  # Chlorophyll: a separate satellite product, surface-only (no depth
+  # dimension - verticalrange simply omitted), strongly right-skewed hence
+  # the log() before anything downstream ever sees it (see the earlier note
+  # on this). variable = "CHL" is confirmed directly against the global
+  # product's own catalogue listing (data.marine.copernicus.eu); worth a
+  # quick cms_product_details() check anyway if ENV_CHL_PRODUCT is ever
+  # switched to something not verified here.
+  env_chl_log <- cached_env_raster(
+    file.path(env_cache_dir, sprintf("chl_log_%s_%d-%d.tif", ENV_CHL_PRODUCT, env_years_chl[1], env_years_chl[2])),
+    function() {
+      r <- download_env_climatology(
+        product = ENV_CHL_PRODUCT, layer = ENV_CHL_LAYER, years = env_years_chl,
+        variable = ENV_CHL_VARIABLE, months = 1:12, vertical = NULL
+      )
+      log(r)
+    }
+  )
+
+  if (ENV_OXYGEN_ENABLED) {
+    env_oxygen <- cached_env_raster(
+      file.path(env_cache_dir, sprintf("oxygen_%s_%s_%s_depth%gm_%d-%d.tif",
+        ENV_OXYGEN_PRODUCT, ENV_OXYGEN_LAYER, ENV_OXYGEN_VARIABLE, ENV_OXYGEN_DEPTH_M,
+        env_years_oxygen[1], env_years_oxygen[2])),
+      function() download_env_climatology(
+        product = ENV_OXYGEN_PRODUCT, layer = ENV_OXYGEN_LAYER, variable = ENV_OXYGEN_VARIABLE,
+        months = 1:12, years = env_years_oxygen,
+        vertical = c(-ENV_OXYGEN_DEPTH_M, -ENV_OXYGEN_DEPTH_M)
+      )
+    )
+  }
+  if (ENV_CURRENT_SPEED_ENABLED) {
+    current_speed_magnitude <- function(eastward, northward) sqrt(eastward^2 + northward^2)
+    env_current_speed <- cached_env_raster(
+      file.path(env_cache_dir, sprintf("current_speed_monthly_%s_%s_%s_%s_depth%gm_%d-%d.tif",
+        ENV_PHYSICS_PRODUCT, ENV_PHYSICS_LAYER, ENV_CURRENT_EASTWARD_VAR, ENV_CURRENT_NORTHWARD_VAR,
+        ENV_DEPTH_M, env_years_physics[1], env_years_physics[2])),
+      function() {
+        eastward <- download_env_series(ENV_PHYSICS_PRODUCT, ENV_PHYSICS_LAYER,
+          ENV_CURRENT_EASTWARD_VAR, env_years_physics)
+        northward <- download_env_series(ENV_PHYSICS_PRODUCT, ENV_PHYSICS_LAYER,
+          ENV_CURRENT_NORTHWARD_VAR, env_years_physics)
+        times <- terra::time(eastward)
+        if (length(times) != terra::nlyr(eastward) || anyNA(times) || anyDuplicated(times) ||
+            !identical(times, terra::time(northward)) ||
+            !terra::compareGeom(eastward, northward, stopOnError = FALSE)) {
+          stop("Current components must have identical grids and valid, matching monthly timestamps")
+        }
+        speed <- current_speed_magnitude(eastward, northward)
+        terra::project(terra::mean(speed, na.rm = TRUE), world_crs)
+      }
+    )
+  }
+
+  # ---- Coastal NA check ----
+  # NOT a GPS-accuracy problem - a sample's own coordinate can be exactly
+  # right and still land on a masked cell here, because these products' own
+  # land masks are coarser than the real coastline (Baltic archipelagos
+  # especially) and the ocean-colour product additionally masks a buffer
+  # around any coastline for land-adjacency effects. Whether it actually
+  # bites THIS dataset is checked directly below rather than assumed either
+  # way.
+  # >>> [fill-count] per-individual flag: was this individuals raw environmental cell NA (i.e. will it receive a neighbour-filled
+  # value below)? Kept per individual (named by Sample ID) so section 4 can count it per location and write it to the JSON.
+  environmental_layers <- list(salinity = env_salinity, temp_winter = env_temp_winter,
+    temp_summer = env_temp_summer, chl_log = env_chl_log)
+  if (ENV_OXYGEN_ENABLED) environmental_layers$oxygen <- env_oxygen
+  if (ENV_CURRENT_SPEED_ENABLED) environmental_layers$current_speed <- env_current_speed
+  env_raw_na_flags <- lapply(
+    environmental_layers,
+    function(r) {
+      flag <- is.na(terra::extract(r, coords_v_mollweide, ID = FALSE)[[1]])
+      names(flag) <- coords_file_df$`Sample ID`
+      flag
+    }
+  )
+  env_before_na <- vapply(env_raw_na_flags, sum, numeric(1))  # same named vector as before - printed just below
+  # <<< [fill-count]
+  cat("Sample points falling on a masked/NA environmental cell, before filling (of", nrow(coords_file_df), "):\n")
+  print(env_before_na)
+
+  # na.policy = "only": fills JUST the NA cells, from their non-NA
+  # neighbors - real ocean values are never touched (see the earlier note
+  # on this). Repeated so a coastal gap wider than one 3x3 pass can reach
+  # (e.g. a narrow strait) still gets filled.
+  fill_coastal_na <- function(r, passes = 2) {
+    for (i in seq_len(passes)) r <- terra::focal(r, w = 3, fun = "mean", na.policy = "only", na.rm = TRUE)
+    r
+  }
+  env_salinity    <- fill_coastal_na(env_salinity)
+  env_temp_winter <- fill_coastal_na(env_temp_winter)
+  env_temp_summer <- fill_coastal_na(env_temp_summer)
+  env_chl_log     <- fill_coastal_na(env_chl_log)
+  if (ENV_OXYGEN_ENABLED) env_oxygen <- fill_coastal_na(env_oxygen)
+  if (ENV_CURRENT_SPEED_ENABLED) env_current_speed <- fill_coastal_na(env_current_speed)
+
+  # Per-individual values, in the SAME order as coords_v_mollweide - the
+  # same point set window_gd() itself uses for pi in section 3 - so these
+  # plug directly into window_general() with identical wdim/fact/coords/lyr
+  # settings in section 7 (Track A) with no reordering needed. Named by
+  # Sample ID (coords_v_mollweide's row order is coords_file_df's row order
+  # - vect()/project() preserve feature order, confirmed) so Track B
+  # (section 7, 4c) can pool the same individuals per cluster that
+  # pi_for_cluster() itself pools, by ID rather than by position.
+  env_ind_salinity    <- terra::extract(env_salinity,    coords_v_mollweide, ID = FALSE)[[1]]
+  env_ind_temp_winter <- terra::extract(env_temp_winter, coords_v_mollweide, ID = FALSE)[[1]]
+  env_ind_temp_summer <- terra::extract(env_temp_summer, coords_v_mollweide, ID = FALSE)[[1]]
+  env_ind_chl_log     <- terra::extract(env_chl_log,     coords_v_mollweide, ID = FALSE)[[1]]
+  names(env_ind_salinity)    <- coords_file_df$`Sample ID`
+  names(env_ind_temp_winter) <- coords_file_df$`Sample ID`
+  names(env_ind_temp_summer) <- coords_file_df$`Sample ID`
+  names(env_ind_chl_log)     <- coords_file_df$`Sample ID`
+  if (ENV_OXYGEN_ENABLED) {
+    env_ind_oxygen <- terra::extract(env_oxygen, coords_v_mollweide, ID = FALSE)[[1]]
+    names(env_ind_oxygen) <- coords_file_df$`Sample ID`
+  }
+  if (ENV_CURRENT_SPEED_ENABLED) {
+    env_ind_current_speed <- terra::extract(env_current_speed, coords_v_mollweide, ID = FALSE)[[1]]
+    names(env_ind_current_speed) <- coords_file_df$`Sample ID`
+  }
+
+  # >>> [fill-count] individuals that still have NO environmental value after filling (they drop out of their location's mean)
+  env_after_na <- c(salinity    = sum(is.na(env_ind_salinity)),
+                    temp_winter = sum(is.na(env_ind_temp_winter)),
+                    temp_summer = sum(is.na(env_ind_temp_summer)),
+                    chl_log     = sum(is.na(env_ind_chl_log)))
+  if (ENV_OXYGEN_ENABLED) env_after_na <- c(env_after_na, oxygen = sum(is.na(env_ind_oxygen)))
+  if (ENV_CURRENT_SPEED_ENABLED) env_after_na <- c(env_after_na, current_speed = sum(is.na(env_ind_current_speed)))
+  cat("individuals with NO environmental value even after filling:\n")
+  print(env_after_na)
+  # <<< [fill-count]
+  }
+```
+# 3. (window_gd) Moving window - PI calculation
+```{r 3. window-gd}
+start_window_gd_time <- Sys.time()
+# window_gd(..., fact = fact_value) would rebuild its own working grid
+# internally via terra::aggregate(lyr, fact, fun = mean) - without
+# na.rm = TRUE. Since lyr is sea = 1 / land = NA, that means an
+# aggregated cell only survives as non-NA if ALL of its resolution_m
+# sub-cells are sea; a single land sub-cell nulls the whole block, and
+# any cell whose own aggregated value is NA is skipped entirely
+# (sample_count = NA, no window ever evaluated), regardless of real
+# samples sitting right there. Aggregating with na.rm = TRUE ourselves
+# first, then passing fact = 0 so window_gd() doesn't re-aggregate,
+# keeps the same window geometry while fixing which cells are eligible
+# to be evaluated at all.
+
+lyr_agg <- terra::aggregate(lyr, fact = fact_value, fun = mean, na.rm = TRUE)
+# lyr = lyr_agg with fact = 0 is required together, and must NOT be changed independently, since window_gd(fact = 0) stops window_gd() from redoing the aggregation made in lyr_agg.
+# window_gd(fact) would otherwise rebuild its own working grid internally via terra::aggregate(lyr, fact, fun = mean), WITHOUT na.rm = TRUE.
+# Since lyr is sea = (1 / land) = NA, an aggregated cell would then only survive as non-NA if ALL of its fact_value^2 sub-cells are sea
+# => a single land sub-cell nulls the whole block, silently dropping coastal samples from ever getting a window evaluated, regardless of resolution_m (finer resolution
+# => more sub-cells per block
+# => MORE chances one clips land, not fewer).
+set.seed(seed_value) # rarefaction inside window_gd() draws random individuals; a fixed seed (SEED in config.yaml) makes every re-run give the same window values
+wgd <- window_gd(vcf,
+                 coords = coords_sf_mollweide,
+                 lyr = lyr_agg,
+                 stat = gd_stat, # "pi", "Ho" or "biallelic_richness" 
+                 wdim = wdim_value, # [Default: 3x3 window]
+                 fact = 0, # must stay 0 (see comment above) [Default: 0]
+                 rarify = use_rarify,
+                 rarify_n = rarify_n, # rarify_n: If rarify = TRUE, number of points to use for rarefaction (defaults to min_n). [Default: 2]
+                 rarify_nit	= rarify_n_iterations, # If rarify = TRUE, number of iterations to use for rarefaction (defaults to 5). Can also be set to "all" to use all possible combinations of samples of size rarify_n within the window. [Default: 5]
+                 min_n = min_n_samples_per_calc,
+                 L = "nvariants" # For calculating "pi", L argument in pi.dosage function. "nvariants" counts SNP columns (not true surveyed sequence length) so this is "diversity per polymorphic site" rather than a properly bp-scaled per-nucleotide pi -> Should ideally be replaced with a true sequence length value for L. [Default: "nvariants"]
+                 # L = 100 # For calculating "pi", L argument in pi.dosage function. Return the average nucleotide diversity per nucleotide given the length L of the sequence. The wingen default is L = "nvariants", which sets L to the number of variants in the VCF. If L = NULL, returns the sum over SNPs of nucleotide diversity (note: L = NULL is the pi.dosage default which wingen does not use). [Default: "nvariants"]
+
+                 )
+names(wgd)
+
+# Name of the statistic's layer in wgd ("pi", "Ho" or "biallelic_richness"). Everything below that touches the
+# statistic looks it up through this, never through a hardcoded name. 
+gd_layer_name <- setdiff(names(wgd), "sample_count")
+stopifnot(length(gd_layer_name) == 1)
+
+# wgd <- window_gd(vcf,
+#                  coords = coords_sf_mollweide,
+#                  #lyr = lyr_agg,
+#                  lyr = lyr,
+#                  stat = "pi",
+#                  wdim = wdim_value, # [Default: 3x3 window]
+#                 # fact = 0, # [Default: 0]
+#                  fact = fact_value, # [Default: 0]
+#                  rarify = TRUE,
+#                  rarify_n = 4, # rarify_n: If rarify = TRUE, number of points to use for rarefaction (defaults to min_n). [Default: 2]
+#                  rarify_nit	= 5, # If rarify = TRUE, number of iterations to use for rarefaction (defaults to 5). Can also be set to "all" to use all possible combinations of samples of size rarify_n within the window. [Default: 5]
+#                  L = "nvariants"
+#                # L = 100 # For calculating "pi", L argument in pi.dosage function. Return the average nucleotide diversity per nucleotide given the length L of the sequence. The wingen default is L = "nvariants", which sets L to the number of variants in the VCF. If L = NULL, returns the sum over SNPs of nucleotide diversity (note: L = NULL is the pi.dosage default which wingen does not use). [Default: "nvariants"]
+#                  )
+
+window_gd_runtime <- difftime(Sys.time(), start_window_gd_time , units = "secs")
+message("window_gd runtime: ", round(window_gd_runtime, 2), " seconds")
+print(paste0("window_gd runtime: ", round(window_gd_runtime, 2), " seconds"))
+```
+## Sample-count diagnostic
+Decides minval_sample_count below from real numbers instead of a guess -
+what does wgd actually see near EACH real point? Sorted ascending:
+whatever minval_sample_count gets set to next, every row above that value
+is a real, named sample this pipeline would drop from both the kriging
+input and the final display. Worth re-running any time wdim_value/
+fact_value/resolution_m/the ROI change.
+```{r sample-count-diagnostic}
+sample_count_at_point <- terra::extract(wgd[["sample_count"]], coords_v_mollweide)$sample_count
+# order(), not sort(), for both lines below: sort() drops NA values by
+# default, order() keeps every position and just decides where NAs go -
+# using sort() separately from order() is what caused the crash (a
+# 122-length vector next to 125 reordered rows, three real samples with
+# sample_count_at_point = NA silently dropped by sort()). na.last =
+# FALSE additionally puts any NA cases FIRST rather than last - a
+# sample with no registered window at all is a worse case than any
+# numeric count, and default sorting would otherwise bury it past where
+# head(20) below ever looks.
+ord <- order(sample_count_at_point, na.last = FALSE)
+support_check <- coords_file_df[ord, c("Sample ID", "Latitude", "Longitude")]
+support_check$sample_count_at_point <- sample_count_at_point[ord]
+head(support_check, 20)
+```
+#4. (wkrig_gd) Kriging
+```{r 4. Kriging (wkrig_gd)}
+# --- knob 1: minimum real samples backing a cell. Used here to protect
+# the variogram fit itself, not just to hide weak cells from the final
+# display afterward - the fitted model describes "how does pi
+# similarity decay with distance" using every non-NA cell in wgd as
+# input, all at once, regardless of how much real sample support any
+# individual cell actually had. A handful of noisy, low-confidence
+# windows sitting alongside confident ones can distort that single
+# global fit even for predictions made in well-supported areas, since
+# the same model gets applied everywhere. Filtering them out before
+# kriging protects the model; the mask_gd() masking further below still
+# protects the DISPLAYED output afterward - the two aren't redundant
+# with each other; the diagnostic chunk above is what should actually
+# set this number, not a guess.
+#
+# 2, not a stricter number: window_gd()'s own min_n (default 2) already
+# refuses to compute pi at all below that - anything higher than 2 here
+# is a SECOND, stricter cut on top of that decision. Start at 2 (i.e.
+# trust window_gd()'s own judgment and no further) and only raise it if
+# the diagnostic above and the variogram fit both look better for it.
+
+
+wgd_confident <- wgd
+wgd_confident[[gd_layer_name]] <- mask_gd(wgd[[gd_layer_name]], wgd[["sample_count"]], minval = minval_sample_count)
+
+# nmax caps how many neighboring points can inform a single prediction -
+# unrelated to what gets interpolated (r's job, below) or where (grd's
+# job, below). wingen's own docs suggest ~30 as a speed/accuracy
+# starting point; 15 is more conservative (smoother, cheaper) than that.
+#
+# r = wgd_confident[[gd_layer_name]], not the whole wgd_confident object: if r
+# has more than one layer, wkrig_gd() silently keeps only the FIRST one
+# ("Input raster has multiple layers. Using only the first layer.") -
+# wgd_confident is (pi, sample_count) in that order, so passing the
+# whole object happens to still krige pi, but only by layer position,
+# not by name. Being explicit here means that stays true even if a
+# future edit changes what layers wgd_confident carries or their order.
+#
+# grd = lyr, not disagg(wgd, ...): grd is ONLY a coordinate template -
+# "predict at every (x, y) in this grid's geometry" - its own cell
+# values are never read (unlike r, grd is extracted with na.rm = FALSE,
+# so even its NA cells get a prediction). grd = lyr means predicting
+# everywhere in lyr's footprint, including land, which is exactly why
+# the separate land re-mask right below is necessary, not optional. It
+# also keeps kgd on the exact same grid as lyr/ocean, which the
+# sample_count mask further below relies on.
+
+start_wkrig_gd_time <- Sys.time()
+# Disaggregating the prediction grid (smoothing) prior to kriging: same geometry as lyr, just subdivided into sub-cells with finer spacing  for wkrig_gd() to report predictions at (see grd_disagg_factor comment in settings above).
+# The older kriging function, krig_gd() had an argument for this (disagg_grd), which have not been transferred over to the new kriging function, hence, terra:s disagg function is used here to create a finer grid instead!
+grd_fine <- if (grd_disagg_factor > 1) terra::disagg(lyr, fact = grd_disagg_factor) else lyr
+
+if (use_weighted_kriging) {
+# weight_r test:
+kgd <- wkrig_gd(r = wgd_confident[[gd_layer_name]],
+                grd = grd_fine,
+                weight_r = wgd_confident[["sample_count"]], # weight_r: Optional SpatRaster with sample counts per cell, used to compute location-specific measurement variance and weights for kriging. If NULL (default), no weighting is applied. [Default: NULL]
+                  nmax = nmax_neighbours,
+                  maxdist = maxdist,
+                  max_range_frac = max_range_frac
+                )
+} else {
+  # Pre 2026-08-25 kriging settings:
+  kgd <- wkrig_gd(r = wgd_confident[[gd_layer_name]],
+                  grd = grd_fine,
+                  nmax = nmax_neighbours,
+                  maxdist = maxdist,
+                  max_range_frac = max_range_frac
+                  )
+  
+}
+
+wkrig_gd_runtime <- difftime(Sys.time(), start_wkrig_gd_time , units = "secs")
+message("wkrig_gd runtime: ", round(wkrig_gd_runtime, 2), " seconds")
+print(paste0("wkrig_gd runtime: ", round(wkrig_gd_runtime, 2), " seconds"))
+
+# Re-exclude land explicitly. wkrig_gd() interpolates onto whatever
+# prediction grid it builds internally and can smooth land back in even
+# though `lyr` already had it as NA going in.
+# mask_gd()'s implicit touches = TRUE here means the coastline in the
+# final figure can bleed very slightly onto land wherever a cell merely
+# touches the sea, in exchange for not re-losing the same narrow-water
+# sites this exact mechanism was excluding earlier in the pipeline
+# (section 2.3). A sharper, centre-based edge is only reachable via
+# terra::mask(kgd, ocean, touches = FALSE) directly, at that cost.
+mgd <- mask_gd(kgd, ocean)
+```
+# 5. Masking 
+
+## 5.1 Polygon masking
+```{r 5.1 Polygon masking}
+if (!is.na(masking_polygon_file_path)) {
+  mask_lyr <- rast(masking_polygon_file_path)  # rast(), not terra:::rast() - a normal exported
+                                                 # function, no reason to reach into terra's
+                                                 # internal namespace for it
+
+  # Diagnostic, not decoration: mask_lyr is coming from an external source
+  # (HELCOM/HOLAS in this case) with no guarantee of matching mgd's CRS,
+  # resolution, or value encoding. Worth actually looking at before trusting
+  # the mask below.
+  cat("Species range file CRS:\n"); print(crs(mask_lyr, describe = TRUE))
+  cat("Species range file native grid:\n"); print(mask_lyr)
+  cat("Distinct values present:", paste(unique(na.omit(values(mask_lyr))), collapse = ", "), "\n")
+
+  # mask_lyr is virtually certain to NOT already be on mgd's own grid (this
+  # pipeline's bespoke +proj=moll +lon_0=0 at whatever resolution_m/
+  # grd_disagg_factor produced) - that CRS/geometry mismatch is exactly
+  # what "[mask] extents do not match" means: terra::mask() requires x and y
+  # to share the same grid when y is a SpatRaster, not just an overlapping
+  # area. project(source, target_raster, method) reprojects AND resamples
+  # onto target_raster's exact geometry in one step - same pattern already
+  # used for dist_to_sample in section 5.
+  # method = "near": this is a categorical presence/range layer, not a
+  # continuous one - averaging class codes across cells (the default
+  # "bilinear") would produce meaningless intermediate values.
+  mask_lyr_aligned <- project(mask_lyr, mgd, method = "near")
+
+  # mask_gd()/terra::mask() masks wherever y is NA by default - correct
+  # if absence is coded as NA in this file, but silently a no-op if this
+  # file instead uses an explicit 0 (or other value) for absence with no
+  # NA at all. Check the distinct-values print above; if presence isn't
+  # bare 1-vs-NA, replace the line below with something explicit instead,
+  # e.g.: mask_lyr_aligned[mask_lyr_aligned != 1] <- NA
+  mgd_polygon <- mask_gd(mgd, mask_lyr_aligned)
+
+  ggplot_gd(mgd_polygon) + ggtitle(paste0(gd_label, ", species-range-masked"))
+}
+
+```
+
+## 5.2 Automatic Masking
+### 5.2.1 Sample Count Mask
+```{r 5.2.1 Sample Count Mask - automatic-mask}
+# minval_sample_count now defined above, reused here for the final display
+# mask. sample_count is resampled (nearest-neighbor - it's a count, not
+# something to interpolate) straight onto mgd's own grid, rather than
+# disagg()'d from wgd by a fixed factor: mgd is on lyr's grid (the
+# krige chunk above krigs onto grd = lyr), and wgd's own grid (the
+# fact_value-aggregated one) has no guaranteed relationship to that
+# grid's exact resolution/extent. Tying this to mgd's actual grid,
+# whatever it is, means it can't drift out of sync with mgd if fact_value
+# or resolution_m ever change independently of each other.
+sample_count <- resample(wgd[["sample_count"]], mgd, method = "near")
+
+
+# HOTFIX 2026-09-01 (Make better permanent fix in future): When a non-one MAX_INTERP_DIST_SCALE increases the range of interpolated data points to be included, the geometry of the sample count layer still bottleneck the size of the interpolated "clusters". Hence to ensure that the size of these clusters is not limited by the sample count layer, as well as to ensure that the shape of the clusters wont take on the sample count layers rectangular shape, an easy fix to this was just to ensure that no sample count layer-based masking is made.
+# The cons with this approach however is that there is no sample count based masking of empirical + interpolated data point existing now for this specific case when you have set MAX_INTERP_DIST_SCALE > 1
+if ( (MIN_SAMPLE_COUNT_MODE != "none") && (MAX_INTERP_DIST_SCALE == 1) ) {
+      mgd_honest   <- mask_gd(mgd, sample_count, minval = minval_sample_count)
+}else { # If either sample count mode has been set to none OR MAX_INTERP_DIST_SCALE has been set to value larger than 1, masking is skipped.
+      mgd_honest <- mgd # Sample Count Masking Skipped
+ }
+
+
+```
+### 5.2.2 Distance Mask (from nearest empirical data point)
+Maximum distance from a cell to the nearest real sample
+```{r 5.2.2-Distance Mask - automatic-mask}
+start_distance_masking_time <- Sys.time()
+# MAX_INTERP_DIST was already decided in section 1.4 (window-based reach by
+# default, or the CLUSTER_THRESHOLD_KM-based clustered figure, or a direct
+# MAX_INTERP_DIST_KM override) - not redone here, so this and buffer_m
+# (section 2.3) both tie back to the exact same number rather than being
+# picked independently. This is also where planar-vs-geodesic distance
+# matters: terra computes true geodesic distance for a geographic CRS and
+# only planar distance for a projected one (like the Mollweide coordinates
+# used everywhere else in this script), and that gap is real at this data's
+# scale (measured ~10-15% at the few-km-to-tens-of-km range that matters
+# here) - which is why the vector/raster below are built in plain WGS84
+# specifically for this calculation, rather than folding maxdist into
+# wkrig_gd() directly on the Mollweide-projected grid.
+
+# Built directly in WGS84, rather than by reprojecting individual
+# Mollweide cell centers back to WGS84. Some cell centers, near the
+# edges of a Mollweide extent this wide, can fall outside Mollweide's
+# own valid elliptical domain and fail to reproject; reprojecting INTO
+# Mollweide from WGS84 (forward direction, below) doesn't have this
+# failure mode - every valid lon/lat has a defined Mollweide position,
+# it's only the reverse direction that can fail.
+wgs84_bb <- st_bbox(coords_raw_sf)  # real lon/lat extent of all samples, from section 1.3
+
+# WGS84_DIST_PAD must be generous enough that wgs84_grid's extent fully
+# covers mgd_honest's own extent (bb_raw + buffer_m) once reprojected - a
+# too-narrow pad here previously let a real bug through: cells in
+# mgd_honest that fall OUTSIDE wgs84_grid's extent get NA from project()
+# below (nothing there to sample), and with the OLD too_far <- dist >
+# MAX_INTERP_DIST; mask(x, too_far, maskvalues = TRUE) pattern, NA >
+# MAX_INTERP_DIST evaluates to NA, not TRUE - terra::mask() with an
+# explicit maskvalues only matches THAT value, it does not also treat NA
+# as "mask this" the way its own default behavior would. So those cells
+# silently passed the "too far" check no matter how far away they
+# actually were (confirmed via the spot-check above, near Iceland, where
+# no real sample exists). mask_gd() below sidesteps this differently: it
+# has no maskvalues argument at all, it always calls plain terra::mask(x,
+# y) - which DOES mask wherever y is NA, by default. So an unknown
+# distance is already treated as "not confirmed close enough" without
+# needing a separate manual failsafe line.
+#
+# Tied to buffer_m (doubled, for margin) rather than a flat number: a flat
+# 20-degree pad made sense for the original globally-dispersed dataset,
+# but is far more than buffer_m actually needs at this dataset's scale -
+# and that starts to matter once resolution is tightened below, since
+# cell count scales with pad^2. An oversized pad and a fine resolution
+# together would have made this genuinely slow for no accuracy benefit.
+WGS84_DIST_PAD <- (buffer_m / 111320) * 2  # metres -> degrees (~111.32 km/degree), doubled for margin
+
+# WGS84_DIST_PAD above assumes 111.32 km/degree, which is only accurate for LATITUDE
+# (a degree of LONGITUDE covers cos(latitude) times less real distance)
+# For stockholm region for instance (~59 latitude) that's roughly half (cos(59) =~ 0.51).
+# If the same distance pad would therefore be applied to both directions it would lead to under-covers for east-west specifically: wgs84_grid's real reach in that direction is only ~half what the pad number implies, so its edge sits closer to the samples than intended).
+# Cells in mgd_honest beyond THAT (too-close) edge get NA from the project() call below and mask_gd() would then masks them out regardless of true distance. 
+WGS84_DIST_PAD_LON <- WGS84_DIST_PAD / cos(mean(wgs84_bb[c("ymin", "ymax")]) * pi / 180)
+
+# Also tied to resolution_m rather than a flat number: at the old 0.5-deg
+# (~55 km) resolution, MAX_INTERP_DIST (now ~4.6-26 km, i.e. SMALLER than
+# one grid cell) couldn't actually be resolved - every mgd_honest cell
+# reprojecting near-neighbor onto the same 55 km wgs84_grid cell got the
+# identical distance value regardless of real differences in how close
+# each one truly is to a sample. This was already too coarse before
+# today, just not by enough to be obvious until MAX_INTERP_DIST itself
+# got fixed to a realistic (small) number.
+
+# To ensure that mgd_honest "lives on" a resolution_m grid (mgd_honest's real cell size is resolution_m / grd_disagg_factor, since grd_fine (used to build kgd/mgd/mgd_honest) disaggregates lyr by grd_disagg_factor first).
+# If wgs84_res would be left at plain resolution_m, wgs84_grid would roughly be "grd_disagg_factor" times coarser than what it's being reprojected onto in dist_to_sample below.
+# Otherwise the nearest-neighbor reprojection of a coarse WGS84 grid onto a much finer, differently-oriented Mollweide grid would produce a a rotation/reprojection artifact with jagged staircase-like edges on mgd_honest.
+# Matching wgs84_res to mgd_honest's actual resolution (This increases wgs84_grid's cell count by roughly grd_disagg_factor^2, so distance() below gets correspondingly slower)
+# Also folds in ctr_disagg (currently NULL/inactive - see raster creation parameters above):
+# if ctr_disagg is set, lyr's real resolution will be changed in the same way as grd_disagg_factor & and would silently reopen this exact mismatch
+lyr_res_m <- resolution_m / (if (!is.null(ctr_disagg)) ctr_disagg else 1)  # lyr's actual cell size, accounting for ctr_disagg
+wgs84_res <- (lyr_res_m / grd_disagg_factor) / 111320  # metres -> degrees latitude, matched to mgd_honest's actual (disaggregated) resolution
+
+wgs84_grid <- rast(ext(wgs84_bb["xmin"] - WGS84_DIST_PAD_LON, wgs84_bb["xmax"] + WGS84_DIST_PAD_LON,
+    wgs84_bb["ymin"] - WGS84_DIST_PAD, wgs84_bb["ymax"] + WGS84_DIST_PAD),
+resolution = wgs84_res, crs = "EPSG:4326")
+
+dist_wgs84 <- distance(wgs84_grid, coords_wgs84)
+dist_to_sample <- project(dist_wgs84, mgd_honest, method = "near")
+
+# Not redundant with wkrig_gd()'s maxdist (see settings block near the
+# top): this masks by distance to the nearest actual sample coordinate;
+# maxdist there only ever sees wgd_confident[[gd_layer_name]]'s cell centroids.
+# Also the ONLY thing standing between this map and an unconstrained continous heatmap interpolation style when MAX_INTERP_DIST_MODE = "none" (MAX_INTERP_DIST = Inf here makes this a no-op, y > Inf is never TRUE).
+
+mgd_honest <- mask_gd(mgd_honest, dist_to_sample, maxval = MAX_INTERP_DIST)
+
+distance_masking_runtime <- difftime(Sys.time(), start_distance_masking_time , units = "secs")
+message("distance masking runtime: ", round(distance_masking_runtime, 2), " seconds")
+print(paste0("distance masking runtime: ", round(distance_masking_runtime, 2), " seconds"))
+```
+```{r }
+   v <- terra::values(mgd_honest)[, 1]
+   print(quantile(v, c(0, .01, .5, .99, .999, 1), na.rm = TRUE))
+   cat("cells > 0.16:", sum(v > 0.16, na.rm = TRUE), "of", sum(is.finite(v)), "\n")
+   i <- which.max(v)
+   cat("sample_count at hottest kriged cell:", terra::values(sample_count)[i, 1], "\n")
+   w <- terra::values(wgd_confident[[gd_layer_name]])[, 1]; j <- which.max(w)
+   cat("raw max window:", w[j], "| sample_count there:", terra::values(wgd[["sample_count"]])[j, 1], "\n")
+```
+
+# 6. Plots
+## 6.0 Defining plot_with_context (Plot Function)
+```{r}
+plot_with_context <- function(r, title, legend_name = "value", palette = HEATMAP_COLOR_PALETTE, show_points = FALSE, spherical_grid = SPHERICAL_GRID) {
+  r_wgs84 <- project(r, display_template, method = "near")  # nearest-neighbor: avoid
+                                                         # smoothing anything beyond
+                                                         # what kriging already did
+  df <- as.data.frame(r_wgs84, xy = TRUE)
+  names(df)[3] <- "value"
+
+  # Reprojecting the FULL global world_land_wgs84 is the likely root cause
+  # of the previous attempt's wrong extent: most of a whole-world land
+  # layer sits well outside a small regional projection's valid domain,
+  # and reprojecting far-outside-domain geometry can produce degenerate
+  # output that throws off coord_sf()'s automatic bounding-box calculation.
+  # Cropping to a generous regional box first, mirroring how `ocean` is
+  # already cropped before reprojection in section 2.2, keeps every point
+  # handed to the projection safely within range - only actually needed
+  # for the spherical case, since plain WGS84 display has no domain limits
+  # to worry about.
+  land_for_plot <- if (spherical_grid) {
+    crop_box <- sf::st_bbox(c(xmin = display_xlim[1] - 1, xmax = display_xlim[2] + 1,
+                              ymin = display_ylim[1] - 1, ymax = display_ylim[2] + 1),
+                            crs = sf::st_crs(4326))                             
+    suppressWarnings(sf::st_crop(world_land_wgs84, crop_box))
+  } else {
+    world_land_wgs84
+  }
+
+  p <- ggplot() +
+    geom_sf(data = land_for_plot, fill = "grey85", color = "grey60", linewidth = 0.2) +
+    # geom_tile(), not geom_raster(): the reprojected grid isn't
+    # perfectly regular (Mollweide's own distortion, worse toward the
+    # edges), and geom_raster() forcibly shifts pixels to fit a regular
+    # grid when it isn't - real positional error, not a cosmetic
+    # warning. geom_tile() doesn't make that assumption.
+    #
+    # width/height set explicitly to display_res_deg, not left for
+    # geom_tile() to infer from the data: its default resolution() guess
+    # (smallest gap between observed x/y values) draws every tile at
+    # exactly that size with zero overlap, so whatever pixel grid the
+    # current graphics device happens to rasterize into can round two
+    # adjacent tiles a hair apart and leave a 1px background seam - this
+    # is why the same plot object showed lines in different positions in
+    # RStudio's viewer vs. the file ggsave() wrote, since each renders to
+    # a different output pixel count. A deliberate 2% oversize forces
+    # tiles to overlap instead of merely touch, so no rounding choice by
+    # any device can open a gap between them.
+    geom_tile(data = df, aes(x = x, y = y, fill = value),
+              width = display_res_deg * 1.02, height = display_res_deg * 1.02) +
+    scale_fill_viridis_c(option = palette, na.value = NA, name = legend_name)
+
+  if (show_points) {
+    size_legend_name <- if (SAMPLE_POINT_SIZE_BY == "value") paste("empirical", gd_label_short) else "n samples"
+    p <- p +
+      geom_point(data = sample_point_counts,
+                 aes(x = Longitude, y = Latitude, size = size_value),
+                 shape = 21, fill = "white", color = "black", alpha = 0.5, stroke = 0.3) +
+      # _area, not scale_size(): keeps a 0 value at 0 size rather than a
+      # smaller-but-still-visible dot - more honest for both count and
+      # value data.
+      scale_size_area(max_size = 6, name = size_legend_name)
+  }
+  
+  # Lambert Azimuthal Equal-Area, not orthographic: still curves the
+  # graticule (the lat/long grid lines), visually emphasizing that this is
+  # a 2D projection of a 3D surface, but with no hard visibility cutoff at
+  # 90 degrees from center the way orthographic has - avoiding the domain
+  # problem above entirely, rather than just working around it - and a
+  # closer visual match to the subtle curvature in the eelgrass Skagerrak-
+  # Kattegat reference figure (DOI 10.1111/eva.12914) this feature was
+  # originally requested from, which is nothing like orthographic's
+  # dramatic "view from space" look. Purely a display choice either way -
+  # r itself is untouched, only how coord_sf() renders it changes.
+  # Centered on the data's own midpoint rather than an arbitrary default
+  # like (0,0), so the curve is naturally centered on the study area.
+  if (spherical_grid) {
+    spherical_crs <- sprintf("+proj=laea +lat_0=%f +lon_0=%f",
+                              mean(display_ylim), mean(display_xlim))
+
+    # xlim/ylim given in plain WGS84 degrees (matching default_crs below),
+    # NOT pre-reprojected into spherical_crs's own units - that was the
+    # actual bug behind both the too-wide zoom and the wall of "laea:
+    # Invalid latitude" warnings. With default_crs set, coord_sf() expects
+    # xlim/ylim in default_crs's units and reprojects them itself
+    # internally; handing it already-reprojected meter values on top of
+    # that double-transformed them, which is exactly what its own request
+    # to reproject "x or y limits" was failing on. lims_method =
+    # "geometry_bbox" is the fix the warning itself suggested - it avoids
+    # the boundary-densification step (sampling extra points along the
+    # box's edges to trace the curve accurately) that was generating
+    # invalid latitudes in the first place, at the cost of a less
+    # precisely-curved edge to the cropped view - not a concern here,
+    # since only the four corners matter for a simple rectangular crop.
+    p <- p + coord_sf(crs = spherical_crs, default_crs = sf::st_crs(4326),
+                       xlim = display_xlim, ylim = display_ylim,
+                       lims_method = "geometry_bbox")
+  } else {
+    p <- p + coord_sf(xlim = display_xlim, ylim = display_ylim, expand = FALSE)
+  }
+  
+
+  p +
+    ggtitle(title) +
+    theme_minimal(base_size = 12) +
+    theme(panel.background = element_rect(fill = "aliceblue", color = NA),
+          axis.title = element_blank())
+}
+
+```
+
+## 6.1 (Optional) Diagnostic Check of dist_to_sample
+```{r}
+# Diagnostic, not a real output: dist_to_sample itself (computed back in
+# section 5, before mask_gd() ever touches it), plotted directly. The
+# unmasked pi map above rules out kriging/lyr's extent/the ocean mask -
+# mgd is smooth at both scales, so whatever's producing the rectangular
+# edges has to be downstream of it. sample_count's mask doesn't change
+# with MAX_INTERP_DIST_SCALE at all, so by elimination this leaves
+# dist_to_sample/MAX_INTERP_DIST specifically. This plot answers exactly
+# one question: is dist_to_sample itself already blocky before
+# mask_gd() ever sees it (points at how it's computed), or is it smooth
+# right up until the mask_gd() comparison against MAX_INTERP_DIST
+# (points somewhere in mask_gd() or that comparison instead)? viridis,
+# not the study's usual palette - this is a distance field in metres,
+# not a pi map, and shouldn't be visually confused with one.
+
+
+# dist_check_map <- plot_with_context(dist_to_sample,
+#   paste0("dist_to_sample diagnostic - ", region_tag), "distance (m)", palette = "viridis")
+# dist_check_map
+# ggsave(file.path(output_dir, paste0(output_prefix, "dist_to_sample_diagnostic.png")), dist_check_map,
+#        width = 10, height = 6, dpi = 300)
+```
+
+## 6.2 Genetic Diversity Layer Plots (masked ("honest") and unmasked ("sloppy"), for comparison)
+"Unmasked" here still respects the land re-mask above (mgd) - for a
+marine dataset, interpolated values on land are never wanted. Both a
+masked and an unmasked version are kept so either the automatic default
+or a fuller view can be pulled depending on who's using the pipeline
+and why.
+
+The computation above (window_gd, kriging, both masks) happens under
+the Mollweide projection, since this standardizes real-world distance
+and ensures equal-area cells. The output rasters are reprojected back
+to WGS84 (latitude, longitude) only for display.
+```{r 6.2 Genetic Diversity Layer Plots}
+start_plotting_time <- Sys.time()
+
+world_land_wgs84 <- world_land  # already sf, EPSG:4326, from section 1.3
+
+# Temp for ries et al:
+if (MAX_INTERP_DIST_MODE == "none" && MIN_SAMPLE_COUNT_MODE == "none" && exists("mgd_polygon")) {
+  mgd_honest <- mgd_polygon
+}
+
+# Empirical area check, for tuning MAX_INTERP_DIST_SCALE against an
+# actual target area increase (rather than trusting the sqrt(1+X) formula above):
+# run once at MAX_INTERP_DIST_SCALE = 1, note this number -> run again at a candidate scale, compare the ratio against what you actually wanted.
+# Needs checking per run rather than computed once, since how much the visible area grows with radius depends on how much neighboring sample points' buffers already overlap at the current scale.
+visible_cells <- sum(!is.na(terra::values(mgd_honest)))
+visible_area_km2 <- visible_cells * prod(terra::res(mgd_honest)) / 1e6
+cat("mgd_honest visible area:", round(visible_area_km2, 1), "km^2 across", visible_cells, "cells\n")
+
+
+# Real-sample extent (from the raw sample map, section 1.3), not the
+# wider raster/buffer extent used for the actual computation - keeps
+# these maps showing the area the samples actually span, rather than
+# pulling in extra coastline the buffer margin reaches but no sample
+# does.
+pad_display_x <- 0.10 * (bb_raw[["xmax"]] - bb_raw[["xmin"]])
+pad_display_y <- 0.10 * (bb_raw[["ymax"]] - bb_raw[["ymin"]])
+display_xlim <- c(bb_raw[["xmin"]] - pad_display_x, bb_raw[["xmax"]] + pad_display_x)
+display_ylim <- c(bb_raw[["ymin"]] - pad_display_y, bb_raw[["ymax"]] + pad_display_y)
+
+# One dot per distinct coordinate (default) or per CLUSTER_SAMPLE_POINTS_KM
+# cluster (if CLUSTER_SAMPLE_POINTS is on) - see that toggle's own comment
+# in the setup chunk for why this is a separate computation from section
+# 1.4's clustering rather than reusing it directly. Both the individual
+# count and the empirical pi value are computed regardless of
+# SAMPLE_POINT_SIZE_BY, so switching modes doesn't need re-deriving sites/
+# clusters - only size_value below actually depends on the toggle.
+gd_at_point <- terra::extract(wgd[[gd_layer_name]], coords_v_mollweide)[[gd_layer_name]]
+
+if (CLUSTER_SAMPLE_POINTS) {
+  cluster_sites_by_distance <- function(coords_df, threshold_km, values) {
+    sites   <- coords_df[!duplicated(coords_df[, c("Latitude", "Longitude")]), ]
+    sites_v <- vect(sites, geom = c("Longitude", "Latitude"), crs = "EPSG:4326")
+    dist_km <- as.dist(as.matrix(distance(sites_v)) / 1e3)
+    # cl      <- cutree(hclust(dist_km, method = "single"), h = threshold_km)
+    cl      <- cutree(hclust(dist_km, method = "complete"), h = threshold_km)
+
+    centroid_of <- function(i) {
+      rows <- cl == i
+      c(lon = mean(sites$Longitude[rows]), lat = mean(sites$Latitude[rows]))
+    }
+    centroids <- as.data.frame(t(sapply(sort(unique(cl)), centroid_of)))
+
+    site_idx <- match(paste(coords_df$Latitude, coords_df$Longitude),
+                       paste(sites$Latitude, sites$Longitude))
+    individual_cluster <- cl[site_idx]
+
+    # mean pi across a cluster's merged sites, consistent with its
+    # position also being a mean (centroid) of those same sites
+    data.frame(Longitude = centroids$lon, Latitude = centroids$lat,
+               n     = as.numeric(table(individual_cluster)),
+               value = as.numeric(tapply(values, individual_cluster, mean, na.rm = TRUE)))
+  }
+
+  sample_point_counts <- cluster_sites_by_distance(coords_file_df, CLUSTER_SAMPLE_POINTS_KM, gd_at_point)
+} else {
+  # One row per distinct coordinate, with a count of how many individuals
+  # share it - base R aggregate(), not dplyr (not loaded in this script). By
+  # coordinate rather than any named grouping column, for the same reason as
+  # section 1.4's clustering: Latitude/Longitude are the only thing
+  # guaranteed to exist and mean the same thing across different datasets.
+  sample_point_counts <- aggregate(
+    list(n = coords_file_df$`Sample ID`),
+    by = list(Latitude = coords_file_df$Latitude, Longitude = coords_file_df$Longitude),
+    FUN = length
+  )
+  sample_point_value <- aggregate(
+    list(value = gd_at_point),
+    by = list(Latitude = coords_file_df$Latitude, Longitude = coords_file_df$Longitude),
+    FUN = mean, na.rm = TRUE
+  )
+  # Explicit match() rather than assuming the two aggregate() calls above
+  # return rows in the same order - true in practice (same grouping keys,
+  # same source data) but cheap to not depend on.
+  value_idx <- match(paste(sample_point_counts$Latitude, sample_point_counts$Longitude),
+                      paste(sample_point_value$Latitude, sample_point_value$Longitude))
+  sample_point_counts$value <- sample_point_value$value[value_idx]
+}
+
+sample_point_counts$size_value <- if (SAMPLE_POINT_SIZE_BY == "value") {
+  sample_point_counts$value
+} else {
+  sample_point_counts$n
+}
+
+# Every plot_with_context() call used to reproject onto a resolution
+# project() auto-picked fresh each time. Mollweide is equal-area, so its
+# meters-per-degree-longitude shrinks with latitude - a raster that's
+# uniform in Mollweide meters is NOT uniform in WGS84 degrees, and this
+# domain's ~54-66N span is wide enough for that mismatch to drift across
+# an integer source-to-target ratio at specific latitudes. A single fixed
+# template, built once and reused for every layer, removes the per-call
+# resolution guess entirely rather than just changing what it guesses.
+display_res_deg <- (resolution_m / grd_disagg_factor) / 111320
+display_template <- rast(xmin = display_xlim[1], xmax = display_xlim[2],
+                          ymin = display_ylim[1], ymax = display_ylim[2],
+                          resolution = display_res_deg, crs = "EPSG:4326")
+
+
+# --- Diagnostic: does the thin-line artifact predate WGS84 reprojection? ---
+# terra::plot() renders sample_count directly in its native Mollweide CRS -
+# no project(), no geom_tile(), nothing that could introduce a nearest-
+# neighbor resampling seam. Compare this against count_map immediately
+# below: if the lines are absent here but present there, that confirms the
+# artifact comes from plot_with_context()'s reprojection step (project()
+# auto-picking a resolution that doesn't hold across this domain's latitude
+# span), not from window_gd() or coords_to_raster() upstream.
+terra::plot(sample_count, main = "sample_count - native Mollweide (diagnostic, no reprojection)")
+
+
+# Plotting the sample count layer
+count_map <- plot_with_context(sample_count,
+  paste0("Sample counts per window - ", region_tag), "sample_count", palette = "viridis")
+count_map
+ggsave(file.path(output_dir, paste0(output_prefix, "sample_count.png")), count_map,
+       width = 10, height = 6, dpi = 300)
+
+# # Plotting unmasked pi map
+# if (use_weighted_kriging) {
+#   unmasked_plot_title <- paste0(study_species, "π-diversity (With Weighted Kriging) - ", region_tag, ", unmasked (land excluded only)")
+
+# } else {
+#   unmasked_plot_title <- paste0(study_species, "π-diversity - ", region_tag, ", unmasked (land excluded only)")
+# }
+
+# Plotting unmasked diversity map
+unmasked_plot_title <- paste0(study_species, " ", gd_label, if (use_weighted_kriging) " (With Weighted Kriging)" else "",
+                              " - ", region_tag, ", unmasked (land excluded only)")
+
+# For chromosome-/gene-filtered runs the title is rebuilt by make_gd_title() (See setup chunk);
+# the suffix keeps this map distinguishable from the masked final map.
+gd_map_unmasked <- plot_with_context(mgd,
+  make_gd_title(unmasked_plot_title, suffix = ", unmasked (land excluded only)"), gd_label_short)
+gd_map_unmasked
+ggsave(file.path(output_dir, paste0(output_prefix, "_", gd_key, "_map_unmasked.png")), gd_map_unmasked,
+       width = 10, height = 6, dpi = 300)
+
+# Plotting the regular pi map after masking
+# masked_plot_title is the title for unfiltered runs; chromosome-/gene-filtered
+# runs get the make_gd_title() version instead (also used by the sample-point maps below).
+masked_plot_title <- paste0(study_species, " ", gd_label, " - ", region_tag, ", masked")
+gd_map <- plot_with_context(mgd_honest, make_gd_title(masked_plot_title), gd_label_short)
+gd_map
+ggsave(file.path(output_dir, paste0(output_prefix, "_", gd_key, "_map.png")), gd_map, width = 10, height = 6, dpi = 300)
+
+# Plotting the pi map with data points if SHOW_SAMPLE_POINTS == TRUE.
+# SAMPLE_POINT_SIZE_BY == "All" generates both the count- and value-sized
+# versions as separate files, rather than forcing a single choice.
+if (SHOW_SAMPLE_POINTS == TRUE) {
+  size_modes <- if (SAMPLE_POINT_SIZE_BY == "All") c("count", "value") else SAMPLE_POINT_SIZE_BY
+
+  for (mode in size_modes) {
+    # sample_point_counts$size_value and SAMPLE_POINT_SIZE_BY (read by
+    # plot_with_context()'s legend-naming) both need to reflect THIS
+    # iteration's mode, not whatever was set when they were first computed
+    # earlier - only matters for "All", which runs both modes here, but
+    # cheap to always do correctly regardless.
+    SAMPLE_POINT_SIZE_BY <- mode
+    sample_point_counts$size_value <- if (mode == "value") sample_point_counts$value else sample_point_counts$n
+
+    suffix <- if (mode == "value") paste0("_by_", gd_key, "_value") else "_by_sample_count"
+
+    gd_map_sample_points <- plot_with_context(mgd_honest,
+      make_gd_title(masked_plot_title), gd_label_short,
+      show_points = TRUE)
+    print(gd_map_sample_points)  # bare object name doesn't auto-print inside a for loop
+    ggsave(file.path(output_dir, paste0(output_prefix, "_", gd_key, "_map_sample_points", suffix, ".png")),
+           gd_map_sample_points, width = 10, height = 6, dpi = 300)
+  }
+}
+
+
+plotting_runtime <- difftime(Sys.time(), start_plotting_time , units = "secs")
+message("plotting runtime: ", round(plotting_runtime, 2), " seconds")
+print(paste0("plotting runtime: ", round(plotting_runtime, 2), " seconds"))
+
+
+# Computing script runtime
+end_time <- Sys.time()
+runtime <- difftime(end_time, start_time, units = "secs")
+message("Script runtime: ", round(runtime, 2), " seconds")
+print(paste0("Script runtime: ", round(runtime, 2), " seconds"))
+
+# Runtime log - appends one row per run (never overwritten), so runtime
+# across different parameter combinations/datasets can be compared later.
+# One tab separates the headline total from the per-step breakdown, not a
+# fully columnar format - open as text, not spreadsheet software.
+runtime_log_path <- file.path(output_dir, "runtime_log.tsv")
+log_line <- sprintf(
+  "%s: script runtime: %.1f\tread.vcfR runtime=%.1f, wkrig_gd runtime=%.1f, window_gd_runtime=%.1f, distance_masking_runtime=%.1f, plotting_runtime=%.1f",
+  output_prefix, as.numeric(runtime), as.numeric(vcf_runtime), as.numeric(wkrig_gd_runtime), as.numeric(window_gd_runtime), as.numeric(distance_masking_runtime), as.numeric(plotting_runtime)
+)
+cat(log_line, "\n", file = runtime_log_path, append = TRUE, sep = "")
+```
+# 7. Gene Summary Statistics
+```{r 7. Gene Summary Statistics}
+# ==========================================================================
+# Per-gene summary statistics for the gene catalog
+# ==========================================================================
+# Relies on vcf, coords_file_df, rows_with_na, wgd_confident, min_n_samples_per_calc and output_dir
+#
+# Checked against the wingen v2.2.0 docs (reference manual + vignette):
+#   - the wingen vignette states directly that the dosage matrix used for
+#     stat = "pi" has individuals as rows, and hierfstat::pi.dosage()'s own
+#     docs describe its `dos` argument the same way (an ni x nl matrix) -
+#     so row-wise subsetting in section 4 is the right orientation. Kept
+#     as a stopifnot() below rather than just a comment, so a future
+#     change to either package fails loudly instead of silently.
+#
+# Four things are fixed below rather than merely flagged (see the comment
+# at each for the reasoning):
+#   1. Section 2 now reads from wgd_confident instead of wgd - window_gd()
+#      already turns any under-supported window into NA via min_n, so
+#      re-filtering by min_n_samples_per_calc here was a no-op sitting
+#      next to is.na(), not a second, stricter cut. wgd_confident is the
+#      object built earlier for kriging that actually applies the
+#      stricter, diagnostic-derived cutoff (minval_sample_count).
+#   2. Section 3's "latitude" is actually Mollweide-projected northing in
+#      metres (wgd lives in world_crs, not WGS84 - see window_gd()'s own
+#      docs on why). The reliable cells' centroids get reprojected to
+#      true latitude before calculating their Pearson correlation.
+#   3. n_pruned_coord_mismatch now reads nrow(rows_with_na) - already
+#      computed earlier in the document - instead of n_unmatched, which
+#      only counts samples with no matching coordinate row at all and
+#      misses ones that matched a row with a genuinely missing lat/long.
+#   4. sample_order can go stale relative to vcf by the time this chunk
+#      runs: the coordinate-pruning chunk removes samples from vcf without
+#      updating sample_order (the later, optional ROI_ACTIVE block does
+#      update it, which is what made this worth checking rather than
+#      assuming). current_samples is recomputed fresh from vcf here
+#      instead, so section 4 can't drift out of sync with whichever
+#      pruning path actually ran for a given gene.
+#
+
+# Section 4b:
+# Reads off the window surface instead of raw genotypes.
+# Mean and median statistics is also included since variance only tells the spread of the diversity metric used, 
+# it does however not tell you if the diversity is high or low.
+
+if (compute_genetic_diversity_statistics == TRUE) {
+  library(vcfR)
+  library(hierfstat)
+  library(terra)
+  library(jsonlite)
+
+  # --------------------------------------------------------------------
+  # 1. Individuals, variants, pruning breakdown
+  # --------------------------------------------------------------------
+  # n_individuals_input intentionally keeps using the ORIGINAL sample_order
+  # from load-vcf (before this document prunes anything) - it's meant to
+  # answer "how many individuals did we start with", not "how many are left
+  # now", so its possible staleness relative to vcf is exactly the point here.
+  n_individuals_input <- length(sample_order)
+  n_variants <- nrow(vcf@fix)
+
+  # rows_with_na already exists from the coordinate-pruning chunk earlier in
+  # the document and covers both cases excluded there: samples with no
+  # matching coordinate row at all, and samples that matched a row whose
+  # Latitude/Longitude were themselves genuinely missing. n_unmatched alone
+  # (from load-coords) only counts the first of those two.
+  n_pruned_coord_mismatch <- nrow(rows_with_na)
+
+  # Recomputed fresh from vcf rather than read from sample_order - see the
+  # header note on why sample_order alone isn't reliable at this point in
+  # the document.
+  current_samples <- colnames(vcf@gt)[-1]
+
+  # "VCF error" pruning - individuals with too
+  # much missing genotype data at *this gene's own* variant sites
+  # specifically (nothing upstream of this Rmd currently checks missingness
+  # at the individual level, so this is a new check, not a duplicate of
+  # existing QC). 
+  gt_matrix <- extract.gt(vcf, element = "GT")
+  missing_rate <- apply(gt_matrix, 2, function(col) mean(col %in% c(NA, "./.", ".|.")))
+
+  # Picking this the same way minval_sample_count itself was picked earlier
+  # in the document - from the real distribution, not a guess. Worth
+  # uncommenting the line below once to look at missing_rate's actual spread
+  # across a handful of genes before trusting 0.5 (or whatever replaces it)
+  # across the whole catalog.
+  # hist(missing_rate, breaks = 20)
+  vcf_error_threshold <- 0.5  # placeholder judgment call, not derived from anything yet
+  n_pruned_vcf_error <- sum(missing_rate > vcf_error_threshold)
+
+  # Note: this counts how many individuals WOULD fail the threshold above,
+  # but doesn't currently remove them from current_samples/dosage before
+  # section 4 - matching what the original version of this script did. If
+  # "pruned" is meant to also exclude them from the per-location pi calc
+  # below, current_samples would need `setdiff(current_samples,
+  # names(missing_rate)[missing_rate > vcf_error_threshold])` added here.
+  # So "retained" here means "passed the missingness check", NOT "was the only individuals used": every individual in
+  # current_samples still goes into both the window and the location statistic. The number actually used is written
+  # to the JSON as n_individuals$used_for_gd. Leaving them in is defensible - the per-SNP functions count, SNP by
+  # SNP, only the individuals that have a genotype there, so an individual with 60% missing SNPs still contributes at the other
+  # 40%. Removing them would have to happen before BOTH window_gd() and the location statistic, or the two
+  # approaches would use different individuals.
+  n_individuals_retained <- length(current_samples) - n_pruned_vcf_error
+
+  # --------------------------------------------------------------------
+  # 2. Overall spatial variance (pi-variance check)
+  # --------------------------------------------------------------------
+  # Raw (non-kriged) per-window values only, from cells with enough real samples nearby.
+  # for this number:
+
+  # wgd_confident[[gd_layer_name]], not wgd[[gd_layer_name]] re-filtered by
+  # min_n_samples_per_calc: window_gd()'s own min_n already turned any
+  # window below that count into NA before wgd ever existed, so re-applying
+  # the same threshold here doesn't add a second, stricter cut - it's a
+  # no-op alongside is.na(). wgd_confident is the object built earlier
+  # (krige chunk) specifically to apply the real, diagnostic-derived cutoff
+  # (minval_sample_count) - reusing it here means this number and the
+  # kriging input are held to the same bar, with only one place that bar is
+  # ever set. Naming by layer (gd_layer_name), not position ([[1]]), also matches how
+  # the rest of the document already treats wgd/wgd_confident.
+
+  gd_layer <- wgd_confident[[gd_layer_name]]
+  gd_values <- terra::values(gd_layer)
+  reliable <- !is.na(gd_values)
+
+  gd_variance_raw_windows <- var(gd_values[reliable])
+  gd_mean_raw_windows <- mean(gd_values[reliable])
+  gd_median_raw_windows <- median(gd_values[reliable])
+  gd_min_raw_windows <- min(gd_values[reliable])
+  gd_max_raw_windows <- max(gd_values[reliable])
+
+
+
+  # (A per-sample version of this - the same confident surface read off at
+  # each individual's own coordinate instead of per grid cell - was tried
+  # here and removed, not just left unused: a tight group of individuals
+  # extracts nearly-identical values that then each count as their own
+  # point in the variance, over-weighting wherever sampling effort
+  # happened to be dense rather than representing the study area evenly -
+  # compounding the clustered-sampling problem above rather than avoiding
+  # it. Section 4b below is the version of this idea that actually holds
+  # up: same surface, but one point per population/cluster instead of one
+  # per individual.)
+
+  # --------------------------------------------------------------------
+  # 3. Window correlations with latitude and environmental gradients
+  # --------------------------------------------------------------------
+  # Signed Pearson r describes the strength and direction of the window
+  # association. These overlapping windows provide a descriptive reference;
+  # the neutral simulation comparisons use the per-location statistics.
+  # The window grid is Mollweide-projected, so its centroids are transformed
+  # to WGS84 to obtain latitude in degrees.
+
+  window_correlation <- function(y, x) {
+    keep <- is.finite(y) & is.finite(x)
+    y <- y[keep]
+    x <- x[keep]
+    if (length(y) < 2L || length(unique(y)) < 2L || length(unique(x)) < 2L) {
+      return(NA_real_)
+    }
+    unname(stats::cor(y, x, method = "pearson"))
+  }
+
+  cell_xy <- terra::xyFromCell(gd_layer, which(reliable))
+  cell_pts <- terra::vect(cell_xy, type = "points", crs = terra::crs(gd_layer))
+  cell_pts_wgs84 <- terra::project(cell_pts, "EPSG:4326")
+  lat_values <- terra::crds(cell_pts_wgs84)[, "y"]
+
+  gd_latitude_r <- window_correlation(gd_values[reliable], lat_values)
+
+  if (USE_COPERNICUS_MARINE) {
+      # --------------------------------------------------------------------
+      # 3b. Cell-level Pearson correlation, same footprint as the GD windows
+      # --------------------------------------------------------------------
+      # Reuse the cell centroids from the latitude correlation to extract
+      # each environmental predictor. Same cells, same CRS (env layers are in
+      # world_crs from section 2.6, so no reprojection needed here, unlike lat).
+      # Each correlation starts with the same reliable cells, then excludes
+      # pairs whose diversity or predictor value is missing or non-finite.
+      env_at_cell_salinity    <- terra::extract(env_salinity,    cell_pts, ID = FALSE)[[1]]
+      env_at_cell_temp_winter <- terra::extract(env_temp_winter, cell_pts, ID = FALSE)[[1]]
+      env_at_cell_temp_summer <- terra::extract(env_temp_summer, cell_pts, ID = FALSE)[[1]]
+      env_at_cell_chl_log     <- terra::extract(env_chl_log,     cell_pts, ID = FALSE)[[1]]
+
+      gd_salinity_r <- window_correlation(gd_values[reliable], env_at_cell_salinity)
+      gd_temp_winter_r <- window_correlation(gd_values[reliable], env_at_cell_temp_winter)
+      gd_temp_summer_r <- window_correlation(gd_values[reliable], env_at_cell_temp_summer)
+      gd_chl_log_r <- window_correlation(gd_values[reliable], env_at_cell_chl_log)
+      if (ENV_OXYGEN_ENABLED) {
+        env_at_cell_oxygen <- terra::extract(env_oxygen, cell_pts, ID = FALSE)[[1]]
+        gd_oxygen_r <- window_correlation(gd_values[reliable], env_at_cell_oxygen)
+      }
+      if (ENV_CURRENT_SPEED_ENABLED) {
+        env_at_cell_current_speed <- terra::extract(env_current_speed, cell_pts, ID = FALSE)[[1]]
+        gd_current_speed_r <- window_correlation(gd_values[reliable], env_at_cell_current_speed)
+      }
+  }
+  # --------------------------------------------------------------------
+  # 4. Per-location variance (nearby sites binned together)
+  # --------------------------------------------------------------------
+  # Each distinct sampling site is here considered as a small population on which the population-based genetic diversity statistic (i.e pi) is computed directly on (rather than using the rolling window-based approach in window_gd().
+  # The nucleotide diversity computation is here using wingen's own vcf_to_dosage() + hierfstat::pi.dosage(), the
+  # same formula wingen uses internally for "pi".
+  #
+  # Here, sites are binned by straight-line distance instead, the same approach the nn-distance chunk and the
+  # CLUSTER_SAMPLE_POINTS map-plotting block already use.
+  # These functions are however not reused:
+  # * CLUSTER_THRESHOLD_KM is tuned for resolution-setting diagnostics
+  # * CLUSTER_SAMPLE_POINTS_KM for how the map looks
+  # assign_distance_clusters() below is the same terra::distance() approach but with COMPLETE linkage (every pair of sites in
+  # a location is at most CLUSTER_VARIANCE_POINTS_KM apart - no chaining), returning a per-individual cluster id instead of a per-cluster plotting summary.
+
+  assign_distance_clusters <- function(coords_df, threshold_km) {
+    sites <- coords_df[!duplicated(coords_df[, c("Latitude", "Longitude")]), ]
+    if (nrow(sites) == 1) return(rep(1L, nrow(coords_df)))
+    sites_v <- terra::vect(sites, geom = c("Longitude", "Latitude"), crs = "EPSG:4326")
+    dist_km <- as.dist(as.matrix(terra::distance(sites_v)) / 1e3)
+    # site_cluster <- cutree(hclust(dist_km, method = "single"), h = threshold_km)
+    site_cluster <- cutree(hclust(dist_km, method = "complete"), h = threshold_km)
+    site_idx <- match(paste(coords_df$Latitude, coords_df$Longitude),
+                      paste(sites$Latitude, sites$Longitude))
+    unname(site_cluster[site_idx])
+  }
+
+  CLUSTER_VARIANCE_POINTS_KM <- as.numeric(Sys.getenv("CLUSTER_VARIANCE_POINTS_KM", unset = 10))
+  coords_file_df$variance_cluster_id <- assign_distance_clusters(coords_file_df, CLUSTER_VARIANCE_POINTS_KM)
+
+  dosage <- vcf_to_dosage(vcf)
+
+  # Confirmed (wingen vignette + hierfstat::pi.dosage docs) that rows should be individuals, in vcf's own column order.
+  # stopifnot() turns any future surprise here (i.e a package update changing this) into an immediate, specific error
+  # instead of dosage silently getting the wrong ID attached to each row. -
+  stopifnot(nrow(dosage) == length(current_samples))
+  rownames(dosage) <- current_samples
+
+  # What the per-population value is computed from: pi and biallelic_richness read the dosage matrix, Ho wingen's
+  # heterozygosity matrix (same layout - rows = individuals in vcf order - with 0 = homozygous, 1 = heterozygous).
+  # The per-population value has to be the SAME statistic window_gd() mapped. Otherwise the Location columns of the
+  # gene catalog would quietly stay pi next to Windows columns that are Ho.
+  gd_input <- dosage
+  if (gd_stat == "Ho") {
+    gd_input <- gd_het_fun(vcf)
+    stopifnot(nrow(gd_input) == length(current_samples))
+    rownames(gd_input) <- current_samples
+  }
+
+  cluster_groups <- split(coords_file_df$`Sample ID`, coords_file_df$variance_cluster_id)
+
+  # Whether the per-location values are rarefied is decided by location_rarify (LOCATION_RARIFY in config.yaml,
+  # resolved near the top of this file):
+  #   FALSE - each location's value is computed from ALL its individuals: deterministic, nothing random, and the most precise.
+  #           Right for pi (hierfstat::pi.dosage() uses the per-SNP estimator 2p(1-p) * 2n/(2n-1)) and for Ho (a mean
+  #           of observed heterozygosity): both have an expected value that does not depend on how many individuals a
+  #           location has - only their precision does. The price: locations differ in precision (a 5-individual location
+  #           is noisier than a 150-individual one), which inflates the across-location variance ("Var") somewhat.
+  #   TRUE  - a location with more than rarify_n individuals is sub-sampled rarify_n_iterations times at rarify_n individuals and the
+  #           draws averaged, exactly like window_gd() does per window. This reduces differences in sample size;
+  #           small clusters still use all individuals, and missingness can also leave differences in precision.
+  #           The original reason for rarefying them here: a bigger cluster would otherwise give a more precise
+  #           estimate than a small one purely from sample size, inflating the variance computed ACROSS locations for
+  #           reasons that have nothing to do with biology. It is especially relevant for biallelic_richness, which grows with
+  #           sample size. The price: with rarify_n = 4 every location rests on 4 individuals per draw, so the values are far
+  #           noisier and change with the seed, which weakens every location-level R2 / r / p. For regressions the
+  #           better remedy for unequal precision is weighting by individual per location (columns n_individuals in the per-location
+  #           TSV), not discarding individual.
+  #   "auto" (default) - TRUE for biallelic_richness when USE_RARIFY is on, FALSE otherwise.
+  # min_n_samples_per_calc drops a location below that size entirely, same as it does for a raster window; the
+  # max(., 2) enforces the pipeline's minimum of two individuals per location; pi.dosage() itself does not impose it.
+
+  # pi_for_cluster <- function(ids) {
+  #   ids_in_vcf <- intersect(ids, current_samples)
+  #   if (length(ids_in_vcf) < max(min_n_samples_per_calc, 2)) return(NA_real_)
+
+  #   return(hierfstat::pi.dosage(dosage[ids_in_vcf, , drop = FALSE], L = n_variants))
+
+  #   # Revisit this code in the future when biallelic_richness is given as an option
+  #   # if (!use_rarify || length(ids_in_vcf) <= rarify_n) {
+  #   #   return(hierfstat::pi.dosage(dosage[ids_in_vcf, , drop = FALSE], L = n_variants))
+  #   # }
+  #   # draws <- replicate(rarify_n_iterations,
+  #   #   hierfstat::pi.dosage(dosage[sample(ids_in_vcf, rarify_n), , drop = FALSE], L = n_variants))
+  #   # mean(draws)
+  # }
+
+  # One sampling plan for individuals, reused for the target and every neutral
+  # replicate. This preserves the original location estimator and random draws.
+  location_draws <- make_location_draws(cluster_groups, current_samples,
+    min_n_samples_per_calc, location_rarify, rarify_n, rarify_n_iterations, seed_value)
+  gd_of <- function(x) {
+    switch(gd_stat,
+      pi                 = hierfstat::pi.dosage(x, L = ncol(x)),
+      Ho                 = unname(gd_subset_fun(x)),
+      biallelic_richness = unname(gd_subset_fun(x, rarify_alleles = TRUE)))
+  }
+  per_location_gd <- location_gd_from_draws(gd_input, location_draws, gd_of)
+
+  gd_variance_per_location <- var(per_location_gd, na.rm = TRUE)
+  gd_mean_per_location <- mean(per_location_gd, na.rm = TRUE)
+  gd_median_per_location <- median(per_location_gd, na.rm = TRUE)
+  gd_min_per_location <- min(per_location_gd, na.rm = TRUE)
+  gd_max_per_location <- max(per_location_gd, na.rm = TRUE)
+
+  n_locations_used <- sum(!is.na(per_location_gd))
+
+  # --------------------------------------------------------------------
+  # 4b. Window-surface pi at each population's centroid (pairs with 4:
+  #     the same populations as above, but reading wgd_confident's
+  #     smoothed surface at each one's centroid instead of computing pi
+  #     from raw genotypes - lets you compare "what the model estimates
+  #     here" against "what the genotypes actually show" for the same
+  #     population, gene by gene)
+  # --------------------------------------------------------------------
+  # This is the fixed version of the per-sample idea removed from section
+  # 2: one point per population/cluster here, not one per individual, so
+  # a cluster of 20 people contributes the same single point as a cluster
+  # of 2 - the reason the per-individual version was a problem doesn't
+  # apply when the unit is the same population section 4 already uses.
+  # Centroids are computed in the same Mollweide coordinates window_gd()
+  # itself used (coords_v_mollweide), not by averaging raw lat/long, so
+  # they sit in the same space gd_layer is defined on and don't need a
+  # second reprojection.
+
+  mollweide_xy <- as.data.frame(terra::crds(coords_v_mollweide))
+  names(mollweide_xy) <- c("x", "y")  # crds() documents x-then-y order; named explicitly rather than assumed
+  mollweide_xy$cluster <- coords_file_df$variance_cluster_id
+  centroid_xy <- aggregate(cbind(x, y) ~ cluster, data = mollweide_xy, FUN = mean)
+  centroid_pts <- terra::vect(as.matrix(centroid_xy[, c("x", "y")]), type = "points",
+                               crs = terra::crs(gd_layer))
+  centroid_gd <- terra::extract(gd_layer, centroid_pts)[[gd_layer_name]]
+
+  gd_variance_centroid_windows <- var(centroid_gd, na.rm = TRUE)
+  gd_mean_centroid_windows <- mean(centroid_gd, na.rm = TRUE)
+  gd_median_centroid_windows <- median(centroid_gd, na.rm = TRUE)
+
+  # --------------------------------------------------------------------
+  # 4c. Population-level fit: per_location_gd ~ environment averaged over
+  #     the same individuals pi was computed from (Track B - see section
+  #     2.6's intro). One point per population, no window pooling. This is
+  #     the direct, simpler test: does mean nucleotide diversity at a site
+  #     track that site's salinity/temperature/chlorophyll, using the
+  #     genotype-based per_location_gd from section 4 rather than a value
+  #     read off a smoothed/interpolated pi surface.
+  #
+#     Deliberately NOT the cluster centroid (one representative point): complete linkage keeps every pair of
+#     sites in a cluster within the cut-off, so the centroid is a fair location, but it would still collapse the
+#     members' own environmental values into the value at one point (and for a coastal cluster that point can
+#     fall on a masked cell). The line below this comment states the actual rule.
+  #     environmental spread. Instead this reuses cluster_groups (section
+  #     4) directly and averages each cluster's members' own env_ind_*
+  #     values (section 2.6, named by Sample ID) - the population's
+  #     predictor is built from the same individuals pi_for_cluster()
+  #     pools for its response, at the same resolution, not from a
+  #     resampled point that happens to sit somewhere among them.
+  #
+  #     Unlike pi_for_cluster(), this is NOT restricted to current_samples
+  #     - environment doesn't depend on which individuals had a usable
+  #     genotype at this particular gene, only on where the population was
+  #     actually sampled, so it shouldn't be recomputed gene to gene.
+  #
+  #     per_location_gd and the values below both come from sapply() over
+  #     the exact same cluster_groups list, so they're guaranteed to be in
+  #     the same order - no join needed (unlike the earlier centroid
+  #     version, which combined two independently-ordered objects and
+  #     joined by cluster ID as a defensive measure; that need goes away
+  #     entirely once both sides are sapply() over the same list).
+  # --------------------------------------------------------------------
+  if (USE_COPERNICUS_MARINE) {
+      env_for_cluster <- function(ids, env_ind) {
+        vals <- env_ind[ids]
+        if (all(is.na(vals))) return(NA_real_)
+        mean(vals, na.rm = TRUE)
+      }
+    
+      perloc_env_salinity    <- sapply(cluster_groups, env_for_cluster, env_ind = env_ind_salinity)
+      perloc_env_temp_winter <- sapply(cluster_groups, env_for_cluster, env_ind = env_ind_temp_winter)
+      perloc_env_temp_summer <- sapply(cluster_groups, env_for_cluster, env_ind = env_ind_temp_summer)
+      perloc_env_chl_log     <- sapply(cluster_groups, env_for_cluster, env_ind = env_ind_chl_log)
+      if (ENV_OXYGEN_ENABLED) perloc_env_oxygen <- sapply(cluster_groups, env_for_cluster, env_ind = env_ind_oxygen)
+      if (ENV_CURRENT_SPEED_ENABLED) perloc_env_current_speed <- sapply(cluster_groups, env_for_cluster, env_ind = env_ind_current_speed)
+    
+      perloc_fit_data <- data.frame(
+        gd = unname(per_location_gd),
+        salinity = unname(perloc_env_salinity), temp_winter = unname(perloc_env_temp_winter),
+        temp_summer = unname(perloc_env_temp_summer), chl_log = unname(perloc_env_chl_log)
+      )
+      if (ENV_OXYGEN_ENABLED) perloc_fit_data$oxygen <- unname(perloc_env_oxygen)
+      if (ENV_CURRENT_SPEED_ENABLED) perloc_fit_data$current_speed <- unname(perloc_env_current_speed)
+    
+      fit_perloc_gradient <- function(env_col) {
+        keep <- is.finite(perloc_fit_data$gd) & is.finite(perloc_fit_data[[env_col]])
+        if (sum(keep) < 3 || sd(perloc_fit_data$gd[keep]) == 0 ||
+            sd(perloc_fit_data[[env_col]][keep]) == 0) return(list(r2 = NA_real_, slope = NA_real_))
+        fit <- lm(perloc_fit_data$gd[keep] ~ perloc_fit_data[[env_col]][keep])
+        list(r2 = summary(fit)$r.squared, slope = unname(coef(fit)[2]))
+      }
+    
+      fit_perloc_salinity    <- fit_perloc_gradient("salinity")
+      fit_perloc_temp_winter <- fit_perloc_gradient("temp_winter")
+      fit_perloc_temp_summer <- fit_perloc_gradient("temp_summer")
+      fit_perloc_chl_log     <- fit_perloc_gradient("chl_log")
+    
+      perloc_salinity_r2 <- fit_perloc_salinity$r2;       perloc_salinity_slope    <- fit_perloc_salinity$slope
+      perloc_temp_winter_r2 <- fit_perloc_temp_winter$r2; perloc_temp_winter_slope <- fit_perloc_temp_winter$slope
+      perloc_temp_summer_r2 <- fit_perloc_temp_summer$r2; perloc_temp_summer_slope <- fit_perloc_temp_summer$slope
+      perloc_chl_log_r2 <- fit_perloc_chl_log$r2;         perloc_chl_log_slope     <- fit_perloc_chl_log$slope
+      if (ENV_OXYGEN_ENABLED) {
+        fit_perloc_oxygen <- fit_perloc_gradient("oxygen")
+        perloc_oxygen_r2 <- fit_perloc_oxygen$r2
+        perloc_oxygen_slope <- fit_perloc_oxygen$slope
+      }
+      if (ENV_CURRENT_SPEED_ENABLED) {
+        fit_perloc_current_speed <- fit_perloc_gradient("current_speed")
+        perloc_current_speed_r2 <- fit_perloc_current_speed$r2
+        perloc_current_speed_slope <- fit_perloc_current_speed$slope
+      }
+
+      # >>> [location-stats] ---------------------------------------------------------------------------------
+      # n, signed Pearson r with an analytic 95% confidence interval (Fisher z-transform - this is what cor.test()
+      # returns; no bootstrapping needed), the p-value of that same test, and Spearman rho as a rank-based check.
+      # CAVEAT: the CI and p-value assume the n locations are independent. Neighbouring coastal locations are not
+      # (spatial autocorrelation), so read them as optimistic until a spatially-aware test is added.
+      # Switch off: WRITE_LOCATION_STATS: FALSE in config.yaml (wingen_params).
+      if (isTRUE(WRITE_LOCATION_STATS)) {
+        location_stats <- function(env_col) {
+          location_association(perloc_fit_data$gd, perloc_fit_data[[env_col]])
+        }
+        perloc_stats_salinity    <- location_stats("salinity")
+        perloc_stats_temp_winter <- location_stats("temp_winter")
+        perloc_stats_temp_summer <- location_stats("temp_summer")
+        perloc_stats_chl_log     <- location_stats("chl_log")
+        if (ENV_OXYGEN_ENABLED) perloc_stats_oxygen <- location_stats("oxygen")
+        if (ENV_CURRENT_SPEED_ENABLED) perloc_stats_current_speed <- location_stats("current_speed")
+      }
+      # <<< [location-stats] ---------------------------------------------------------------------------------
+}
+  # Observed latitude statistics are available with Copernicus on or off.
+  perloc_latitude <- unname(vapply(cluster_groups, function(ids)
+    mean(coords_file_df$Latitude[match(ids, coords_file_df$`Sample ID`)]), numeric(1)))
+  if (isTRUE(WRITE_LOCATION_STATS)) {
+    perloc_stats_latitude <- location_association(per_location_gd, perloc_latitude)
+  }
+  if (RUN_NEUTRAL_SIM) {
+    # Reuse this gene's individuals, clusters, environmental means, estimator
+    # and individual rarefaction draws. No maps/kriging are recomputed for nulls.
+    neutral_predictors <- list(latitude = perloc_latitude)
+    if (USE_COPERNICUS_MARINE) {
+      neutral_predictors <- c(neutral_predictors, list(salinity = unname(perloc_env_salinity),
+        temp_summer = unname(perloc_env_temp_summer), temp_winter = unname(perloc_env_temp_winter),
+        chl_log = unname(perloc_env_chl_log)))
+      if (ENV_OXYGEN_ENABLED) neutral_predictors$oxygen <- unname(perloc_env_oxygen)
+      if (ENV_CURRENT_SPEED_ENABLED) neutral_predictors$current_speed <- unname(perloc_env_current_speed)
+    }
+    min_valid_fraction <- as.numeric(Sys.getenv("NEUTRAL_MIN_VALID_FRACTION", unset = "0.9"))
+    if (!is.finite(min_valid_fraction) || min_valid_fraction <= 0 || min_valid_fraction > 1) {
+      stop("NEUTRAL_MIN_VALID_FRACTION must be in (0, 1]")
+    }
+    # Unset uses the default cutoffs; an explicitly empty value disables them.
+    extreme_value_percentiles <- validate_extreme_value_percentiles(strsplit(
+      Sys.getenv("NEUTRAL_EXTREME_VALUE_PERCENTILES", unset = "95,99"), ",", fixed = TRUE)[[1]])
+    neutral_comparison <- run_neutral_model(neutral_plan_path, neutral_metadata_path,
+      input_vcf_file, vcf, current_samples, location_draws, per_location_gd, neutral_predictors,
+      gd_stat, gd_of, gd_het_fun, file.path(output_dir, Sys.getenv("vcf_filter_value")),
+      min_valid_fraction, prepared_manifest_path = neutral_prepared_manifest_path,
+      extreme_value_percentiles = extreme_value_percentiles)
+  }
+  # >>> [per-location-tsv] -----------------------------------------------------------------------------------
+  # Audit trail: one row per location (distance cluster) holding exactly the numbers the location-level fits were
+  # computed from (column `gd` = the statistic chosen with gd_stat, so the file has the same layout for pi, Ho and
+  # biallelic_richness). It lets every downstream analysis (partial R2, spatial autocorrelation, weighting by individuals per
+  # location, leave-one-out, checking that the environmental columns are identical across genes) run without
+  # re-running the window/kriging step. Written next to the plots in the shared per-chromosome folder; the HTML
+  # builder only lists .png files and the aggregator only reads *_gene_summary.json, so it cannot interfere with either.
+  # Switch off: WRITE_PER_LOCATION_TSV: FALSE in config.yaml (wingen_params).
+  if (isTRUE(WRITE_PER_LOCATION_TSV)) {
+    loc_gene_id <- Sys.getenv("vcf_filter_value")
+    loc_rows <- function(ids) match(ids, coords_file_df$`Sample ID`)
+    per_location_table <- data.frame(
+      gene_id       = loc_gene_id,
+      cluster_id    = as.integer(names(cluster_groups)),
+      n_individuals        = unname(vapply(cluster_groups, length, integer(1))),
+      n_individuals_for_gd = unname(vapply(cluster_groups, function(ids) length(intersect(ids, current_samples)), integer(1))),
+      lat_mean      = unname(vapply(cluster_groups, function(ids) mean(coords_file_df$Latitude[loc_rows(ids)]),  numeric(1))),
+      lon_mean      = unname(vapply(cluster_groups, function(ids) mean(coords_file_df$Longitude[loc_rows(ids)]), numeric(1))),
+      gd_stat       = gd_stat,
+      gd            = unname(per_location_gd),   # the chosen statistic (gd_stat), one value per location
+      stringsAsFactors = FALSE
+    )
+    if (USE_COPERNICUS_MARINE) {
+      per_location_table$salinity    <- unname(perloc_env_salinity)
+      per_location_table$temp_winter <- unname(perloc_env_temp_winter)
+      per_location_table$temp_summer <- unname(perloc_env_temp_summer)
+      per_location_table$chl_log     <- unname(perloc_env_chl_log)
+      if (ENV_OXYGEN_ENABLED) per_location_table$oxygen <- unname(perloc_env_oxygen)
+      if (ENV_CURRENT_SPEED_ENABLED) per_location_table$current_speed <- unname(perloc_env_current_speed)
+      # Per variable: how many of this location's individuals had no raw value in the environmental product (masked
+      # coastal cell) and were given a neighbour-filled one (section 2.6).
+      for (v in names(env_raw_na_flags)) {
+        per_location_table[[paste0("n_individuals_filled_", v)]] <-
+          unname(vapply(cluster_groups, function(ids) sum(env_raw_na_flags[[v]][ids], na.rm = TRUE), numeric(1)))
+      }
+    }
+    per_location_path <- file.path(output_dir, paste0(loc_gene_id, "_per_location.tsv"))
+    write.table(per_location_table, per_location_path, sep = "\t", quote = FALSE, row.names = FALSE)
+    cat("Per-location table written:", per_location_path, "\n")
+  }
+  # <<< [per-location-tsv] -----------------------------------------------------------------------------------
+
+  # --------------------------------------------------------------------
+  # 5. Assemble and write the per-gene manifest
+  # --------------------------------------------------------------------
+  # Doubles as this gene's "did it actually finish" check, and its
+  # contents are the "is this gene worth a closer look" check - one file,
+  # both jobs. Filename is gene-ID-prefixed (not a plain "gene_summary.json")
+  # because output_dir is now the SHARED per-chromosome folder
+  # (results/gene_catalog/{chrom}, set by the Snakefile's outdir_abs) -
+  # every gene on the same chromosome writes here, so a fixed filename
+  # would have every later gene silently overwrite the previous one's
+  # entry. This is the actual fix for that: each gene's own ID in its own
+  # filename means no two genes on the same chromosome ever target the
+  # same path, so there is nothing to race or clobber even when several
+  # of that chromosome's genes render concurrently.
+  # centroid = list(variance = gd_variance_centroid_windows, mean = gd_mean_centroid_windows, median = gd_median_centroid_windows)
+
+  gene_id <- Sys.getenv("vcf_filter_value")
+
+  # Field names of the associations with latitude and environmental gradients. The "window_" fields correlate
+  # the statistic's window surface with the gradient, so gd_key (lower-case statistic name, e.g. "pi" or "ho") is part
+  # of the name - window_pi_salinity_r, window_ho_salinity_r, ... - which is also what becomes a column header in
+  # gene_catalog_summary.tsv. The "location_" fields never carried a statistic name. gd_key rather than
+  # gd_label_short because a field name has to stay plain ASCII. build_gene_catalog_html.py rebuilds these same
+  # names from gd_stat, so the two have to stay in step.
+  gradient_fields <- function(suffix, window_r, location_r2 = NULL, location_slope = NULL) {
+    fields <- setNames(list(window_r), paste0("window_", gd_key, "_", suffix, "_r"))
+    if (!is.null(location_r2)) {
+      location_fields <- list(location_r2, location_slope)
+      names(location_fields) <- paste0("location_", suffix, c("_r2", "_slope"))
+      fields <- c(fields, location_fields)
+    }
+    fields
+  }
+
+  gene_summary <- list(
+    gene_id = gene_id,
+    # Which statistic every number in this file is a number OF (gd_stat in config.yaml). Written into each gene's own
+    # file so it travels with the data: aggregate_gene_summaries.py refuses to put two statistics into one catalog,
+    # and build_gene_catalog_html.py takes its column labels from these three fields.
+    gd_stat = gd_stat,
+    gd_label = gd_label,
+    gd_label_short = gd_label_short,
+    n_variants = n_variants,
+    n_locations_used = n_locations_used,
+    n_individuals_vcf = list(initial = n_individuals_input, retained = n_individuals_retained, vcf_error = n_pruned_vcf_error, coords_mismatch = n_pruned_coord_mismatch),
+
+    windows = list(variance = gd_variance_raw_windows, mean = gd_mean_raw_windows, median = gd_median_raw_windows, min = gd_min_raw_windows, max = gd_max_raw_windows),
+    location = list(variance = gd_variance_per_location, mean = gd_mean_per_location, median = gd_median_per_location, min = gd_min_per_location, max = gd_max_per_location),
+    latitude = gradient_fields("latitude", gd_latitude_r)
+  )
+
+  if (USE_COPERNICUS_MARINE) {
+      # Track A (window_*) - cell-level, same window footprint as the statistic/latitude above.
+      # Track B (location_*) - population-level, each cluster's environment averaged over its own member individuals.
+      gene_summary$salinity          <- gradient_fields("salinity",    gd_salinity_r,    perloc_salinity_r2,    perloc_salinity_slope)
+      gene_summary$water_temp_summer <- gradient_fields("temp_summer", gd_temp_summer_r, perloc_temp_summer_r2, perloc_temp_summer_slope)
+      gene_summary$water_temp_winter <- gradient_fields("temp_winter", gd_temp_winter_r, perloc_temp_winter_r2, perloc_temp_winter_slope)
+      gene_summary$chlorophyll_a_log <- gradient_fields("chl_log",     gd_chl_log_r,     perloc_chl_log_r2,     perloc_chl_log_slope)
+      if (ENV_OXYGEN_ENABLED) {
+        gene_summary$oxygen <- gradient_fields("oxygen", gd_oxygen_r, perloc_oxygen_r2, perloc_oxygen_slope)
+      }
+      if (ENV_CURRENT_SPEED_ENABLED) {
+        gene_summary$current_speed <- gradient_fields("current_speed", gd_current_speed_r,
+          perloc_current_speed_r2, perloc_current_speed_slope)
+      }
+  }
+
+  # >>> [json-extras] ---------------------------------------------------------------------------------------
+  # Everything between the >>> / <<< markers is additive: it only ADDS fields to gene_summary. Each part has its own
+  # guard, so removing or disabling one never affects the others (or the original fields above).
+
+  # (a) individuals actually used for the statistic. n_individuals$retained only SUBTRACTS the >50%-missing individuals from the
+  #     count - they are NOT removed from the calculation (the per-SNP functions handle missing genotypes).
+  gene_summary$n_individuals$used_for_gd <- length(current_samples)
+
+  # (b) Coastal NA fill (section 2.6): how many individuals had no raw value in the environmental product (their cell was
+  #     masked) and were given a neighbour-filled value, and how many still had none after filling.
+  if (USE_COPERNICUS_MARINE && exists("env_before_na") && exists("env_after_na")) {
+    gene_summary$env_quality <- c(
+      list(n_individuals_total = nrow(coords_file_df)),
+      setNames(as.list(unname(env_before_na)), paste0("n_individuals_filled_", names(env_before_na))),
+      setNames(as.list(unname(env_after_na)),  paste0("n_individuals_missing_after_fill_", names(env_after_na)))
+    )
+  }
+
+  # (c) Location-level statistics (section 4c): n, signed r, analytic 95% CI, p, Spearman rho. Written INTO the
+  #     existing covariate structs so they flatten to e.g. salinity_location_salinity_r in the TSV/duckdb.
+  #     Switch off: WRITE_LOCATION_STATS: FALSE in config.yaml (wingen_params).
+  if (USE_COPERNICUS_MARINE && isTRUE(WRITE_LOCATION_STATS) && exists("perloc_stats_salinity")) {
+    stats_fields <- function(suffix, st) {
+      setNames(list(st$n, st$r, st$r_ci_lo, st$r_ci_hi, st$p, st$rho),
+               paste0("location_", suffix, c("_n", "_r", "_r_ci_lo", "_r_ci_hi", "_p", "_rho")))
+    }
+    gene_summary$salinity          <- c(gene_summary$salinity,          stats_fields("salinity",    perloc_stats_salinity))
+    gene_summary$water_temp_summer <- c(gene_summary$water_temp_summer, stats_fields("temp_summer", perloc_stats_temp_summer))
+    gene_summary$water_temp_winter <- c(gene_summary$water_temp_winter, stats_fields("temp_winter", perloc_stats_temp_winter))
+    gene_summary$chlorophyll_a_log <- c(gene_summary$chlorophyll_a_log, stats_fields("chl_log",     perloc_stats_chl_log))
+    if (ENV_OXYGEN_ENABLED) gene_summary$oxygen <- c(gene_summary$oxygen, stats_fields("oxygen", perloc_stats_oxygen))
+    if (ENV_CURRENT_SPEED_ENABLED) gene_summary$current_speed <- c(gene_summary$current_speed,
+      stats_fields("current_speed", perloc_stats_current_speed))
+  }
+
+  if (isTRUE(WRITE_LOCATION_STATS)) {
+    st <- perloc_stats_latitude
+    gene_summary$latitude <- c(gene_summary$latitude, setNames(
+      list(st$n, st$r, st$r_ci_lo, st$r_ci_hi, st$p, st$rho),
+      paste0("location_latitude", c("_n", "_r", "_r_ci_lo", "_r_ci_hi", "_p", "_rho"))))
+  }
+  if (RUN_NEUTRAL_SIM) {
+    groups_by_variable <- c(latitude = "latitude", salinity = "salinity", temp_summer = "water_temp_summer",
+      temp_winter = "water_temp_winter", chl_log = "chlorophyll_a_log",
+      oxygen = "oxygen", current_speed = "current_speed")
+    for (variable in names(neutral_comparison$fields)) {
+      fields <- neutral_comparison$fields[[variable]]
+      names(fields) <- paste0("location_", variable, "_", names(fields))
+      group <- groups_by_variable[[variable]]
+      gene_summary[[group]] <- c(gene_summary[[group]], fields)
+    }
+    # Scalar fields only, so the existing DuckDB/TSV flattener remains valid.
+    info <- neutral_comparison$metadata
+    gene_summary$neutral_model <- list(status = info$status, n_available = info$n_available,
+      n_excluded_overlap = info$n_excluded_overlap, n_variants_matched = info$n_variants,
+      technical_replicates_requested = info$technical_replicates_requested, seed = info$seed,
+      pool_sha256 = info$pool_sha256, comparison = "upper_tail_absolute_correlation",
+      min_valid_fraction = min_valid_fraction, common_individual_draws = TRUE,
+      extreme_value_percentiles = info$extreme_value_percentiles,
+      pool_validation = info$pool_validation)
+    if (!is.null(info$prepared_manifest_md5)) gene_summary$neutral_model$prepared_manifest_md5 <- info$prepared_manifest_md5
+    gene_summary$neutral_model$n_markers_matched <- info$pool_n_matched
+  }
+
+  # (d) The settings that produced this gene's numbers (provenance). Switch off: WRITE_RUN_SETTINGS: FALSE.
+  if (isTRUE(WRITE_RUN_SETTINGS)) {
+    gene_summary$run_settings <- list(
+      gd_stat = gd_stat, seed = seed_value, use_rarify = use_rarify, location_rarify = location_rarify,
+      rarify_n = rarify_n, rarify_n_iterations = rarify_n_iterations,
+      min_n_samples_per_calc = min_n_samples_per_calc, wdim = wdim_value, fact = fact_value,
+      resolution_km = resolution_m / 1e3, cluster_variance_km = CLUSTER_VARIANCE_POINTS_KM,
+      use_weighted_kriging = use_weighted_kriging, nmax_neighbours = nmax_neighbours
+    )
+    if (USE_COPERNICUS_MARINE) {
+      gene_summary$run_settings <- c(gene_summary$run_settings, list(
+        env_preset = ENV_PRESET,
+        env_physics_product = ENV_PHYSICS_PRODUCT, env_physics_years = paste(env_years_physics, collapse = "-"),
+        env_chl_product = ENV_CHL_PRODUCT,         env_chl_years = paste(env_years_chl, collapse = "-"),
+        env_depth_m = ENV_DEPTH_M, env_oxygen_enabled = ENV_OXYGEN_ENABLED,
+        env_current_speed_enabled = ENV_CURRENT_SPEED_ENABLED
+      ))
+      if (ENV_OXYGEN_ENABLED) {
+        gene_summary$run_settings <- c(gene_summary$run_settings, list(
+          env_oxygen_product = ENV_OXYGEN_PRODUCT, env_oxygen_layer = ENV_OXYGEN_LAYER,
+          env_oxygen_variable = ENV_OXYGEN_VARIABLE, env_oxygen_years = paste(env_years_oxygen, collapse = "-"),
+          env_oxygen_depth_m = ENV_OXYGEN_DEPTH_M, env_oxygen_units = "mmol/m^3"
+        ))
+      }
+      if (ENV_CURRENT_SPEED_ENABLED) {
+        gene_summary$run_settings <- c(gene_summary$run_settings, list(
+          env_current_speed_definition = sprintf("mean(sqrt(%s^2 + %s^2)) over monthly mean components",
+            ENV_CURRENT_EASTWARD_VAR, ENV_CURRENT_NORTHWARD_VAR),
+          env_current_speed_units = "m/s", env_current_speed_layer = ENV_PHYSICS_LAYER,
+          env_current_eastward_variable = ENV_CURRENT_EASTWARD_VAR,
+          env_current_northward_variable = ENV_CURRENT_NORTHWARD_VAR
+        ))
+      }
+    }
+  }
+  # <<< [json-extras] ---------------------------------------------------------------------------------------
+
+  jsonlite::write_json(gene_summary, file.path(output_dir, paste0(gene_id, "_gene_summary.json")),
+                        auto_unbox = TRUE, digits = 8, na = "null")  # na = "null": NA becomes JSON null (the default writes the STRING "NA", which turns a whole DuckDB column into text)
+  print(file.path(output_dir, paste0(gene_id, "_gene_summary.json")))
+  
+}
+```

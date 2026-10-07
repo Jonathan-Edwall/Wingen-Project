@@ -1,0 +1,1 @@
+herring_SECD_HERPUD2_gene_body__palet_turbo_1_scale_2.5km_reswdim7_fact3_minn2_rarify_n10_it5_disagg_grd3_wkriging_nmax15_minval0_: script runtime: 478.9	read.vcfR runtime=0.1, wkrig_gd runtime=22.5, window_gd_runtime=55.2, distance_masking_runtime=180.5, plotting_runtime=13.7

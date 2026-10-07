@@ -1,0 +1,1086 @@
+import os
+import subprocess
+import glob
+import json
+import math
+import re
+"""
+Snakefile - Wingen gene-catalog pipeline (skeleton)
+
+Maps onto 2_wingen_create_gene_catalog.sh + filter_vcf_by_chr_or_gene.sh:
+
+    create_gene_vcf_file()  ->  rule filter_vcf_for_gene
+    create_gene_catalog()   ->  rule run_wingen_report
+
+The bash script's manual `wait -n` / max_parallel_jobs_gene_catalog_creation
+loop is gone entirely: every gene's two rules form an independent chain in
+the DAG, and Snakemake parallelises them automatically up to whatever
+--cores (local) or --jobs (cluster) you give it at run time.
+
+Lives at workflow/Snakefile, the standard Snakemake project layout - run
+from the REPO ROOT (not from inside workflow/), where it's auto-discovered
+with no --snakefile flag needed:
+
+    snakemake -n            # dry run
+    snakemake --cores 4     # run, up to 4 genes in parallel locally
+
+All paths below (config/config.yaml, code/..., results/...) are written
+relative to the repo root for this reason - Snakemake resolves input/
+output/configfile paths relative to wherever you invoke it from, not
+relative to this file's own location inside workflow/.
+"""
+
+configfile: "config/config.yaml"
+
+# CONTAINER = "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/wingen-gene-catalog_v1.sif"
+# CONTAINER = "wingen-gene-catalog_v1.sif"
+# CONTAINER = "wingen-gene-catalog_v2.sif"
+# CONTAINER = "wingen-gene-catalog_v3.sif"
+CONTAINER = "wingen-gene-catalog.sif"
+
+# container: CONTAINER
+
+# Root directory for THIS gene catalog's entire output tree, split into
+# four siblings:
+#   {RESULTS_DIR}/.snakemake_gene_catalog/  - Snakemake's own per-gene .done markers
+#   {RESULTS_DIR}/benchmarks/               - per-gene runtime/memory (Snakemake --benchmark)
+#   {RESULTS_DIR}/temp/                     - working data: filtered_vcf/, env_cache/, ne_cache/
+#   {RESULTS_DIR}/results/                  - the actual deliverable: per-chrom PNGs/JSON,
+#                                              gene_catalog.duckdb/.tsv/.html
+# Everything below is built as f"{RESULTS_DIR}/..." instead of a hardcoded
+# "results/..." literal so that two catalogs (different datasets, or
+# different gene_scope variants of the SAME dataset) can point at two
+# different results_dir values in their own config.yaml and never read,
+# write, or glob anything under each other's tree. rstrip so a trailing
+# slash in config.yaml can't produce a stray "//" in every path built from
+# it.
+#
+# Recommended value shape: nest under a shared "results/" parent rather
+# than sitting bare at the repo root or nesting under "gene_catalog/" -
+# "results/" is already the long-standing, .gitignore-able convention for
+# "pipeline output, not pipeline code", one entry covers every current and
+# future catalog, and nesting under "gene_catalog/" instead would just
+# reintroduce the "gene_catalog/gene_catalog..." stutter that renaming the
+# deliverable folder to "results/" (below) was meant to get rid of:
+#   results_dir: "results/gene_catalog_herring_cds"
+#   results_dir: "results/gene_catalog_herring_body"
+#   results_dir: "results/gene_catalog_krill"
+# The default below ("results/gene_catalog") is a generic placeholder for
+# exactly this shape - rename it per-dataset once you actually have more
+# than one catalog to keep separate.
+RESULTS_DIR = config.get("results_dir", "results/gene_catalog").rstrip("/")
+
+
+def normalize_chrom(chrom):
+    """chr1 / Chr1 / CHR1 / 1 -> chr1, always - so genes on the same
+    chromosome never split across differently-capitalized subdirectories."""
+    c = chrom.strip()
+    if c.lower().startswith("chr"):
+        c = c[3:]
+    return f"chr{c}"
+
+def abspath_pwd(path):
+    """Like os.path.abspath(), but anchored to $PWD instead of
+    os.getcwd(). /proj/<project> on Pelle is a symlink to a real mount
+    elsewhere - os.getcwd() (what os.path.abspath() calls internally)
+    resolves straight through that symlink, while $PWD is whatever
+    logical path the shell actually cd'd into. The apptainer bind is
+    keyed to that same logical /proj/... string, so anchoring here to
+    $PWD keeps every path the container sees in the form it was bound at."""
+    root = os.environ.get("PWD", os.getcwd())
+    return path if os.path.isabs(path) else os.path.join(root, path)
+
+# 2_Herring_Wingen.Rmd caches Copernicus/Natural-Earth downloads under
+# ne_cache_dir/env_cache_dir, both read via Sys.getenv("NE_CACHE_DIR", ...)
+# / Sys.getenv("ENV_CACHE_DIR", ...). Its own fallback (unset -> one level
+# up from wherever the plots land) can't be relied on any more now that
+# results/{chrom}/ and temp/ are siblings rather than one being the
+# other's parent, so these are computed explicitly here and passed in
+# below - still catalog-specific (built from RESULTS_DIR, same as
+# everything else), just no longer inferred. Module-level, not per-
+# chromosome, since every chromosome and every gene in one catalog
+# legitimately shares one download of the same environmental layers.
+ENV_CACHE_DIR_ABS = abspath_pwd(f"{RESULTS_DIR}/temp/env_cache")
+NE_CACHE_DIR_ABS = abspath_pwd(f"{RESULTS_DIR}/temp/ne_cache")
+
+# Optional neutral reference: provide an already-neutral VCF, or marker
+# coordinates used to extract one from input_vcf. Per-gene plans then use the
+# final scope-filtered gene VCF to determine the number of SNPs to sample.
+RUN_NEUTRAL_SIM = config.get("run_neutral_sim", False)
+if not isinstance(RUN_NEUTRAL_SIM, bool):
+    raise ValueError("run_neutral_sim must be a YAML boolean")
+NEUTRAL_DIR = f"{RESULTS_DIR}/temp/neutral_model"
+NEUTRAL_SUPPLIED_POOL = config.get("neutral_vcf") or None
+NEUTRAL_POOL = NEUTRAL_SUPPLIED_POOL or f"{NEUTRAL_DIR}/neutral_pool.vcf.gz"
+NEUTRAL_POOL_INDEX = (f"{NEUTRAL_DIR}/supplied_pool.csi" if NEUTRAL_SUPPLIED_POOL
+                      else f"{NEUTRAL_POOL}.csi")
+NEUTRAL_MARKER_SOURCE = config.get("markers_file") or ""
+NEUTRAL_INPUT_FORMAT = str(config.get("input_format") or "auto").strip().lower()
+if (RUN_NEUTRAL_SIM and not NEUTRAL_SUPPLIED_POOL
+        and NEUTRAL_INPUT_FORMAT not in ("auto", "table", "positions", "bed")):
+    raise ValueError("input_format must be auto, table, positions or bed")
+if NEUTRAL_INPUT_FORMAT == "auto":
+    NEUTRAL_INPUT_FORMAT = ("bed" if str(NEUTRAL_MARKER_SOURCE).lower().endswith((".bed", ".bed.gz"))
+                            else "table")
+# Script 1 reads XLSX/CSV/TSV tables, selects rows labelled neutral (unless the
+# table is already neutral-only), and writes CHROM/POS TSV. A supplied neutral
+# VCF or ready positions/BED skips this table-reading step.
+NEUTRAL_READ_MARKER_TABLE = not NEUTRAL_SUPPLIED_POOL and NEUTRAL_INPUT_FORMAT == "table"
+NEUTRAL_MARKERS = (f"{NEUTRAL_DIR}/markers.tsv" if NEUTRAL_READ_MARKER_TABLE
+                   else NEUTRAL_MARKER_SOURCE)
+NEUTRAL_MARKERS_FORMAT = "normalized" if NEUTRAL_READ_MARKER_TABLE else NEUTRAL_INPUT_FORMAT
+NEUTRAL_EXTREME_VALUE_PERCENTILES = ""
+if RUN_NEUTRAL_SIM:
+    if not config.get("calc_gen_diversity_stats"):
+        raise ValueError("run_neutral_sim requires calc_gen_diversity_stats: TRUE")
+    if not NEUTRAL_SUPPLIED_POOL and not NEUTRAL_MARKER_SOURCE:
+        raise ValueError("Set markers_file or neutral_vcf before running neutral simulations")
+    if int(config.get("technical_replicates", 100)) < 1:
+        raise ValueError("technical_replicates must be positive")
+    if not 0 < float(config.get("min_valid_fraction", 0.9)) <= 1:
+        raise ValueError("min_valid_fraction must be in (0, 1]")
+    _extreme_value_percentiles = config.get("extreme_value_percentiles", [95, 99])
+    if not isinstance(_extreme_value_percentiles, list):
+        raise ValueError("extreme_value_percentiles must be a YAML list, e.g. [95, 99] or []")
+    try:
+        _extreme_value_percentiles = [round(float(value), 6) if not isinstance(value, bool) else float("nan")
+                                 for value in _extreme_value_percentiles]
+    except (TypeError, ValueError):
+        raise ValueError("extreme_value_percentiles must contain numeric percentages") from None
+    if any(not math.isfinite(value) or not 0 < value < 100 for value in _extreme_value_percentiles):
+        raise ValueError("extreme_value_percentiles must be finite percentages strictly between 0 and 100")
+    if len(set(_extreme_value_percentiles)) != len(_extreme_value_percentiles):
+        raise ValueError("extreme_value_percentiles must be unique to six decimal places")
+    NEUTRAL_EXTREME_VALUE_PERCENTILES = ",".join(f"{value:.6f}".rstrip("0").rstrip(".") for value in _extreme_value_percentiles)
+
+
+def neutral_normalization_options():
+    options = {
+        "sheet": config.get("sheet", "Sheet1"),
+        "header-row": config.get("header_row", "auto"),
+        "input-format": NEUTRAL_INPUT_FORMAT,
+        "chrom-column": config.get("chrom_column", 1),
+        "pos-column": config.get("pos_column", 2),
+        "marker-label-column": config.get("marker_label_column") or "TYPE",
+        "neutral-marker-label": config.get("neutral_marker_label", "NEUTRAL"),
+    }
+    # Keep arguments separate; Snakemake's :q formatter quotes each list item.
+    # Omit unset optional flags so argparse uses its empty-string defaults.
+    arguments = [argument for key, value in options.items() if value is not None and value != ""
+                 for argument in (f"--{key}", str(value))]
+    if config.get("neutral_only", False):
+        arguments.append("--neutral-only")
+    return arguments
+
+# ---- gene list, chromosomes and (BED mode) regions ----
+#
+# Two independent questions, answered by independent config keys:
+#   1. WHICH genes run?                    gene_list_file, or the inline 'genes' list
+#   2. HOW are a gene's variants found     vcf_annotation_format: snpeff | bed
+#      in the VCF?
+#
+# The type of the gene list is not configured, it is read from the list itself:
+#   gene_list_file ending in .bed  -> a BED: chrom, start, end, gene ID - one row per gene
+#   any other gene_list_file       -> a txt: one gene ID per line
+#   no gene_list_file              -> the 'genes' list in config.yaml
+# Setting both gene_list_file and genes is an error rather than a quiet tie-break, so a
+# gene_list_file left over from a full run can't swallow a small 'genes' test run.
+#
+# The same BED row then does the rest of the work: its first column is the gene's chromosome
+# (it names the gene's output folder), and with vcf_annotation_format: bed - locating genes by
+# coordinate, for a VCF without ANN - its start/end are the region handed to bcftools. Only a
+# txt list or 'genes' combined with vcf_annotation_format: snpeff has no BED to read the
+# chromosome from, which is the one case that still needs gene_chrom_file.
+
+def read_gene_bed(bed_file):
+    """Parse a gene BED into {(normalized chrom, gene): (chrom, start, end)}.
+
+    The one place this pipeline reads a gene BED - the gene list, each gene's
+    chromosome and each gene's region all come out of it, so they can't
+    disagree about what counts as a valid row.
+
+    Columns: 1 chromosome, 2 start, 3 end, 4 gene ID; anything after that is
+    ignored. chrom is exactly as written in the file; start/end are the BED's
+    own coordinates (0-based start, end exclusive).
+
+    Skipped: blank lines, '#' comments, UCSC 'track'/'browser' lines, and ONE
+    header row at the very top (a first row whose start/end aren't integers).
+    Anything else malformed raises, with file and line number, rather than
+    leaving a gene silently missing from the catalog: fewer than 4 columns,
+    non-integer coordinates after that first row, an empty gene ID, an empty
+    interval (start >= end), or conflicting regions for a gene on one chromosome.
+    """
+    genes = {}
+    line_of = {}
+    skipped_header = False
+    with open(bed_file) as f:
+        for line_number, raw in enumerate(f, start=1):
+            line = raw.strip()
+            if not line or line.startswith("#") or line.split(None, 1)[0] in ("track", "browser"):
+                continue
+
+            # BED is tab-delimited; fall back to any whitespace for a space-delimited file
+            fields = line.split("\t") if "\t" in line else line.split()
+            if len(fields) < 4:
+                raise ValueError(
+                    f"{bed_file}, line {line_number}: expected at least 4 columns "
+                    f"(chrom, start, end, gene ID), got {len(fields)}"
+                )
+
+            try:
+                start, end = int(fields[1]), int(fields[2])
+            except ValueError:
+                if not genes and not skipped_header:
+                    skipped_header = True  # a header row at the top of the file
+                    continue
+                raise ValueError(
+                    f"{bed_file}, line {line_number}: start and end must be integers, "
+                    f"got {fields[1]!r} and {fields[2]!r}"
+                ) from None
+
+            chrom, gene = fields[0], fields[3].strip()
+            if not gene:
+                raise ValueError(f"{bed_file}, line {line_number}: empty gene ID in column 4")
+            if start < 0 or end <= start:
+                raise ValueError(
+                    f"{bed_file}, line {line_number}: expected 0 <= start < end, got "
+                    f"start={start}, end={end} (gene {gene!r})"
+                )
+            locus = (normalize_chrom(chrom), gene)
+            if locus in genes:
+                if genes[locus][1:] != (start, end):
+                    raise ValueError(
+                        f"{bed_file}: different regions for gene {gene!r} on {locus[0]} "
+                        f"at lines {line_of[locus]} and {line_number}"
+                    )
+                continue
+            genes[locus] = (chrom, start, end)
+            line_of[locus] = line_number
+
+    if not genes:
+        raise ValueError(f"{bed_file}: no gene rows found")
+    return genes
+
+
+def read_gene_txt(txt_file):
+    """Read a plain gene list: one gene ID per line, in file order.
+
+    Blank lines and '#' comments are skipped. A line with more than one column
+    raises instead of being taken as a (nonsense) gene ID - the usual cause is
+    a BED file whose name doesn't end in .bed, since the list type is read from
+    the extension.
+    """
+    genes = []
+    with open(txt_file) as f:
+        for line_number, raw in enumerate(f, start=1):
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if len(line.split()) > 1:
+                raise ValueError(
+                    f"{txt_file}, line {line_number}: expected one gene ID per line, got "
+                    f"{line!r}. If this is a BED file, rename it to end in .bed - the gene "
+                    f"list type is read from the file extension."
+                )
+            genes.append(line)
+
+    if not genes:
+        raise ValueError(f"{txt_file}: no gene IDs found")
+    return genes
+
+
+VCF_ANNOTATION_FORMAT = config.get("vcf_annotation_format")
+if VCF_ANNOTATION_FORMAT not in ("snpeff", "bed"):
+    raise ValueError(
+        f"vcf_annotation_format must be 'snpeff' or 'bed', got {VCF_ANNOTATION_FORMAT!r}"
+    )
+
+# 1. WHICH genes run, and what kind of list that is
+GENE_LIST_FILE = config.get("gene_list_file") or None  # unset, null and "" all mean "no file"
+GENES_INLINE = config.get("genes") or []
+if GENE_LIST_FILE and GENES_INLINE:
+    raise ValueError(
+        f"Both config['gene_list_file'] ({GENE_LIST_FILE}) and config['genes'] are set - use "
+        f"one of them. Comment out the one you don't want to run."
+    )
+if GENE_LIST_FILE:
+    gene_list_source = "bed" if GENE_LIST_FILE.lower().endswith(".bed") else "txt"
+elif GENES_INLINE:
+    gene_list_source = "array"
+else:
+    raise ValueError(
+        "No genes to run - set config['gene_list_file'] (a .bed, or a text file with one "
+        "gene ID per line) or config['genes'] (a list of gene IDs)"
+    )
+
+# Retired keys. gene_list_source is no longer read, but a config that still sets it must not
+# quietly start meaning something else: a leftover that agrees with what is now inferred is
+# ignored, one that disagrees is refused.
+_old_source = config.get("gene_list_source")
+if _old_source and _old_source != gene_list_source:
+    raise ValueError(
+        f"config['gene_list_source'] is {_old_source!r}, but the gene list type is now read "
+        f"from gene_list_file's extension (.bed = bed, anything else = txt, no gene_list_file "
+        f"= the 'genes' list) and that gives {gene_list_source!r} here. Delete the "
+        f"gene_list_source line, and check that gene_list_file / genes are what you meant to run."
+    )
+
+# vcf_annotation_format: bed finds each gene by the coordinates in its BED row, so the gene
+# list has to be that BED. (There is no separate gene_bed_file any more; a leftover one that
+# points at the same file is ignored, one that points elsewhere is refused for the same
+# reason as above - it would silently change which coordinates get used.)
+if VCF_ANNOTATION_FORMAT == "bed":
+    if gene_list_source != "bed":
+        what = (
+            f"gene_list_file ({GENE_LIST_FILE}) is a txt list"
+            if gene_list_source == "txt"
+            else "the genes are given as the inline 'genes' list"
+        )
+        raise ValueError(
+            f"vcf_annotation_format: bed finds each gene by the coordinates in its BED row, so "
+            f"the gene list must be a BED file (chrom, start, end, gene ID) ending in .bed - "
+            f"but {what}. To run only some genes, filter the BED down to them, e.g. "
+            f"awk 'NR==FNR{{a[$1]; next}} $4 in a' list.txt genes.bed > subset.bed"
+        )
+    _old_bed = config.get("gene_bed_file")
+    if _old_bed and os.path.realpath(_old_bed) != os.path.realpath(GENE_LIST_FILE):
+        raise ValueError(
+            f"config['gene_bed_file'] ({_old_bed}) is no longer read: with vcf_annotation_format: "
+            f"bed the regions come from gene_list_file ({GENE_LIST_FILE}). Delete the "
+            f"gene_bed_file line, or point gene_list_file at the BED you want to use."
+        )
+
+# 2. Read the list and resolve each chromosome/gene pair.
+LIST_BED = None
+if gene_list_source == "array":
+    GENES = list(GENES_INLINE)
+elif gene_list_source == "txt":
+    GENES = read_gene_txt(GENE_LIST_FILE)
+else:
+    LIST_BED = read_gene_bed(GENE_LIST_FILE)
+    GENES = [gene for _chrom, gene in LIST_BED]
+
+if any(not isinstance(gene, str) or not re.fullmatch(r"[\w][\w.:-]*", gene) for gene in GENES):
+    raise ValueError("Gene IDs must use letters, digits, underscores, dots, colons or hyphens, without spaces or path separators")
+
+# Chromosome folders use normalized names; filtering retains the original VCF name.
+GENE_CHROM = {}  # gene_id -> normalized chromosomes
+LOCUS_CHROM = {}  # (normalized chromosome, gene_id) -> original chromosome
+if LIST_BED is not None:
+    CHROM_SOURCE = GENE_LIST_FILE
+    LOCI = list(LIST_BED)
+    for locus, (chrom, _start, _end) in LIST_BED.items():
+        GENE_CHROM.setdefault(locus[1], []).append(locus[0])
+        LOCUS_CHROM[locus] = chrom
+else:
+    CHROM_SOURCE = config.get("gene_chrom_file")
+    if not CHROM_SOURCE:
+        raise ValueError(
+            "gene_chrom_file is required for a txt gene list (or the inline 'genes' list) "
+            "together with vcf_annotation_format: snpeff - build it with "
+            "code/build_gene_chrom_map.py. With a BED gene list the chromosomes are read from "
+            "the BED instead, and it can be left out."
+        )
+    with open(CHROM_SOURCE) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            chrom, gene = line.split("\t", 1)
+            locus = (normalize_chrom(chrom), gene)
+            if locus not in LOCUS_CHROM:
+                GENE_CHROM.setdefault(gene, []).append(locus[0])
+                LOCUS_CHROM[locus] = chrom
+    GENES = list(dict.fromkeys(GENES))
+
+
+# mirrors gene_list_limit in 2_wingen_create_gene_catalog.sh - caps the
+# resolved gene list to its first N genes, for a quick test run without
+# needing a separate small gene_list_file
+gene_list_limit = config.get("gene_list_limit")
+if gene_list_limit is not None:
+    if LIST_BED is not None:
+        LOCI = LOCI[:gene_list_limit]
+        GENES = [gene for _chrom, gene in LOCI]
+    else:
+        GENES = GENES[:gene_list_limit]
+
+if not GENES:
+    raise ValueError("No genes to process - check config['genes'] or config['gene_list_file']")
+missing_chrom = [g for g in GENES if g not in GENE_CHROM]
+if missing_chrom:
+    raise ValueError(
+        f"{len(missing_chrom)} gene(s) have no chromosome mapping in {CHROM_SOURCE} "
+        f"(first few: {missing_chrom[:5]}) - check it is current (regenerate with "
+        f"code/build_gene_chrom_map.py) and covers every gene in "
+        f"config['gene_list_file']/config['genes']"
+    )
+if LIST_BED is None:
+    LOCI = [(chrom, gene) for gene in GENES for chrom in GENE_CHROM[gene]]
+# mirrors the gene_scope checks in 2_wingen_create_gene_catalog.sh
+GENE_SCOPE = config.get("gene_scope", "all")
+if GENE_SCOPE not in ("all", "body", "exonic", "cds"):
+    raise ValueError(f"gene_scope must be 'all', 'body', 'exonic', or 'cds', got {GENE_SCOPE!r}")
+if GENE_SCOPE != "all" and VCF_ANNOTATION_FORMAT == "bed":
+    raise ValueError(
+        f"gene_scope={GENE_SCOPE!r} requires vcf_annotation_format='snpeff' - the "
+        f"'bed' pathway has no ANN in the vcf to check scope against"
+    )
+
+
+# ---- Genetic diversity statistic (window_gd(stat = ...)) ----
+# The Rmd validates gd_stat again 
+# Matched case-insensitively and mapped back to wingen's exact spelling, so "ho" in
+# config.yaml still reaches window_gd() as "Ho".
+GD_STATS = ("pi", "Ho", "biallelic_richness")
+GD_STAT = {s.lower(): s for s in GD_STATS}.get(str(config.get("gd_stat") or "pi").lower())
+if GD_STAT is None:
+    raise ValueError(f"gd_stat must be one of {', '.join(GD_STATS)}, got {config.get('gd_stat')!r}")
+
+def gd_stat_of_existing_results():
+    """gd_stat recorded in the first gene_summary.json already under RESULTS_DIR, or None
+    when the folder has none yet. JSONs written before gd_stat existed were all
+    nucleotide diversity, hence the "pi" fallback."""
+    for path in glob.iglob(f"{RESULTS_DIR}/results/*/*_gene_summary.json"):
+        with open(path) as fh:
+            return json.load(fh).get("gd_stat", "pi")
+    return None
+
+
+# One results_dir per statistic: a re-run under a different gd_stat would overwrite the
+# JSONs but leave the old statistic's PNGs sitting next to the new ones in the same
+# per-chromosome folders, and gene_catalog.html lists every PNG it finds there.
+_existing_gd_stat = gd_stat_of_existing_results()
+if _existing_gd_stat not in (None, GD_STAT):
+    raise ValueError(
+        f"results_dir {RESULTS_DIR!r} already holds a catalog built with gd_stat="
+        f"{_existing_gd_stat!r}, but config.yaml now says {GD_STAT!r}. Point results_dir at a "
+        f"new folder for this statistic (e.g. '{RESULTS_DIR}_{GD_STAT.lower()}'), or delete "
+        f"{RESULTS_DIR!r} first to rebuild it in place."
+    )
+
+# rule all:
+#     input:
+#         # [f"results/gene_catalog/{GENE_CHROM[gene]}/{gene}" for gene in GENES],
+#         [f"results/gene_catalog/{GENE_CHROM[gene]}/{wildcards.gene}" for gene in GENES], # Placeholder until i fix chr/gene* structure.
+
+#     #     outdir=directory(f"results/gene_catalog/{chrom}"), # Placeholder until i fix chr/gene* structure.
+#     # benchmark:
+#     #     f"results/gene_catalog/{chrom}/{gene}_benchmark.tsv" # Placeholder until i fix chr/gene* structure.
+
+def done_marker_paths():
+    """Every gene's .done marker ({RESULTS_DIR}/.snakemake_gene_catalog/{chrom}/{gene}.done)
+    - what "this gene's render actually finished" means now that
+    run_wingen_report's real outputs (the pngs, {gene}_gene_summary.json)
+    sit in a folder shared by every gene on that chromosome and so can't
+    be declared as this one gene's Snakemake output. Used both as rule
+    all's own target list and as what aggregate_gene_summaries waits on -
+    one definition, so the two can't quietly drift apart.
+
+    Namespaced under RESULTS_DIR so a gene that's part of TWO catalogs
+    (e.g. the same gene under gene_scope: cds in one config.yaml and
+    gene_scope: body in another) gets two independent markers, one per
+    catalog - never a single shared marker that the second catalog's run
+    could mistake for its own gene already being finished."""
+    return [
+        f"{RESULTS_DIR}/.snakemake_gene_catalog/{chrom}/{gene}.done"
+        for chrom, gene in LOCI
+    ]
+
+# # GPT test for chr/gene* structure.
+# rule all:
+#     input:
+#         [
+#             f"results/.snakemake_gene_catalog/{GENE_CHROM[gene]}/{gene}.done"
+#             for gene in GENES
+#         ],
+
+rule all:
+    input:
+        f"{RESULTS_DIR}/results/gene_catalog.html",
+        f"{RESULTS_DIR}/results/gene_catalog.duckdb",
+
+
+def filter_mode(wildcards):
+    """Mirrors the if/else in create_gene_vcf_file(): chr mode needs a
+    region resolved from a BED file, gene mode hands the gene ID straight
+    to filter_vcf_by_chr_or_gene.sh, which does its own SnpEff-ANN vs.
+    fallback detection from the VCF header - not from this flag."""
+    return "chr" if VCF_ANNOTATION_FORMAT == "bed" else "gene"
+
+def filter_value(wildcards):
+    """Gene ID for gene mode; chr:start-end region for BED mode.
+
+    The region is what bcftools -r expects: 1-based and inclusive. A BED start
+    is 0-based, hence the + 1 - passing it through unchanged would pull in the
+    one base just before the gene (checked: BED row "chr1 100 200" covers 1-based
+    positions 101-200, but -r chr1:100-200 also returns a variant at 100)."""
+    if VCF_ANNOTATION_FORMAT == "bed":
+        try:
+            chrom, start, end = LIST_BED[(wildcards.chrom, wildcards.gene)]
+        except KeyError:
+            raise ValueError(
+                f"Gene {wildcards.gene!r} on {wildcards.chrom} was not found in {GENE_LIST_FILE}"
+            ) from None
+        return f"{chrom}:{start + 1}-{end}"
+
+    return wildcards.gene
+
+
+def filter_chrom(wildcards):
+    return LOCUS_CHROM[(wildcards.chrom, wildcards.gene)]
+
+# def filter_value(wildcards):
+#     """Gene ID for gene mode; resolved chr:start-end region for chr mode."""
+#     if config["vcf_annotation_format"] == "bed":
+#         # Port get_gene_region_from_bed() here once you're actually
+#         # exercising bed mode - look wildcards.gene up in
+#         # config["gene_bed_file"] and return "chrom:start-end".
+#         raise NotImplementedError("bed-mode region lookup not ported yet")
+#     return wildcards.gene
+
+
+def wingen_env_prefix(wildcards):
+    """Turn config['wingen_params'] into 'KEY1="val1" KEY2="val2" ...' for
+    the shell command below. Anything not set in config.yaml is simply
+    omitted, so the Rmd's own Sys.getenv(..., unset = default) fallback
+    applies - exactly like leaving the matching export commented out in
+    2_wingen_create_gene_catalog.sh does today."""
+    params = config.get("wingen_params", {}) or {}
+    return " ".join(f'{k}="{v}"' for k, v in params.items() if v is not None)
+
+
+rule filter_vcf_for_gene:
+    """create_gene_vcf_file(): subset the cohort VCF to one gene's variants."""
+    input:
+        vcf=config["input_vcf"],
+    output:
+        vcf=f"{RESULTS_DIR}/temp/filtered_vcf/{{chrom}}/{{gene}}_filtered.vcf.gz",
+    params:
+        mode=filter_mode,
+        value=filter_value,
+        chrom=filter_chrom,
+    container:
+        CONTAINER
+    # conda:
+    #     "wingen_env"
+    # container:
+    #     # confirmed to exist on quay.io as of this writing - still worth
+    #     # picking the exact bcftools version you actually want rather
+    #     # than trusting this pin blindly
+    #     "docker://quay.io/biocontainers/bcftools:1.21--h3a4d415_1"
+    threads: 2
+    resources:
+        # not measured separately from run_wingen_report below - filtering
+        # a single small gene region is a much lighter operation than the
+        # R rendering step, these are a deliberately small guess rather
+        # than an attempt at a real number
+        # mem_mb=2000,
+        # runtime=10,
+        mem_mb=lambda wildcards, attempt: 2000 * attempt,
+        runtime=lambda wildcards, attempt: 10 * attempt,
+    retries: 2
+    shell:
+        """
+        export FILTER_GENE_CHROM={params.chrom:q}
+        bash code/filter_vcf_by_chr_or_gene.sh \
+            {input.vcf:q} {params.mode:q} {params.value:q} {output.vcf:q} true
+        """
+
+
+rule narrow_vcf_by_scope:
+    """
+    filter_vcf_by_scope.sh: narrow an already gene-filtered VCF down to a
+    specific annotation scope (body/exonic/cds), reading each variant's
+    own ANN block for this gene. Only ever appears in the DAG when
+    config['gene_scope'] != "all" - see wingen_vcf_input() below, which
+    decides whether run_wingen_report depends on this rule's output or
+    skips straight to filter_vcf_for_gene's.
+    """
+    input:
+        vcf=rules.filter_vcf_for_gene.output.vcf,
+    output:
+        vcf=f"{RESULTS_DIR}/temp/filtered_vcf/{{chrom}}/{{gene}}_{GENE_SCOPE}.vcf.gz",
+    params:
+        gene=lambda wc: wc.gene,
+        scope=GENE_SCOPE,
+    container:
+        CONTAINER
+    # conda:
+    #     "wingen_env"
+    # container:
+    #     "docker://quay.io/biocontainers/bcftools:1.21--h3a4d415_1"
+    threads: 2
+    resources:
+        # mem_mb=2000,
+        # runtime=10,
+        mem_mb=lambda wildcards, attempt: 2000 * attempt,
+        runtime=lambda wildcards, attempt: 10 * attempt,
+    retries: 2
+    shell:
+        """
+        bash code/filter_vcf_by_scope.sh \
+            {input.vcf} {params.gene} {params.scope} {output.vcf} true
+        """
+
+
+def wingen_vcf_input(wildcards):
+    """Feeds run_wingen_report the scope-narrowed VCF when gene_scope is
+    set, otherwise the plain gene-filtered VCF - mirrors filtered_vcf_file
+    only getting reassigned to scope_vcf_file in create_gene_catalog()
+    when gene_scope != "all"."""
+    if GENE_SCOPE != "all":
+        return f"{RESULTS_DIR}/temp/filtered_vcf/{wildcards.chrom}/{wildcards.gene}_{GENE_SCOPE}.vcf.gz"
+    return f"{RESULTS_DIR}/temp/filtered_vcf/{wildcards.chrom}/{wildcards.gene}_filtered.vcf.gz"
+
+
+if RUN_NEUTRAL_SIM and NEUTRAL_READ_MARKER_TABLE:
+    rule normalize_neutral_markers:
+        input:
+            markers=config["markers_file"],
+            script="code/1_neutral_simulation_markers.py",
+        output:
+            markers=NEUTRAL_MARKERS,
+        params:
+            options=neutral_normalization_options(),
+        container:
+            CONTAINER
+        shell:
+            "python {input.script:q} --source {input.markers:q} --output {output.markers:q} {params.options:q}"
+
+if RUN_NEUTRAL_SIM and not NEUTRAL_SUPPLIED_POOL:
+    rule extract_neutral_pool:
+        input:
+            vcf=config["input_vcf"],
+            markers=NEUTRAL_MARKERS,
+            script="code/2_neutral_simulation_vcfs.sh",
+            helper="code/3_neutral_simulation_subsets.py",
+        output:
+            pool=NEUTRAL_POOL,
+            index=f"{NEUTRAL_POOL}.csi",
+            target_markers=f"{NEUTRAL_DIR}/target_markers.tsv",
+        params:
+            markers_format=NEUTRAL_MARKERS_FORMAT,
+        container:
+            CONTAINER
+        threads: 2
+        resources:
+            mem_mb=2000,
+        shell:
+            """
+            bash {input.script:q} pool --vcf {input.vcf:q} --markers {input.markers:q} \
+                --output {output.pool:q} --target-markers-output {output.target_markers:q} \
+                --markers-format {params.markers_format:q} --threads {threads}
+            """
+
+if RUN_NEUTRAL_SIM and NEUTRAL_SUPPLIED_POOL:
+    rule prepare_existing_neutral_pool:
+        input:
+            pool=NEUTRAL_POOL,
+            script="code/2_neutral_simulation_vcfs.sh",
+            helper="code/3_neutral_simulation_subsets.py",
+        output:
+            index=NEUTRAL_POOL_INDEX,
+        container:
+            CONTAINER
+        resources:
+            mem_mb=1000,
+        shell:
+            """
+            bash {input.script:q} existing-pool --vcf {input.pool:q} \
+                --index-output {output.index:q}
+            """
+
+if RUN_NEUTRAL_SIM:
+    rule plan_neutral_subsets:
+        input:
+            pool=NEUTRAL_POOL,
+            index=NEUTRAL_POOL_INDEX,
+            gene_vcf=wingen_vcf_input,
+            script="code/3_neutral_simulation_subsets.py",
+        output:
+            # One row per replicate: indices of the selected SNPs in the pool.
+            plan=f"{NEUTRAL_DIR}/{{chrom}}/{{gene}}/subsets.tsv",
+            # SNP/replicate counts and input fingerprints used to check reuse.
+            metadata=f"{NEUTRAL_DIR}/{{chrom}}/{{gene}}/plan_metadata.json",
+        params:
+            technical_replicates=int(config.get("technical_replicates", 100)),
+            seed=int(config.get("seed", 42)),
+        container:
+            CONTAINER
+        resources:
+            mem_mb=1000,
+        shell:
+            """
+            python {input.script:q} plan --pool {input.pool:q} --gene-vcf {input.gene_vcf:q} \
+                --gene {wildcards.gene:q} --output {output.plan:q} --metadata {output.metadata:q} \
+                --technical-replicates {params.technical_replicates} --seed {params.seed}
+            """
+
+    rule materialize_neutral_vcfs:
+        # Prepare every replicate for this chromosome/gene only. Its R report
+        # waits here; other genes can prepare or analyse their own VCFs in parallel.
+        input:
+            pool=NEUTRAL_POOL,
+            index=NEUTRAL_POOL_INDEX,
+            plan=rules.plan_neutral_subsets.output.plan,
+            metadata=rules.plan_neutral_subsets.output.metadata,
+            gene_vcf=wingen_vcf_input,
+            script="code/2_neutral_simulation_vcfs.sh",
+            helper="code/3_neutral_simulation_subsets.py",
+        output:
+            # Includes manifest.json: saved VCF filenames, selected pool indices,
+            # record counts and fingerprints validated before R reads the files.
+            prepared=directory(f"{NEUTRAL_DIR}/{{chrom}}/{{gene}}/prepared_vcfs"),
+        container:
+            CONTAINER
+        threads: 2
+        resources:
+            mem_mb=1000,
+        shell:
+            """
+            bash {input.script:q} materialize --pool {input.pool:q} --gene-vcf {input.gene_vcf:q} \
+                --plan {input.plan:q} --metadata {input.metadata:q} --output-dir {output.prepared:q} \
+                --pool-index {input.index:q} --threads {threads}
+            """
+
+
+rule run_wingen_report:
+    """
+    create_gene_catalog()'s Rscript call: render the Wingen Rmd against
+    one gene's filtered VCF.
+
+    Output is a per-gene `.done` marker ({RESULTS_DIR}/.snakemake_gene_catalog/
+    {chrom}/{gene}.done), not the gene's real outputs directly - those
+    (the pngs, {gene}_gene_summary.json) land in {RESULTS_DIR}/results/
+    {chrom}/, a folder SHARED by every gene on that chromosome, which
+    Snakemake can't cleanly track as any one gene's own output (nothing
+    in that path distinguishes which gene it belongs to). The marker
+    exists purely so Snakemake still has a real, gene-and-chromosome-
+    specific file to hang the DAG on; the actual filenames living in the
+    shared folder disambiguate by filename instead of by folder - the
+    Rmd writes "{gene}_gene_summary.json" (not a shared "gene_summary.json")
+    for exactly this reason, and the plots already carried the gene ID in
+    their own Sys.Date()-stamped, settings-encoded filenames regardless.
+
+    intermediates_dir is gene-specific (.render_{gene}, not a shared
+    .render) for the same reason: multiple genes now render into the SAME
+    chromosome folder, possibly concurrently, so anything that isn't
+    already gene-specific by name is a collision waiting to happen -
+    this was true before too (per-run rather than per-chromosome), just
+    more exposed now that the folder itself is shared.
+    """
+    input:
+        vcf=wingen_vcf_input,
+        coords=config["sample_coordinates_file"],
+        rmd="code/2_Herring_Wingen.Rmd",
+        neutral_pool=lambda wc: [NEUTRAL_POOL] if RUN_NEUTRAL_SIM else [],
+        neutral_plan=lambda wc: [f"{NEUTRAL_DIR}/{wc.chrom}/{wc.gene}/subsets.tsv"] if RUN_NEUTRAL_SIM else [],
+        neutral_metadata=lambda wc: [f"{NEUTRAL_DIR}/{wc.chrom}/{wc.gene}/plan_metadata.json"] if RUN_NEUTRAL_SIM else [],
+        neutral_prepared=lambda wc: [f"{NEUTRAL_DIR}/{wc.chrom}/{wc.gene}/prepared_vcfs"] if RUN_NEUTRAL_SIM else [],
+        # Not read by the shell command - listed so that editing the environmental-dataset presets (ENV_PRESET in
+        # config.yaml picks one) re-runs the genes, like editing the Rmd does. Remove if you do not use presets.
+        presets="config/env_presets.yaml",
+    output:
+        # outdir=directory("results/gene_catalog/{chrom}/{gene}"),
+        # outdir=directory(f"results/gene_catalog/{chrom}"), # Placeholder until i fix chr/gene* structure.
+        done=f"{RESULTS_DIR}/.snakemake_gene_catalog/{{chrom}}/{{gene}}.done" # GPT test for chr/gene* structure.
+    benchmark:
+        #     # native equivalent of the /usr/bin/time -v wrapping just added to
+        #     # create_gene_catalog() - wall time, max RSS, CPU time, per gene,
+        #     # written automatically every run instead of needing manual
+        #     # wrapping. Also where the exact per-gene "Elapsed" number missing
+        #     # from the resources: comment below would come from.
+        # "results/gene_catalog/{chrom}/{gene}/benchmark.tsv"
+        # "results/gene_catalog/{chrom}/{gene}_benchmark.tsv" # Placeholder until i fix chr/gene* structure.
+        f"{RESULTS_DIR}/benchmarks/{{chrom}}/{{gene}}.tsv" # GPT test for chr/gene* structure.
+    container:
+        CONTAINER
+    # conda:
+    #     "wingen_env"
+    # container:
+    #     "docker://ghcr.io/OWNER/wingen-report:latest"  # built from Dockerfile below
+    # params:
+    #     filter_mode=filter_mode,
+    #     study_species=config["study_species"],
+    #     calc_gen_diversity_stats=config["calc_gen_diversity_stats"],
+    #     lat_min=config["lat_min"],
+    #     lat_max=config["lat_max"],
+    #     lon_min=config["lon_min"],
+    #     lon_max=config["lon_max"],
+    #     wingen_env=wingen_env_prefix,
+    #     # rmarkdown::render() setwd()s into the .Rmd's own directory (code/)
+    #     # unless knit_root_dir is given, so any repo-root-relative path handed
+    #     # to the Rmd gets resolved against code/ instead. The bash track never
+    #     # hit this because everything it exported was already absolute.
+    #     vcf_abs=lambda wc, input: os.path.abspath(input.vcf),
+    #     rmd_abs=lambda wc, input: os.path.abspath(input.rmd),
+    #     outdir_abs=lambda wc, output: os.path.abspath(output.outdir),
+
+    # GPT test for chr/gene* structure.
+    params:
+        filter_mode=filter_mode,
+        study_species=config["study_species"],
+        domain_type=config["domain_type"],
+        calc_gen_diversity_stats=config["calc_gen_diversity_stats"],
+        use_copernicus_marine=config["use_copernicus_marine"],
+        gd_stat=GD_STAT,
+        gd_label=config.get("gd_label", ""),
+        gd_label_short=config.get("gd_label_short", ""),
+        lat_min=config.get("lat_min", ""),
+        lat_max=config.get("lat_max", ""),
+        lon_min=config.get("lon_min", ""),
+        lon_max=config.get("lon_max", ""),
+        # lat_min=config["lat_min"],
+        # lat_max=config["lat_max"],
+        # lon_min=config["lon_min"],
+        # lon_max=config["lon_max"],
+        wingen_env=wingen_env_prefix,
+
+        # outdir_abs=lambda wc: os.path.abspath(
+        #     f"results/gene_catalog/{wc.chrom}"
+        # ),
+        # vcf_abs=lambda wc, input: os.path.abspath(input.vcf),
+        # rmd_abs=lambda wc, input: os.path.abspath(input.rmd),
+
+        outdir_abs=lambda wc: abspath_pwd(f"{RESULTS_DIR}/results/{wc.chrom}"),
+        vcf_abs=lambda wc, input: abspath_pwd(input.vcf),
+        rmd_abs=lambda wc, input: abspath_pwd(input.rmd),
+        env_cache_dir_abs=ENV_CACHE_DIR_ABS,
+        ne_cache_dir_abs=NE_CACHE_DIR_ABS,
+        run_neutral_sim=RUN_NEUTRAL_SIM,
+        neutral_plan_abs=lambda wc: abspath_pwd(f"{NEUTRAL_DIR}/{wc.chrom}/{wc.gene}/subsets.tsv") if RUN_NEUTRAL_SIM else "",
+        # Absolute paths keep these per-gene files readable from R's render directory.
+        neutral_metadata_abs=lambda wc: abspath_pwd(f"{NEUTRAL_DIR}/{wc.chrom}/{wc.gene}/plan_metadata.json") if RUN_NEUTRAL_SIM else "",
+        neutral_min_valid_fraction=config.get("min_valid_fraction", 0.9) if RUN_NEUTRAL_SIM else 0.9,
+        neutral_prepared_manifest_abs=lambda wc: abspath_pwd(f"{NEUTRAL_DIR}/{wc.chrom}/{wc.gene}/prepared_vcfs/manifest.json") if RUN_NEUTRAL_SIM else "",
+        neutral_extreme_value_percentiles=NEUTRAL_EXTREME_VALUE_PERCENTILES,
+    threads: 2
+    resources:
+        # from real sacct data (job 6675358, batch_job_gene_catalog.sh):
+        # TotalCPU/Elapsed ~= 0.96 -> effectively single-threaded, hence
+        # threads=2 (1 needed + 1 margin, matching that script's own -c 2);
+        # MaxRSS ~= 28.3GB peak -> mem_mb below matches the 40G that
+        # script now requests. That job ran two genes sequentially in one
+        # allocation though, and each gets a fresh Rscript process (no
+        # memory carries over between them), so 28.3GB is a reasonable
+        # per-gene peak, not a two-gene sum. runtime is the one number
+        # here I don't have a clean per-gene split for - the sacct data
+        # shared didn't include absolute Elapsed, only the CPU ratio - so
+        # this is still more of a guess than the other two; the "Elapsed"
+        # field from that same sacct command would settle it directly.
+        # mem_mb=40000,
+        # runtime=45,
+        mem_mb=lambda wildcards, attempt: 40000 * attempt,
+        runtime=lambda wildcards, attempt: 45 * attempt,
+    retries: 2
+    # shell:
+    #     """
+    #     mkdir -p {params.outdir_abs}/.render
+    #     filtered_vcf_file={params.vcf_abs} \
+    #     sample_coordinates_file={input.coords} \
+    #     vcf_filter_mode={params.filter_mode} \
+    #     vcf_filter_value={wildcards.gene} \
+    #     study_species={params.study_species} \
+    #     calc_gen_diversity_stats={params.calc_gen_diversity_stats} \
+    #     LAT_MIN={params.lat_min} LAT_MAX={params.lat_max} \
+    #     LON_MIN={params.lon_min} LON_MAX={params.lon_max} \
+    #     wingen_output_dir={params.outdir_abs} \
+    #     {params.wingen_env} \
+    #     Rscript -e "rmarkdown::render('{params.rmd_abs}', run_pandoc=FALSE, intermediates_dir='{params.outdir_abs}/.render')"
+    #     rm -rf {params.outdir_abs}/.render
+    #     """
+
+    # GPT test for chr/gene* structure.
+    shell:
+        """
+        mkdir -p {params.outdir_abs}/.render_{wildcards.gene}
+        filtered_vcf_file={params.vcf_abs} \
+        sample_coordinates_file={input.coords} \
+        vcf_filter_mode={params.filter_mode} \
+        vcf_filter_value={wildcards.gene} \
+        study_species={params.study_species:q} \
+        DOMAIN_TYPE={params.domain_type} \
+        calc_gen_diversity_stats={params.calc_gen_diversity_stats} \
+        USE_COPERNICUS_MARINE={params.use_copernicus_marine} \
+        RUN_NEUTRAL_SIM={params.run_neutral_sim} \
+        GD_STAT={params.gd_stat:q} \
+        GD_LABEL={params.gd_label:q} \
+        GD_LABEL_SHORT={params.gd_label_short:q} \
+        LAT_MIN={params.lat_min} \
+        LAT_MAX={params.lat_max} \
+        LON_MIN={params.lon_min} \
+        LON_MAX={params.lon_max} \
+        wingen_output_dir={params.outdir_abs} \
+        ENV_CACHE_DIR={params.env_cache_dir_abs} \
+        NE_CACHE_DIR={params.ne_cache_dir_abs} \
+        NEUTRAL_PLAN={params.neutral_plan_abs:q} \
+        NEUTRAL_PLAN_METADATA={params.neutral_metadata_abs:q} \
+        NEUTRAL_MIN_VALID_FRACTION={params.neutral_min_valid_fraction} \
+        NEUTRAL_PREPARED_MANIFEST={params.neutral_prepared_manifest_abs:q} \
+        NEUTRAL_EXTREME_VALUE_PERCENTILES={params.neutral_extreme_value_percentiles:q} \
+        {params.wingen_env} \
+        Rscript -e "rmarkdown::render('{params.rmd_abs}', run_pandoc=FALSE, intermediates_dir='{params.outdir_abs}/.render_{wildcards.gene}')"
+
+        rm -rf {params.outdir_abs}/.render_{wildcards.gene}
+
+        mkdir -p "$(dirname {output.done})"
+        touch {output.done}
+        """
+
+
+# rule aggregate_gene_summaries:
+#     """
+#     Waits on every gene's .done marker (done_marker_paths(), built from
+#     GENE_CHROM above - see that function's own comment for why a marker
+#     file rather than {gene}_gene_summary.json directly), then loads every
+#     gene's *_gene_summary.json into one DuckDB table with a single glob
+#     read - see the script for why this is safe to do as a single pass
+#     with no concurrency concerns of its own: by the time this rule can
+#     even start, every gene's marker (and therefore its summary file)
+#     already exists and nothing else is writing to any of them.
+#     """
+#     input:
+#         markers=done_marker_paths(),
+#     output:
+#         duckdb="results/gene_catalog/gene_catalog.duckdb",
+#         tsv="results/gene_catalog/gene_catalog_summary.tsv",
+#     conda:
+#         "wingen_env"
+#     # container:
+#     #     CONTAINER
+#     script:
+#         "../code/aggregate_gene_summaries.py"
+
+rule aggregate_gene_summaries:
+    input:
+        markers=done_marker_paths(),
+
+    output:
+        duckdb=f"{RESULTS_DIR}/results/gene_catalog.duckdb",
+        tsv=f"{RESULTS_DIR}/results/gene_catalog_summary.tsv",
+    container:
+        CONTAINER
+    # conda:
+    #     "wingen_env"
+    shell:
+        """
+        python code/aggregate_gene_summaries.py \
+            --duckdb {output.duckdb} \
+            --tsv {output.tsv}
+        """
+
+
+# rule aggregate_gene_summaries:
+#     input:
+#         markers=done_marker_paths(),
+
+#     output:
+#         duckdb="results/gene_catalog/gene_catalog.duckdb",
+#         tsv="results/gene_catalog/gene_catalog_summary.tsv",
+
+#     conda:
+#         "wingen_env"
+#     shell:
+#         """
+#         "$CONDA_PREFIX/bin/python" code/aggregate_gene_summaries.py \
+#             --duckdb {output.duckdb} \
+#             --tsv {output.tsv}
+#         """
+
+# rule aggregate_gene_summaries:
+#     input:
+#         markers=done_marker_paths(),
+#     output:
+#         duckdb="results/gene_catalog/gene_catalog.duckdb",
+#         tsv="results/gene_catalog/gene_catalog_summary.tsv",
+#     conda:
+#         "wingen_env"
+#     shell:
+#         """
+#         echo "CONDA_PREFIX=$CONDA_PREFIX"
+#         echo "python=$(which python)"
+#         python -c "import sys; print(sys.executable)"
+#         python -c "import duckdb; print(duckdb.__version__)"
+#     """
+
+# rule build_gene_catalog_html:
+#     """
+#     One static, sortable/searchable HTML page over the whole catalog -
+#     DataTables.js loaded from its own CDN, no server needed. Deliberately
+#     built only once, here, at the very end of the DAG, rather than kept
+#     continuously up to date - a stale-until-the-next-full-run catalog
+#     that's honest about it (see "generated <timestamp>" in the page
+#     header) is a much simpler thing to reason about than one that's
+#     subtly out of sync with a run still in progress.
+
+#     Lives inside gene_catalog/ itself (not one level up at
+#     results/gene_catalog.html) - purely a placement choice, doesn't
+#     change anything about how it's built.
+#     """
+#     input:
+#         duckdb=rules.aggregate_gene_summaries.output.duckdb,
+#     output:
+#         html="results/gene_catalog/gene_catalog.html",
+#     conda:
+#         "wingen_env"
+#     # container:
+#     #     CONTAINER
+#     script:
+#         "../code/build_gene_catalog_html.py"
+
+rule build_gene_catalog_html:
+    """
+    One static, sortable/searchable HTML page over the whole catalog -
+    DataTables.js loaded from its own CDN, no server needed. Deliberately
+    built only once, here, at the very end of the DAG, rather than kept
+    continuously up to date - a stale-until-the-next-full-run catalog
+    that's honest about it (see "generated <timestamp>" in the page
+    header) is a much simpler thing to reason about than one that's
+    subtly out of sync with a run still in progress.
+
+    Lives inside {RESULTS_DIR}/results/ itself, alongside the duckdb and
+    tsv it's built from - not off in a separately-named folder - so all
+    three sibling outputs of one catalog's aggregation step stay together.
+    """
+    input:
+        duckdb=rules.aggregate_gene_summaries.output.duckdb,
+    output:
+        html=f"{RESULTS_DIR}/results/gene_catalog.html",
+    container:
+        CONTAINER
+    # conda:
+    #     "wingen_env"
+    shell:
+        """
+        python code/build_gene_catalog_html.py \
+            --duckdb {input.duckdb} \
+            --html {output.html}
+        """
+
+# rule build_gene_catalog_html:
+#     """
+#     One static, sortable/searchable HTML page over the whole catalog -
+#     DataTables.js loaded from its own CDN, no server needed. Deliberately
+#     built only once, here, at the very end of the DAG, rather than kept
+#     continuously up to date - a stale-until-the-next-full-run catalog
+#     that's honest about it (see "generated <timestamp>" in the page
+#     header) is a much simpler thing to reason about than one that's
+#     subtly out of sync with a run still in progress.
+
+#     Lives inside gene_catalog/ itself (not one level up at
+#     results/gene_catalog.html) - purely a placement choice, doesn't
+#     change anything about how it's built.
+#     """
+#     input:
+#         duckdb=rules.aggregate_gene_summaries.output.duckdb,
+#     output:
+#         html="results/gene_catalog/gene_catalog.html",
+    # conda:
+    #     "wingen_env"
+#     shell:
+#         """
+#         "$CONDA_PREFIX/bin/python" code/build_gene_catalog_html.py \
+#             --duckdb {input.duckdb} \
+#             --html {output.html}
+#         """

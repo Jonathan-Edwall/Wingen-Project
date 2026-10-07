@@ -1,0 +1,105 @@
+name: wingen_env
+channels:
+  - conda-forge
+  - defaults
+  - r
+  - bioconda  
+dependencies:
+  - r-base>=4.1        # wingen & CopernicusMarine requires R >= 4.1.0
+  - conda-lock
+  - python=3.14.6
+  - bedtools
+  - bcftools
+  - plink2
+  - pip # include pip so pip-based fallbacks can be used if needed
+  - python-duckdb
+  - jinja2
+  - r-rnaturalearth
+  - hunspell-en # Suggested installment based on error messages appearing from when creating the environment
+  - r-readxl
+  - r-writexl
+  - r-readr  
+  - libgdal-core # GDAL support for CopernicusMarine  
+  - libgdal-netcdf # NetCDF support for CopernicusMarine
+  - r-future # Used for parallelization in any of the moving window calculations of wingen.  
+  - r-remotes   # needed to install wingen itself below
+  # - r-wingen's actual dependencies (from CRAN: https://cran.r-project.org/web/packages/wingen/index.html)
+  - r-crayon
+  - r-dplyr
+  - r-furrr
+  - r-gdistance
+  - r-ggplot2
+  # - r-graphics
+  # - r-grDevices
+  - r-gstat
+  - r-hierfstat
+  - r-lifecycle
+  - r-magrittr
+  - r-pegas
+  - r-purrr
+  - r-raster
+  - r-rlang
+  # - r-sf # Imported for CopernicusMarine below
+  - r-terra
+  - r-tidyr
+  - r-tidyselect
+  # - r-utils
+  - r-vcfr
+  - r-viridis
+  # Suggested wingen packages below:
+  # - r-spatialkde # Installed separetely using remotes::install_version("SpatialKDE", version = "0.8.2", repos = "https://cran.r-project.org")
+  - r-adegenet
+  - r-automap
+  - r-covr
+  - r-devtools
+  - r-knitr
+  - r-MASS
+  - r-rmarkdown
+  # - r-stringr # Imported for CopernicusMarine below
+
+  # - r-CopernicusMarine dependencies (from CRAN: https://cran.r-project.org/web/packages/CopernicusMarine/index.html)
+  - r-cli
+  # - r-dplyr # Already added for Wingen
+  - r-httr2>=1.1.0
+  - r-jsonlite
+  - r-leaflet
+  - r-lubridate
+  # - r-purrr # Already added for Wingen
+  # - r-rlang # Already added for Wingen
+  - r-sf>=1.0-24
+  - r-stars>=0.7-1
+  - r-stringr
+  - r-tibble
+  # - r-tidyr # Already added for Wingen
+  - r-xml2
+  # Suggested CopernicusMarine packages below:
+  - r-CFtime>=1.7.1
+  - r-clipr
+  - r-curl
+  - r-DT
+  # - r-knitr # Already added for Wingen
+  # - r-lifecycle # Already added for Wingen
+  - r-ncmeta
+  - r-ncdf4
+  - r-paws.storage
+  # - r-rmarkdown # Already added for Wingen
+  - r-units
+  - r-testthat>=3.0.0
+
+  # - r-SpatialKDE dependencies (from CRAN: https://cran.r-project.org/web/packages/SpatialKDE/index.html)
+  - r-glue
+  - r-vctrs
+  # Suggested SpatialKDE packages below:
+  - r-tmap
+  - r-sp
+
+  
+# Installment of non-conda available R packages:
+# # 1: Create the krill_env environment from environment.yml file
+# micromamba env create -f environment_krill.yml
+# # 2: Activate the new krill_env environment
+# conda activate krill_env
+# #3: Install the R packages using Remotes:
+# remotes::install_version("wingen", version = "2.2.0", repos = "https://cran.r-project.org")
+# remotes::install_version("CopernicusMarine", version = "0.4.9", repos = "https://cran.r-project.org")
+# remotes::install_version("SpatialKDE", version = "0.8.2", repos = "https://cran.r-project.org")

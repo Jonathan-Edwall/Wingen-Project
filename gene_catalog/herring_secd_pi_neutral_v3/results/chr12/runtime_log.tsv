@@ -1,0 +1,2 @@
+herring_SECD_Inversion_chr12__palet_turbo_1_scale_2.5km_reswdim7_fact3_minn2_rarify_n10_it5_disagg_grd3_wkriging_nmax15_minval0_: script runtime: 262.4	read.vcfR runtime=0.6, wkrig_gd runtime=14.6, window_gd_runtime=49.5, distance_masking_runtime=167.2, plotting_runtime=17.0
+herring_SECD_MYH_cluster__palet_turbo_1_scale_2.5km_reswdim7_fact3_minn2_rarify_n10_it5_disagg_grd3_wkriging_nmax15_minval0_: script runtime: 257.9	read.vcfR runtime=0.2, wkrig_gd runtime=14.7, window_gd_runtime=48.0, distance_masking_runtime=164.2, plotting_runtime=17.3

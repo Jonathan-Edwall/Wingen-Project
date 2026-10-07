@@ -1,3 +1,29 @@
-Anaconda3-2024.10-1-Linux-x86_64.sh
-.RData
+# Local Pixi environment
+.pixi/
+
+# Snakemake local state
+.snakemake/
+
+# Caches
+.cache/
+.fontconfig/
+env_cache/
+ne_cache/
+
+# R/RStudio files
 .Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+
+# Apptainer container images
+*.sif
+
+# Batch job logs
+slurm-*.out
+code/slurm-*.out
+workflow/slurm-*.out
+
+code/temp/
+
+temp/

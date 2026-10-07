@@ -1,0 +1,2 @@
+herring_SECD_HERPUD2_peak_region_incl_lncRNAs__palet_turbo_1_scale_2.5km_reswdim7_fact3_minn2_rarify_n10_it5_disagg_grd3_wkriging_nmax15_minval0_: script runtime: 402.3	read.vcfR runtime=0.1, wkrig_gd runtime=20.1, window_gd_runtime=60.2, distance_masking_runtime=178.5, plotting_runtime=14.7
+herring_SECD_HERPUD2_gene_body__palet_turbo_1_scale_2.5km_reswdim7_fact3_minn2_rarify_n10_it5_disagg_grd3_wkriging_nmax15_minval0_: script runtime: 300.6	read.vcfR runtime=0.1, wkrig_gd runtime=23.9, window_gd_runtime=61.3, distance_masking_runtime=176.9, plotting_runtime=21.8

@@ -1,0 +1,38 @@
+# herring_SECD_candidate_genes.bed
+#
+# PARTIAL / STARTER gene_bed_file for the Baltic herring SECD SNP-chip dataset
+# (Goodall, Pettersson, Andersson et al. 2026, PNAS 123(11):e2526500123,
+# "The population structure in the Baltic herring reflects natural selection
+# and local adaptation" - https://doi.org/10.1073/pnas.2526500123).
+#
+# Genome build: Ensembl Ch_v2.0.2, release 108
+# (Clupea_harengus.Ch_v2.0.2.108.gtf) - this is the exact annotation file the
+# paper's own authors used to name these SNPs' genes, so it is the correct
+# file to pull for anything beyond this shortlist (see gtf_to_gene_bed.py).
+#
+# These 8 rows are the ONLY gene coordinates given as explicit numbers
+# anywhere in the paper's main text and figure legends. They were
+# transcribed by hand from the PDF (1-based, inclusive, as printed) and
+# converted here to 0-based half-open BED. They have NOT been cross-checked
+# against the real GTF - do that before trusting them for anything beyond a
+# quick pipeline smoke-test. Column 4 (name) is what filter_vcf_by_chr_or_gene.sh
+# / your Snakemake gene_id will see.
+#
+# Two genes (SOX11B, HERPUD2) and one region (TSHR/CEP128/GTF2A1) each have
+# TWO reported spans - a tight "gene body" span and a wider "significant SNP
+# peak" span. Both are included, clearly labelled, so you can pick per your
+# use case (peak span will usually contain more chip SNPs).
+#
+# CHECK BEFORE USE: confirm "chr12" / "chr15" / "chr19" matches your VCF's
+# actual CHROM field (Ensembl itself usually just uses "12", "15", "19" -
+# strip the "chr" prefix with `sed 's/^chr//' ` if that's what your VCF has).
+#
+# chrom	start	end	name
+chr12	15540271	16261070	MYH_cluster
+chr15	7717898	7721161	SOX11B_gene_body
+chr15	7717898	7806161	SOX11B_peak_region_incl_upstream
+chr15	8873381	8908516	TSHR_gene_body
+chr15	8813383	9323382	TSHR_CEP128_GTF2A1_peak_region
+chr15	10897682	10910686	ESR2A_gene_body
+chr19	20605933	20613811	HERPUD2_gene_body
+chr19	20476428	20622999	HERPUD2_peak_region_incl_lncRNAs

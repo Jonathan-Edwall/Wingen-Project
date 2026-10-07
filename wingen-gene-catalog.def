@@ -1,0 +1,85 @@
+Bootstrap: docker
+From: mambaorg/micromamba:2-amazon2023
+
+# environment_wingen_current.yml (the solver-resolved export of
+# environment_wingen.yml - `micromamba env export -n wingen_env --no-builds`)
+# must sit next to this Singularity file at build time - %files' source path
+# is resolved relative to the directory `apptainer build` is run from, not
+# to this recipe's own location.
+%files
+    environment_wingen_current.yml /opt/environment_wingen_current.yml
+
+%post
+    micromamba install -y -n base \
+        conda-forge::which \
+        conda-forge::tar \
+        conda-forge::gzip \
+        conda-forge::findutils \
+        conda-forge::gawk
+    ln -sf "$MAMBA_ROOT_PREFIX/bin/which" /usr/bin/which
+
+    # Installs every package at the exact version environment_wingen_current.yml
+    # pins - channels (bioconda, conda-forge) come from the file itself, so
+    # no -c flags needed here. This also pulls in the gcc/g++/gfortran/make
+    # toolchain that file carries, which SpatialKDE's compiled C++ code
+    # needs at install time below - dropping those packages as "looks like
+    # unrelated dev tooling" would silently break that install.
+    micromamba install -y -n base -f /opt/environment_wingen_current.yml
+
+    micromamba install -y -n base conda-forge::procps-ng
+
+    # All three below are CRAN-only, not available as conda packages, same
+    # reasoning for each: dependencies = FALSE is safe (and deliberate) only
+    # because every one of their real dependencies is already satisfied by
+    # environment_wingen_current.yml above - confirmed against each package's
+    # own CRAN Imports field, not assumed:
+    #   wingen           <- crayon, dplyr, furrr, gdistance, ggplot2, gstat,
+    #                        hierfstat, lifecycle, magrittr, pegas, purrr,
+    #                        raster, rlang, sf, terra, tidyr, tidyselect,
+    #                        vcfr, viridis
+    #   CopernicusMarine <- cli, dplyr, httr2, jsonlite, leaflet, lubridate,
+    #                        purrr, rlang, sf, stars, stringr, tibble,
+    #                        tidyr, xml2
+    #   SpatialKDE       <- sf, dplyr, glue, magrittr, rlang, vctrs, raster
+    #                        (+ base-R `methods`, always present)
+    # Skip dependencies = FALSE only if you add a fourth CRAN-only package
+    # without first checking its Imports against this file the same way.
+    micromamba run -n base Rscript -e 'remotes::install_version("wingen", version = "2.2.0", repos = "https://cran.r-project.org", dependencies = FALSE)'
+    micromamba run -n base Rscript -e 'remotes::install_version("CopernicusMarine", version = "0.4.9", repos = "https://cran.r-project.org", dependencies = FALSE)'
+    micromamba run -n base Rscript -e 'remotes::install_version("SpatialKDE", version = "0.8.2", repos = "https://cran.r-project.org", dependencies = FALSE)'
+
+    micromamba clean -a -y
+
+%environment
+    export MAMBA_ROOT_PREFIX=/opt/conda
+    export PATH="$MAMBA_ROOT_PREFIX/bin:$PATH"
+    # conda-forge's proj/gdal packages set these in activation scripts, which
+    # never run under `apptainer exec` (what Snakemake uses). Without them PROJ
+    # can't open its own database and every sf/terra CRS lookup comes back NA.
+    export PROJ_DATA="$MAMBA_ROOT_PREFIX/share/proj"
+    export PROJ_LIB="$PROJ_DATA"
+    if [ -d "$MAMBA_ROOT_PREFIX/share/gdal" ]; then
+        export GDAL_DATA="$MAMBA_ROOT_PREFIX/share/gdal"
+    fi
+
+%runscript
+    exec micromamba run -n base "$@"
+
+%labels
+    Author Jonathan Edwall
+    Pipeline wingen-gene-catalog
+
+%test
+    set -e
+    Rscript -e 'library(sf); stopifnot(identical(sf::st_crs(4326)$Name, "WGS 84"))'
+    Rscript -e 'library(terra); library(wingen); library(CopernicusMarine); library(SpatialKDE)'
+    bcftools --version > /dev/null
+
+%help
+    Runtime environment for the Wingen gene-catalog pipeline: R 4.5.3, wingen 2.2.0,
+    CopernicusMarine 0.4.9 (salinity/temperature/chlorophyll covariates), SpatialKDE
+    0.8.2 (kernel density estimation), bcftools, bedtools, and the DuckDB/HTML
+    catalog-building tools. Package versions come from environment_wingen_current.yml,
+    not from this file - edit that (and re-export) to change what's installed.
+    Used from the Snakefile via container: directives; the Rscript/bcftools calls
+    each rule makes are what actually run inside this, not %runscript.

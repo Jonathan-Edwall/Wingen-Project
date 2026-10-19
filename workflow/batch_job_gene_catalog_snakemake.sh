@@ -2,7 +2,7 @@
 #SBATCH -A uppmax2026-1-187 # Specifying the project ID for compute allocation
 #SBATCH --cpus-per-task=8 # 2 genes concurrently x threads=2 each (Snakefile's run_wingen_report) - matches max_parallel_jobs_gene_catalog_creation=2 in the non-Snakemake pipeline
 #SBATCH --mem=160G # 2 genes concurrently x ~28.3GB observed peak each (sacct, job 6675358) - same reasoning as the 80G batch_job_gene_catalog.sh now requests
-#SBATCH -t 03:00:00
+#SBATCH -t 10:00:00
 #SBATCH -J gene_catalog_snakemake
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=edwalljonathan@gmail.com
@@ -147,9 +147,18 @@ echo "results_dir (from ${CONFIG_FILE}): $RESULTS_DIR"
 # further down; drop it if these two apptainer exec calls already see that path fine
 # without it (untested - the failed run being fixed here was run outside the container).
 vcf_file_dir_gene_catalog="$(dirname "$INPUT_VCF")"
+
+# If no gene list file is defined and the VCF-file annotation format is set to "snpeff", then an arbitrarily named gene list file will be created
+if [[ -z "$GENE_LIST_FILE" && "$VCF_ANNOTATION_FORMAT" == "snpeff" ]]; then
+    GENE_LIST_FILE="${vcf_file_dir_gene_catalog}/unique_genes.txt"
+    GENE_LIST_SOURCE="txt"
+fi
+
 if [[ "$GENE_LIST_FILE" != */* ]]; then
     GENE_LIST_FILE="${vcf_file_dir_gene_catalog}/${GENE_LIST_FILE}"
 fi
+
+
 # ---------------------------------------------------------
 # Creating the gene file if gene_list_file is set but the file does not exist yet
 # ---------------------------------------------------------
@@ -161,13 +170,8 @@ if [[ "$GENE_LIST_SOURCE" == "array" ]]; then
 elif [[ ! -f "$GENE_LIST_FILE" ]]; then
     echo "GENE_LIST_FILE does not exist: $GENE_LIST_FILE \nCreating gene file ($GENE_LIST_SOURCE)..."
     echo "Creating gene file ($GENE_LIST_SOURCE)..."
-    # script_start=$(date +%s) # Start the timer    
-
     apptainer exec --bind /proj/uppmax2025-2-125 "$CONTAINER" \
         bash ./code/snpeff_vcf_detect_unique_genes.sh body "${GENE_LIST_SOURCE}" "$INPUT_VCF" "$GENE_LIST_FILE"
-    # script_end=$(date +%s) # Ending the timer 
-    # script_runtime=$((script_end-script_start)) # Calculating the script_runtime of the script
-    # echo "./code/snpeff_vcf_detect_unique_genes.sh Runtime: $script_runtime seconds \n Outputfile: ${GENE_LIST_FILE}"
 else
     echo "Using existing gene list file: ${GENE_LIST_FILE}"
 fi
@@ -177,7 +181,15 @@ fi
 # ---------------------------------------------------------
 if [[ "$GENE_LIST_SOURCE" != "bed" && "$VCF_ANNOTATION_FORMAT" != "bed" ]]; then
     if [[ -z "$GENE_CHROM_FILE" || ! -f "$GENE_CHROM_FILE" ]]; then
-        GENE_CHROM_FILE="${vcf_file_dir_gene_catalog}/gene_chrom.tsv"
+        # If gene_chrome_file is not defined, then an arbitrarily named gene_chrome_file will be created
+        if [[ -z "$GENE_CHROM_FILE" ]]; then
+            GENE_CHROM_FILE="${vcf_file_dir_gene_catalog}/gene_chrom.tsv"
+        else
+            if [[ "$GENE_CHROM_FILE" != */* ]]; then
+                GENE_CHROM_FILE="${vcf_file_dir_gene_catalog}/${GENE_CHROM_FILE}"
+            fi
+        fi
+
         echo "GENE_CHROM_FILE is empty or does not exist.\nCreating gene chromosome map..."
         mkdir -p "$(dirname "$GENE_CHROM_FILE")"
         if [[ -n "$GENE_LIST_FILE" ]]; then
@@ -226,8 +238,9 @@ snakemake --cores "${SLURM_CPUS_PER_TASK:-4}" \
           --resources mem_mb="${SLURM_MEM_PER_NODE:-80000}" \
           --rerun-incomplete --notemp \
           --sdm apptainer \
-          --apptainer-args "--bind /proj/uppmax2025-2-125"
-
+          --apptainer-args "--bind /proj/uppmax2025-2-125" \
+          --report "$RESULTS_DIR/results/workflow_timing.html" \
+          --report-after-run
 
 # snakemake --cores 2 --resources mem_mb=40000 --rerun-incomplete --notemp \
 #           --sdm apptainer \
@@ -250,8 +263,8 @@ snakemake --cores "${SLURM_CPUS_PER_TASK:-4}" \
 
 echo "Finished snakemake at: $(date)"
 
-ls -lR "$RESULTS_DIR" # Checking if outputs was generated (.snakemake_gene_catalog/, benchmarks/, temp/, results/)
-
+# ls -lR "$RESULTS_DIR" # Checking if outputs was generated (.snakemake_gene_catalog/, benchmarks/, temp/, results/)
+echo "Results directory: $RESULTS_DIR"
 module list # Useful for keeping track of the versions used
 echo "JOB = ${SLURM_JOBID:-N/A}" # N/A when run directly with bash instead of sbatch
 echo "End time: $(date)"

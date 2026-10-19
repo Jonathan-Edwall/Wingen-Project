@@ -273,6 +273,8 @@ def build_column_layout(gd_key, gd_short, extreme_value_percentiles=LEGACY_EXTRE
             "columns": [
                 {"key": "windows.variance", "label": "Var", "numeric": True},
                 {"key": "windows.mean", "label": "Mean", "numeric": True},
+                {"key": "windows.abs_mean", "label": "|Mean|", "numeric": True,
+                 "tooltip": "Absolute value of the mean across eligible raw windows, abs(mean). Stored only when this gene's observed window min < 0 and max > 0; otherwise unavailable."},
                 {"key": "windows.median", "label": "Median", "numeric": True},
                 {"key": "windows.min", "label": "Min", "numeric": True},
                 {"key": "windows.max", "label": "Max", "numeric": True},
@@ -284,6 +286,8 @@ def build_column_layout(gd_key, gd_short, extreme_value_percentiles=LEGACY_EXTRE
             "columns": [
                 {"key": "location.variance", "label": "Var", "numeric": True},
                 {"key": "location.mean", "label": "Mean", "numeric": True},
+                {"key": "location.abs_mean", "label": "|Mean|", "numeric": True,
+                 "tooltip": "Absolute value of the mean across defined locations, abs(mean). Stored only when this gene's observed location min < 0 and max > 0; otherwise unavailable."},
                 {"key": "location.median", "label": "Median", "numeric": True},
                 {"key": "location.min", "label": "Min", "numeric": True},
                 {"key": "location.max", "label": "Max", "numeric": True},

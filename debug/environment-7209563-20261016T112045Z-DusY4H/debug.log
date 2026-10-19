@@ -1,0 +1,1003 @@
+Start: 2026-10-16T11:20:45Z
+Project: /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project
+Job: 7209563
+Diagnostics directory: /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/debug/environment-7209563-20261016T112045Z-DusY4H
+TMPDIR is left unchanged; R will report its actual temporary directory.
+[2026-10-16T13:20:58+0200] [environment-debug] START standalone diagnostic; PID=354300; output=/gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/debug/environment-7209563-20261016T112045Z-DusY4H
+[2026-10-16T13:20:58+0200] [environment-debug] R tempdir=/tmp/RtmpA2xAiX; TMPDIR=/scratch
+Registered S3 method overwritten by 'stars':
+  method                  from
+  st_interpolate_aw.stars sf  
+[2026-10-16T13:21:05+0200] [environment-debug] yaml=2.3.12
+[2026-10-16T13:21:05+0200] [environment-debug] sf=1.1.3
+[2026-10-16T13:21:05+0200] [environment-debug] terra=1.9.50
+[2026-10-16T13:21:05+0200] [environment-debug] ncdf4=1.24
+[2026-10-16T13:21:05+0200] [environment-debug] stars=0.7.3
+[2026-10-16T13:21:05+0200] [environment-debug] CopernicusMarine=0.4.9
+[2026-10-16T13:21:05+0200] [environment-debug] rnaturalearth=1.2.0
+[2026-10-16T13:21:05+0200] [environment-debug] NetCDF library: ncdf4_1.24_20250325 | underlying netcdf library version 4.10.1 of Jul 13 2026 22:34:28 $
+          GEOS           GDAL         proj.4 GDAL_with_GEOS     USE_PROJ_H 
+      "3.14.1"       "3.13.3"        "9.9.0"         "true"         "true" 
+          PROJ 
+       "9.9.0" 
+Warning: Your system is mis-configured: ‘/etc/localtime’ is not a symlink
+[2026-10-16T13:21:05+0200] [environment-debug] Config=/gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/config/config.yaml; Rmd=/gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/code/2_Herring_Wingen.Rmd
+[2026-10-16T13:21:06+0200] [environment-debug] Preset=global; physics product=GLOBAL_MULTIYEAR_PHY_001_030; layer=cmems_mod_glo_phy_my_0.083deg_P1M-m; salinity variable=so; baseline=1998-2022; depth=0
+[2026-10-16T13:21:06+0200] [environment-debug] Existing cache entries in /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/ne_cache:
+                                                                                                                                            size
+/gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/ne_cache/ne_10m_land.gpkg  13508608
+/gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/ne_cache/ne_10m_ocean.gpkg  7278592
+                                                                                                                                                      mtime
+/gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/ne_cache/ne_10m_land.gpkg  2026-10-16 11:58:28
+/gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/ne_cache/ne_10m_ocean.gpkg 2026-10-16 12:01:42
+[2026-10-16T13:21:06+0200] [environment-debug] Existing cache entries in /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/env_cache:
+[2026-10-16T13:21:06+0200] [environment-debug] Using completed gene VCF: /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/filtered_vcf/chr1/ENSCHAG00000000001_filtered.vcf.gz; no variants are regenerated
+Standardizing coordinate columns for this file:
+  Sample ID <- 'sample_name'
+  Latitude  <- 'Latitude'
+  Longitude <- 'Longtitude(+E, -W)'
+[2026-10-16T13:21:07+0200] [environment-debug] VCF samples=125; unmatched coordinate IDs=0
+[2026-10-16T13:21:07+0200] [environment-debug] Retained coordinate rows=125; padded request xmin,ymin,xmax,ymax=-136.4045, 40.731, 155.1945, 70.629
+[2026-10-16T13:21:07+0200] [environment-debug] START filesystem_R_tempdir
+[2026-10-16T13:21:07+0200] [environment-debug] Filesystem: /tmp/RtmpA2xAiX; writable=TRUE
+Filesystem     1024-blocks      Used  Available Capacity Mounted on
+/dev/nvme0n1p5  1766797216 129372676 1547602384       8% /tmp 
+Filesystem        Inodes IUsed     IFree IUse% Mounted on
+/dev/nvme0n1p5 112263168   226 112262942    1% /tmp 
+[2026-10-16T13:21:07+0200] [environment-debug] START tiny_netcdf_R_tempdir_classic
+[1] "nc_create: entering, package version ncdf4_1.24_20250325 | underlying netcdf library version 4.10.1 of Jul 13 2026 22:34:28 $"
+[1] "nc_create: input was a list of vars"
+[1] "nc_create: parsing group structure"
+[1] "nc_parse_group_structure: entering"
+[1] "------------- nc_parse_group_structure: working on var value"
+[1] "nc_parse_group_structure: var value is in root group"
+[1] "working on var value 's dim 1 named x"
+[1] "nc_parse_group_structure: dim x has no specified group (and so is in root group)"
+[1] "adding dim x to root group dim list, entry number 1"
+[1] "----------- group list: ----------"
+[1] "Group 1, named , is at level 1 and has full qual parent named :"
+[1] ".... dim 1: x (length=3)"
+[1] ".... var 1: value"
+[1] "nc_create: checking to see if we MUST produce a netcdf-version 4 file"
+[1] "var: >value<  Use shuffle: >FALSE<  use_compression: >FALSE<  use_chunking: >FALSE<"
+[1] "Not forcing netcdf version 4 format file since no var is using compression or chunking"
+[1] "nc_create: checking to see if there are multiple unlimited dims (which would force V4 file)"
+[1] "nc_create: No, there are not any multiple unlimited dims in this file"
+[1] "Calling R_nc4_create for file  /tmp/RtmpA2xAiX/.environment-debug-567fc770bcbff/tiny-ncdf-567fc5e45b872.nc"
+[1] "back from R_nc4_create for file  /tmp/RtmpA2xAiX/.environment-debug-567fc770bcbff/tiny-ncdf-567fc5e45b872.nc"
+[1] "nc_create: about to create the vars"
+[1] "ncvar_add: entering with indefine= TRUE"
+[1] "ncvar_add: ncid of file to add to= 65536    filename= /tmp/RtmpA2xAiX/.environment-debug-567fc770bcbff/tiny-ncdf-567fc5e45b872.nc     writable= TRUE"
+[1] "ncvar_add: varname to add= value"
+[1] "ncvar_add: creating 1 dims for var value"
+[1] "ncvar_add: working on dim > x < (number 1 ) for var value"
+[1] "ncvar_add: creating dim x (which has not been seen before)"
+[1] "ncdim_create: entering for ncid= 65536"
+[1] "ncdim_create: entering for dim x"
+[1] "ncdim_create: about to call R_nc4_def_dim with ncid2use= 65536  NOT fully qualified dim name= x"
+[1] "ncdim_create: making dimvar for dim x"
+[1] "ncdim_create: about to call R_nc4_def_var_int for dimvar x"
+[1] "ncdim_create: about to call R_nc4_put_vara_int dimvals for dimvar x  ncid= 65536  dimvarid= 0  start= 0  count= 3"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 0 attname= units attval= 1 prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >units< att_len: 1 value: >1<"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 0 attname= long_name attval= x prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >long_name< att_len: 1 value: >x<"
+[1] "ncdim_create: exiting for ncid= 65536   dim= x"
+[1] "ncvar_add: figuring out ncid to use"
+[1] "ncvar_add: ncid2use= 65536 name2use= value"
+[1] "ncvar_add: creating double precision var value"
+[1] "nc_create: C call returned value 0"
+[1] "nc_var_add: adding attributes"
+[1] "nc_var_add: creating missing value if requested"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 1 attname= _FillValue attval= -999 prec= double storage.mode(attval)= double"
+[1] "ncatt_put_inner: using specified attribute prec of double"
+[1] "ncatt_put_inner: prec to create: double"
+[1] "nc_var_add: creating long name attribute"
+[1] "nc_var_add: returning"
+[1] "nc_create: setting names attribute on $var and $dim lists"
+[1] "nc_create: exiting define mode"
+[1] "file /tmp/RtmpA2xAiX/.environment-debug-567fc770bcbff/tiny-ncdf-567fc5e45b872.nc is format NC_FORMAT_CLASSIC"
+[2026-10-16T13:21:08+0200] [environment-debug] Tiny NetCDF round trip: NC_FORMAT_CLASSIC
+[2026-10-16T13:21:08+0200] [environment-debug] PASS tiny_netcdf_R_tempdir_classic elapsed=0.33s
+[2026-10-16T13:21:08+0200] [environment-debug] START tiny_netcdf_R_tempdir_v4
+[1] "nc_create: entering, package version ncdf4_1.24_20250325 | underlying netcdf library version 4.10.1 of Jul 13 2026 22:34:28 $"
+[1] "nc_create: input was a list of vars"
+[1] "nc_create: parsing group structure"
+[1] "nc_parse_group_structure: entering"
+[1] "------------- nc_parse_group_structure: working on var value"
+[1] "nc_parse_group_structure: var value is in root group"
+[1] "working on var value 's dim 1 named x"
+[1] "nc_parse_group_structure: dim x has no specified group (and so is in root group)"
+[1] "adding dim x to root group dim list, entry number 1"
+[1] "----------- group list: ----------"
+[1] "Group 1, named , is at level 1 and has full qual parent named :"
+[1] ".... dim 1: x (length=3)"
+[1] ".... var 1: value"
+[1] "nc_create: checking to see if we MUST produce a netcdf-version 4 file"
+[1] "var: >value<  Use shuffle: >FALSE<  use_compression: >FALSE<  use_chunking: >FALSE<"
+[1] "Not forcing netcdf version 4 format file since no var is using compression or chunking"
+[1] "nc_create: checking to see if there are multiple unlimited dims (which would force V4 file)"
+[1] "nc_create: No, there are not any multiple unlimited dims in this file"
+[1] "Calling R_nc4_create for file  /tmp/RtmpA2xAiX/.environment-debug-567fc770bcbff/tiny-ncdf-567fc5125f18a.nc"
+[1] "back from R_nc4_create for file  /tmp/RtmpA2xAiX/.environment-debug-567fc770bcbff/tiny-ncdf-567fc5125f18a.nc"
+[1] "nc_create: about to create the vars"
+[1] "ncvar_add: entering with indefine= TRUE"
+[1] "ncvar_add: ncid of file to add to= 65536    filename= /tmp/RtmpA2xAiX/.environment-debug-567fc770bcbff/tiny-ncdf-567fc5125f18a.nc     writable= TRUE"
+[1] "ncvar_add: varname to add= value"
+[1] "ncvar_add: creating 1 dims for var value"
+[1] "ncvar_add: working on dim > x < (number 1 ) for var value"
+[1] "ncvar_add: creating dim x (which has not been seen before)"
+[1] "ncdim_create: entering for ncid= 65536"
+[1] "ncdim_create: entering for dim x"
+[1] "ncdim_create: about to call R_nc4_def_dim with ncid2use= 65536  NOT fully qualified dim name= x"
+[1] "ncdim_create: making dimvar for dim x"
+[1] "ncdim_create: about to call R_nc4_def_var_int for dimvar x"
+[1] "ncdim_create: about to call R_nc4_put_vara_int dimvals for dimvar x  ncid= 65536  dimvarid= 0  start= 0  count= 3"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 0 attname= units attval= 1 prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >units< att_len: 1 value: >1<"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 0 attname= long_name attval= x prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >long_name< att_len: 1 value: >x<"
+[1] "ncdim_create: exiting for ncid= 65536   dim= x"
+[1] "ncvar_add: figuring out ncid to use"
+[1] "ncvar_add: ncid2use= 65536 name2use= value"
+[1] "ncvar_add: creating double precision var value"
+[1] "nc_create: C call returned value 0"
+[1] "nc_var_add: adding attributes"
+[1] "nc_var_add: creating missing value if requested"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 1 attname= _FillValue attval= -999 prec= double storage.mode(attval)= double"
+[1] "ncatt_put_inner: using specified attribute prec of double"
+[1] "ncatt_put_inner: prec to create: double"
+[1] "nc_var_add: creating long name attribute"
+[1] "nc_var_add: returning"
+[1] "nc_create: setting names attribute on $var and $dim lists"
+[1] "nc_create: exiting define mode"
+[1] "file /tmp/RtmpA2xAiX/.environment-debug-567fc770bcbff/tiny-ncdf-567fc5125f18a.nc is format NC_FORMAT_NETCDF4"
+[2026-10-16T13:21:08+0200] [environment-debug] Tiny NetCDF round trip: NC_FORMAT_NETCDF4
+[2026-10-16T13:21:08+0200] [environment-debug] PASS tiny_netcdf_R_tempdir_v4 elapsed=0.01s
+[2026-10-16T13:21:08+0200] [environment-debug] START tiny_geopackage_R_tempdir
+Writing layer `tiny-sf-567fc3f33f4fe' to data source 
+  `/tmp/RtmpA2xAiX/.environment-debug-567fc770bcbff/tiny-sf-567fc3f33f4fe.gpkg' using driver `GPKG'
+Writing 1 features with 1 fields and geometry type Point.
+Reading layer `tiny-sf-567fc3f33f4fe' from data source 
+  `/tmp/RtmpA2xAiX/.environment-debug-567fc770bcbff/tiny-sf-567fc3f33f4fe.gpkg' 
+  using driver `GPKG'
+Simple feature collection with 1 feature and 1 field
+Geometry type: POINT
+Dimension:     XY
+Bounding box:  xmin: 0 ymin: 0 xmax: 0 ymax: 0
+Geodetic CRS:  WGS 84
+[2026-10-16T13:21:09+0200] [environment-debug] PASS tiny_geopackage_R_tempdir elapsed=0.5s
+[2026-10-16T13:21:09+0200] [environment-debug] PASS filesystem_R_tempdir elapsed=1.38s
+[2026-10-16T13:21:09+0200] [environment-debug] START filesystem_diagnostic_output
+[2026-10-16T13:21:09+0200] [environment-debug] Filesystem: /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/debug/environment-7209563-20261016T112045Z-DusY4H; writable=TRUE
+Filesystem                                                                1024-blocks           Used     Available Capacity Mounted on
+172.18.177.1,172.18.177.2,172.18.177.3,172.18.177.4,172.18.177.5:/proj 15925266055168 10873326518272 5051939536896      69% /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project 
+Filesystem                                                                 Inodes IUsed IFree IUse% Mounted on
+172.18.177.1,172.18.177.2,172.18.177.3,172.18.177.4,172.18.177.5:/proj 4253725184     -     -     - /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project 
+[2026-10-16T13:21:09+0200] [environment-debug] START tiny_netcdf_diagnostic_output_classic
+[1] "nc_create: entering, package version ncdf4_1.24_20250325 | underlying netcdf library version 4.10.1 of Jul 13 2026 22:34:28 $"
+[1] "nc_create: input was a list of vars"
+[1] "nc_create: parsing group structure"
+[1] "nc_parse_group_structure: entering"
+[1] "------------- nc_parse_group_structure: working on var value"
+[1] "nc_parse_group_structure: var value is in root group"
+[1] "working on var value 's dim 1 named x"
+[1] "nc_parse_group_structure: dim x has no specified group (and so is in root group)"
+[1] "adding dim x to root group dim list, entry number 1"
+[1] "----------- group list: ----------"
+[1] "Group 1, named , is at level 1 and has full qual parent named :"
+[1] ".... dim 1: x (length=3)"
+[1] ".... var 1: value"
+[1] "nc_create: checking to see if we MUST produce a netcdf-version 4 file"
+[1] "var: >value<  Use shuffle: >FALSE<  use_compression: >FALSE<  use_chunking: >FALSE<"
+[1] "Not forcing netcdf version 4 format file since no var is using compression or chunking"
+[1] "nc_create: checking to see if there are multiple unlimited dims (which would force V4 file)"
+[1] "nc_create: No, there are not any multiple unlimited dims in this file"
+[1] "Calling R_nc4_create for file  /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/debug/environment-7209563-20261016T112045Z-DusY4H/.environment-debug-567fc364d92f2/tiny-ncdf-567fc2ec6da64.nc"
+[1] "back from R_nc4_create for file  /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/debug/environment-7209563-20261016T112045Z-DusY4H/.environment-debug-567fc364d92f2/tiny-ncdf-567fc2ec6da64.nc"
+[1] "nc_create: about to create the vars"
+[1] "ncvar_add: entering with indefine= TRUE"
+[1] "ncvar_add: ncid of file to add to= 65536    filename= /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/debug/environment-7209563-20261016T112045Z-DusY4H/.environment-debug-567fc364d92f2/tiny-ncdf-567fc2ec6da64.nc     writable= TRUE"
+[1] "ncvar_add: varname to add= value"
+[1] "ncvar_add: creating 1 dims for var value"
+[1] "ncvar_add: working on dim > x < (number 1 ) for var value"
+[1] "ncvar_add: creating dim x (which has not been seen before)"
+[1] "ncdim_create: entering for ncid= 65536"
+[1] "ncdim_create: entering for dim x"
+[1] "ncdim_create: about to call R_nc4_def_dim with ncid2use= 65536  NOT fully qualified dim name= x"
+[1] "ncdim_create: making dimvar for dim x"
+[1] "ncdim_create: about to call R_nc4_def_var_int for dimvar x"
+[1] "ncdim_create: about to call R_nc4_put_vara_int dimvals for dimvar x  ncid= 65536  dimvarid= 0  start= 0  count= 3"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 0 attname= units attval= 1 prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >units< att_len: 1 value: >1<"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 0 attname= long_name attval= x prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >long_name< att_len: 1 value: >x<"
+[1] "ncdim_create: exiting for ncid= 65536   dim= x"
+[1] "ncvar_add: figuring out ncid to use"
+[1] "ncvar_add: ncid2use= 65536 name2use= value"
+[1] "ncvar_add: creating double precision var value"
+[1] "nc_create: C call returned value 0"
+[1] "nc_var_add: adding attributes"
+[1] "nc_var_add: creating missing value if requested"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 1 attname= _FillValue attval= -999 prec= double storage.mode(attval)= double"
+[1] "ncatt_put_inner: using specified attribute prec of double"
+[1] "ncatt_put_inner: prec to create: double"
+[1] "nc_var_add: creating long name attribute"
+[1] "nc_var_add: returning"
+[1] "nc_create: setting names attribute on $var and $dim lists"
+[1] "nc_create: exiting define mode"
+[1] "file /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/debug/environment-7209563-20261016T112045Z-DusY4H/.environment-debug-567fc364d92f2/tiny-ncdf-567fc2ec6da64.nc is format NC_FORMAT_CLASSIC"
+[2026-10-16T13:21:09+0200] [environment-debug] Tiny NetCDF round trip: NC_FORMAT_CLASSIC
+[2026-10-16T13:21:09+0200] [environment-debug] PASS tiny_netcdf_diagnostic_output_classic elapsed=0.71s
+[2026-10-16T13:21:10+0200] [environment-debug] START tiny_netcdf_diagnostic_output_v4
+[1] "nc_create: entering, package version ncdf4_1.24_20250325 | underlying netcdf library version 4.10.1 of Jul 13 2026 22:34:28 $"
+[1] "nc_create: input was a list of vars"
+[1] "nc_create: parsing group structure"
+[1] "nc_parse_group_structure: entering"
+[1] "------------- nc_parse_group_structure: working on var value"
+[1] "nc_parse_group_structure: var value is in root group"
+[1] "working on var value 's dim 1 named x"
+[1] "nc_parse_group_structure: dim x has no specified group (and so is in root group)"
+[1] "adding dim x to root group dim list, entry number 1"
+[1] "----------- group list: ----------"
+[1] "Group 1, named , is at level 1 and has full qual parent named :"
+[1] ".... dim 1: x (length=3)"
+[1] ".... var 1: value"
+[1] "nc_create: checking to see if we MUST produce a netcdf-version 4 file"
+[1] "var: >value<  Use shuffle: >FALSE<  use_compression: >FALSE<  use_chunking: >FALSE<"
+[1] "Not forcing netcdf version 4 format file since no var is using compression or chunking"
+[1] "nc_create: checking to see if there are multiple unlimited dims (which would force V4 file)"
+[1] "nc_create: No, there are not any multiple unlimited dims in this file"
+[1] "Calling R_nc4_create for file  /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/debug/environment-7209563-20261016T112045Z-DusY4H/.environment-debug-567fc364d92f2/tiny-ncdf-567fc6826107d.nc"
+[1] "back from R_nc4_create for file  /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/debug/environment-7209563-20261016T112045Z-DusY4H/.environment-debug-567fc364d92f2/tiny-ncdf-567fc6826107d.nc"
+[1] "nc_create: about to create the vars"
+[1] "ncvar_add: entering with indefine= TRUE"
+[1] "ncvar_add: ncid of file to add to= 65536    filename= /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/debug/environment-7209563-20261016T112045Z-DusY4H/.environment-debug-567fc364d92f2/tiny-ncdf-567fc6826107d.nc     writable= TRUE"
+[1] "ncvar_add: varname to add= value"
+[1] "ncvar_add: creating 1 dims for var value"
+[1] "ncvar_add: working on dim > x < (number 1 ) for var value"
+[1] "ncvar_add: creating dim x (which has not been seen before)"
+[1] "ncdim_create: entering for ncid= 65536"
+[1] "ncdim_create: entering for dim x"
+[1] "ncdim_create: about to call R_nc4_def_dim with ncid2use= 65536  NOT fully qualified dim name= x"
+[1] "ncdim_create: making dimvar for dim x"
+[1] "ncdim_create: about to call R_nc4_def_var_int for dimvar x"
+[1] "ncdim_create: about to call R_nc4_put_vara_int dimvals for dimvar x  ncid= 65536  dimvarid= 0  start= 0  count= 3"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 0 attname= units attval= 1 prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >units< att_len: 1 value: >1<"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 0 attname= long_name attval= x prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >long_name< att_len: 1 value: >x<"
+[1] "ncdim_create: exiting for ncid= 65536   dim= x"
+[1] "ncvar_add: figuring out ncid to use"
+[1] "ncvar_add: ncid2use= 65536 name2use= value"
+[1] "ncvar_add: creating double precision var value"
+[1] "nc_create: C call returned value 0"
+[1] "nc_var_add: adding attributes"
+[1] "nc_var_add: creating missing value if requested"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 1 attname= _FillValue attval= -999 prec= double storage.mode(attval)= double"
+[1] "ncatt_put_inner: using specified attribute prec of double"
+[1] "ncatt_put_inner: prec to create: double"
+[1] "nc_var_add: creating long name attribute"
+[1] "nc_var_add: returning"
+[1] "nc_create: setting names attribute on $var and $dim lists"
+[1] "nc_create: exiting define mode"
+[1] "file /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/debug/environment-7209563-20261016T112045Z-DusY4H/.environment-debug-567fc364d92f2/tiny-ncdf-567fc6826107d.nc is format NC_FORMAT_NETCDF4"
+[2026-10-16T13:21:10+0200] [environment-debug] Tiny NetCDF round trip: NC_FORMAT_NETCDF4
+[2026-10-16T13:21:10+0200] [environment-debug] PASS tiny_netcdf_diagnostic_output_v4 elapsed=0.26s
+[2026-10-16T13:21:10+0200] [environment-debug] START tiny_geopackage_diagnostic_output
+Writing layer `tiny-sf-567fc12715ef9' to data source 
+  `/gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/debug/environment-7209563-20261016T112045Z-DusY4H/.environment-debug-567fc364d92f2/tiny-sf-567fc12715ef9.gpkg' using driver `GPKG'
+Writing 1 features with 1 fields and geometry type Point.
+Reading layer `tiny-sf-567fc12715ef9' from data source 
+  `/gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/debug/environment-7209563-20261016T112045Z-DusY4H/.environment-debug-567fc364d92f2/tiny-sf-567fc12715ef9.gpkg' 
+  using driver `GPKG'
+Simple feature collection with 1 feature and 1 field
+Geometry type: POINT
+Dimension:     XY
+Bounding box:  xmin: 0 ymin: 0 xmax: 0 ymax: 0
+Geodetic CRS:  WGS 84
+[2026-10-16T13:21:43+0200] [environment-debug] PASS tiny_geopackage_diagnostic_output elapsed=32.48s
+[2026-10-16T13:21:43+0200] [environment-debug] PASS filesystem_diagnostic_output elapsed=34.58s
+[2026-10-16T13:21:43+0200] [environment-debug] START filesystem_Natural_Earth_cache
+[2026-10-16T13:21:43+0200] [environment-debug] Filesystem: /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/ne_cache; writable=TRUE
+Filesystem                                                                1024-blocks           Used     Available Capacity Mounted on
+172.18.177.1,172.18.177.2,172.18.177.3,172.18.177.4,172.18.177.5:/proj 15925266055168 10873383661568 5051882393600      69% /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project 
+Filesystem                                                                 Inodes IUsed IFree IUse% Mounted on
+172.18.177.1,172.18.177.2,172.18.177.3,172.18.177.4,172.18.177.5:/proj 4253732406     -     -     - /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project 
+[2026-10-16T13:21:43+0200] [environment-debug] START tiny_netcdf_Natural_Earth_cache_classic
+[1] "nc_create: entering, package version ncdf4_1.24_20250325 | underlying netcdf library version 4.10.1 of Jul 13 2026 22:34:28 $"
+[1] "nc_create: input was a list of vars"
+[1] "nc_create: parsing group structure"
+[1] "nc_parse_group_structure: entering"
+[1] "------------- nc_parse_group_structure: working on var value"
+[1] "nc_parse_group_structure: var value is in root group"
+[1] "working on var value 's dim 1 named x"
+[1] "nc_parse_group_structure: dim x has no specified group (and so is in root group)"
+[1] "adding dim x to root group dim list, entry number 1"
+[1] "----------- group list: ----------"
+[1] "Group 1, named , is at level 1 and has full qual parent named :"
+[1] ".... dim 1: x (length=3)"
+[1] ".... var 1: value"
+[1] "nc_create: checking to see if we MUST produce a netcdf-version 4 file"
+[1] "var: >value<  Use shuffle: >FALSE<  use_compression: >FALSE<  use_chunking: >FALSE<"
+[1] "Not forcing netcdf version 4 format file since no var is using compression or chunking"
+[1] "nc_create: checking to see if there are multiple unlimited dims (which would force V4 file)"
+[1] "nc_create: No, there are not any multiple unlimited dims in this file"
+[1] "Calling R_nc4_create for file  /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/ne_cache/.environment-debug-567fc3af6dc07/tiny-ncdf-567fc5b758292.nc"
+[1] "back from R_nc4_create for file  /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/ne_cache/.environment-debug-567fc3af6dc07/tiny-ncdf-567fc5b758292.nc"
+[1] "nc_create: about to create the vars"
+[1] "ncvar_add: entering with indefine= TRUE"
+[1] "ncvar_add: ncid of file to add to= 65536    filename= /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/ne_cache/.environment-debug-567fc3af6dc07/tiny-ncdf-567fc5b758292.nc     writable= TRUE"
+[1] "ncvar_add: varname to add= value"
+[1] "ncvar_add: creating 1 dims for var value"
+[1] "ncvar_add: working on dim > x < (number 1 ) for var value"
+[1] "ncvar_add: creating dim x (which has not been seen before)"
+[1] "ncdim_create: entering for ncid= 65536"
+[1] "ncdim_create: entering for dim x"
+[1] "ncdim_create: about to call R_nc4_def_dim with ncid2use= 65536  NOT fully qualified dim name= x"
+[1] "ncdim_create: making dimvar for dim x"
+[1] "ncdim_create: about to call R_nc4_def_var_int for dimvar x"
+[1] "ncdim_create: about to call R_nc4_put_vara_int dimvals for dimvar x  ncid= 65536  dimvarid= 0  start= 0  count= 3"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 0 attname= units attval= 1 prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >units< att_len: 1 value: >1<"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 0 attname= long_name attval= x prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >long_name< att_len: 1 value: >x<"
+[1] "ncdim_create: exiting for ncid= 65536   dim= x"
+[1] "ncvar_add: figuring out ncid to use"
+[1] "ncvar_add: ncid2use= 65536 name2use= value"
+[1] "ncvar_add: creating double precision var value"
+[1] "nc_create: C call returned value 0"
+[1] "nc_var_add: adding attributes"
+[1] "nc_var_add: creating missing value if requested"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 1 attname= _FillValue attval= -999 prec= double storage.mode(attval)= double"
+[1] "ncatt_put_inner: using specified attribute prec of double"
+[1] "ncatt_put_inner: prec to create: double"
+[1] "nc_var_add: creating long name attribute"
+[1] "nc_var_add: returning"
+[1] "nc_create: setting names attribute on $var and $dim lists"
+[1] "nc_create: exiting define mode"
+[1] "file /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/ne_cache/.environment-debug-567fc3af6dc07/tiny-ncdf-567fc5b758292.nc is format NC_FORMAT_CLASSIC"
+[2026-10-16T13:21:43+0200] [environment-debug] Tiny NetCDF round trip: NC_FORMAT_CLASSIC
+[2026-10-16T13:21:43+0200] [environment-debug] PASS tiny_netcdf_Natural_Earth_cache_classic elapsed=0.13s
+[2026-10-16T13:21:44+0200] [environment-debug] START tiny_netcdf_Natural_Earth_cache_v4
+[1] "nc_create: entering, package version ncdf4_1.24_20250325 | underlying netcdf library version 4.10.1 of Jul 13 2026 22:34:28 $"
+[1] "nc_create: input was a list of vars"
+[1] "nc_create: parsing group structure"
+[1] "nc_parse_group_structure: entering"
+[1] "------------- nc_parse_group_structure: working on var value"
+[1] "nc_parse_group_structure: var value is in root group"
+[1] "working on var value 's dim 1 named x"
+[1] "nc_parse_group_structure: dim x has no specified group (and so is in root group)"
+[1] "adding dim x to root group dim list, entry number 1"
+[1] "----------- group list: ----------"
+[1] "Group 1, named , is at level 1 and has full qual parent named :"
+[1] ".... dim 1: x (length=3)"
+[1] ".... var 1: value"
+[1] "nc_create: checking to see if we MUST produce a netcdf-version 4 file"
+[1] "var: >value<  Use shuffle: >FALSE<  use_compression: >FALSE<  use_chunking: >FALSE<"
+[1] "Not forcing netcdf version 4 format file since no var is using compression or chunking"
+[1] "nc_create: checking to see if there are multiple unlimited dims (which would force V4 file)"
+[1] "nc_create: No, there are not any multiple unlimited dims in this file"
+[1] "Calling R_nc4_create for file  /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/ne_cache/.environment-debug-567fc3af6dc07/tiny-ncdf-567fc210de504.nc"
+[1] "back from R_nc4_create for file  /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/ne_cache/.environment-debug-567fc3af6dc07/tiny-ncdf-567fc210de504.nc"
+[1] "nc_create: about to create the vars"
+[1] "ncvar_add: entering with indefine= TRUE"
+[1] "ncvar_add: ncid of file to add to= 65536    filename= /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/ne_cache/.environment-debug-567fc3af6dc07/tiny-ncdf-567fc210de504.nc     writable= TRUE"
+[1] "ncvar_add: varname to add= value"
+[1] "ncvar_add: creating 1 dims for var value"
+[1] "ncvar_add: working on dim > x < (number 1 ) for var value"
+[1] "ncvar_add: creating dim x (which has not been seen before)"
+[1] "ncdim_create: entering for ncid= 65536"
+[1] "ncdim_create: entering for dim x"
+[1] "ncdim_create: about to call R_nc4_def_dim with ncid2use= 65536  NOT fully qualified dim name= x"
+[1] "ncdim_create: making dimvar for dim x"
+[1] "ncdim_create: about to call R_nc4_def_var_int for dimvar x"
+[1] "ncdim_create: about to call R_nc4_put_vara_int dimvals for dimvar x  ncid= 65536  dimvarid= 0  start= 0  count= 3"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 0 attname= units attval= 1 prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >units< att_len: 1 value: >1<"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 0 attname= long_name attval= x prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >long_name< att_len: 1 value: >x<"
+[1] "ncdim_create: exiting for ncid= 65536   dim= x"
+[1] "ncvar_add: figuring out ncid to use"
+[1] "ncvar_add: ncid2use= 65536 name2use= value"
+[1] "ncvar_add: creating double precision var value"
+[1] "nc_create: C call returned value 0"
+[1] "nc_var_add: adding attributes"
+[1] "nc_var_add: creating missing value if requested"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 1 attname= _FillValue attval= -999 prec= double storage.mode(attval)= double"
+[1] "ncatt_put_inner: using specified attribute prec of double"
+[1] "ncatt_put_inner: prec to create: double"
+[1] "nc_var_add: creating long name attribute"
+[1] "nc_var_add: returning"
+[1] "nc_create: setting names attribute on $var and $dim lists"
+[1] "nc_create: exiting define mode"
+[1] "file /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/ne_cache/.environment-debug-567fc3af6dc07/tiny-ncdf-567fc210de504.nc is format NC_FORMAT_NETCDF4"
+[2026-10-16T13:21:45+0200] [environment-debug] Tiny NetCDF round trip: NC_FORMAT_NETCDF4
+[2026-10-16T13:21:45+0200] [environment-debug] PASS tiny_netcdf_Natural_Earth_cache_v4 elapsed=1.06s
+[2026-10-16T13:21:45+0200] [environment-debug] START tiny_geopackage_Natural_Earth_cache
+Writing layer `tiny-sf-567fc56f65e03' to data source 
+  `/gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/ne_cache/.environment-debug-567fc3af6dc07/tiny-sf-567fc56f65e03.gpkg' using driver `GPKG'
+Writing 1 features with 1 fields and geometry type Point.
+Reading layer `tiny-sf-567fc56f65e03' from data source 
+  `/gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/ne_cache/.environment-debug-567fc3af6dc07/tiny-sf-567fc56f65e03.gpkg' 
+  using driver `GPKG'
+Simple feature collection with 1 feature and 1 field
+Geometry type: POINT
+Dimension:     XY
+Bounding box:  xmin: 0 ymin: 0 xmax: 0 ymax: 0
+Geodetic CRS:  WGS 84
+[2026-10-16T13:22:03+0200] [environment-debug] PASS tiny_geopackage_Natural_Earth_cache elapsed=18.27s
+[2026-10-16T13:22:03+0200] [environment-debug] PASS filesystem_Natural_Earth_cache elapsed=19.98s
+[2026-10-16T13:22:03+0200] [environment-debug] START filesystem_environmental_cache
+[2026-10-16T13:22:03+0200] [environment-debug] Filesystem: /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/env_cache; writable=TRUE
+Filesystem                                                                1024-blocks           Used     Available Capacity Mounted on
+172.18.177.1,172.18.177.2,172.18.177.3,172.18.177.4,172.18.177.5:/proj 15925266055168 10873410564096 5051855491072      69% /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project 
+Filesystem                                                                 Inodes IUsed IFree IUse% Mounted on
+172.18.177.1,172.18.177.2,172.18.177.3,172.18.177.4,172.18.177.5:/proj 4253735657     -     -     - /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project 
+[2026-10-16T13:22:03+0200] [environment-debug] START tiny_netcdf_environmental_cache_classic
+[1] "nc_create: entering, package version ncdf4_1.24_20250325 | underlying netcdf library version 4.10.1 of Jul 13 2026 22:34:28 $"
+[1] "nc_create: input was a list of vars"
+[1] "nc_create: parsing group structure"
+[1] "nc_parse_group_structure: entering"
+[1] "------------- nc_parse_group_structure: working on var value"
+[1] "nc_parse_group_structure: var value is in root group"
+[1] "working on var value 's dim 1 named x"
+[1] "nc_parse_group_structure: dim x has no specified group (and so is in root group)"
+[1] "adding dim x to root group dim list, entry number 1"
+[1] "----------- group list: ----------"
+[1] "Group 1, named , is at level 1 and has full qual parent named :"
+[1] ".... dim 1: x (length=3)"
+[1] ".... var 1: value"
+[1] "nc_create: checking to see if we MUST produce a netcdf-version 4 file"
+[1] "var: >value<  Use shuffle: >FALSE<  use_compression: >FALSE<  use_chunking: >FALSE<"
+[1] "Not forcing netcdf version 4 format file since no var is using compression or chunking"
+[1] "nc_create: checking to see if there are multiple unlimited dims (which would force V4 file)"
+[1] "nc_create: No, there are not any multiple unlimited dims in this file"
+[1] "Calling R_nc4_create for file  /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/env_cache/.environment-debug-567fcc79e6ed/tiny-ncdf-567fc680e654d.nc"
+[1] "back from R_nc4_create for file  /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/env_cache/.environment-debug-567fcc79e6ed/tiny-ncdf-567fc680e654d.nc"
+[1] "nc_create: about to create the vars"
+[1] "ncvar_add: entering with indefine= TRUE"
+[1] "ncvar_add: ncid of file to add to= 65536    filename= /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/env_cache/.environment-debug-567fcc79e6ed/tiny-ncdf-567fc680e654d.nc     writable= TRUE"
+[1] "ncvar_add: varname to add= value"
+[1] "ncvar_add: creating 1 dims for var value"
+[1] "ncvar_add: working on dim > x < (number 1 ) for var value"
+[1] "ncvar_add: creating dim x (which has not been seen before)"
+[1] "ncdim_create: entering for ncid= 65536"
+[1] "ncdim_create: entering for dim x"
+[1] "ncdim_create: about to call R_nc4_def_dim with ncid2use= 65536  NOT fully qualified dim name= x"
+[1] "ncdim_create: making dimvar for dim x"
+[1] "ncdim_create: about to call R_nc4_def_var_int for dimvar x"
+[1] "ncdim_create: about to call R_nc4_put_vara_int dimvals for dimvar x  ncid= 65536  dimvarid= 0  start= 0  count= 3"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 0 attname= units attval= 1 prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >units< att_len: 1 value: >1<"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 0 attname= long_name attval= x prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >long_name< att_len: 1 value: >x<"
+[1] "ncdim_create: exiting for ncid= 65536   dim= x"
+[1] "ncvar_add: figuring out ncid to use"
+[1] "ncvar_add: ncid2use= 65536 name2use= value"
+[1] "ncvar_add: creating double precision var value"
+[1] "nc_create: C call returned value 0"
+[1] "nc_var_add: adding attributes"
+[1] "nc_var_add: creating missing value if requested"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 1 attname= _FillValue attval= -999 prec= double storage.mode(attval)= double"
+[1] "ncatt_put_inner: using specified attribute prec of double"
+[1] "ncatt_put_inner: prec to create: double"
+[1] "nc_var_add: creating long name attribute"
+[1] "nc_var_add: returning"
+[1] "nc_create: setting names attribute on $var and $dim lists"
+[1] "nc_create: exiting define mode"
+[1] "file /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/env_cache/.environment-debug-567fcc79e6ed/tiny-ncdf-567fc680e654d.nc is format NC_FORMAT_CLASSIC"
+[2026-10-16T13:22:03+0200] [environment-debug] Tiny NetCDF round trip: NC_FORMAT_CLASSIC
+[2026-10-16T13:22:03+0200] [environment-debug] PASS tiny_netcdf_environmental_cache_classic elapsed=0.17s
+[2026-10-16T13:22:04+0200] [environment-debug] START tiny_netcdf_environmental_cache_v4
+[1] "nc_create: entering, package version ncdf4_1.24_20250325 | underlying netcdf library version 4.10.1 of Jul 13 2026 22:34:28 $"
+[1] "nc_create: input was a list of vars"
+[1] "nc_create: parsing group structure"
+[1] "nc_parse_group_structure: entering"
+[1] "------------- nc_parse_group_structure: working on var value"
+[1] "nc_parse_group_structure: var value is in root group"
+[1] "working on var value 's dim 1 named x"
+[1] "nc_parse_group_structure: dim x has no specified group (and so is in root group)"
+[1] "adding dim x to root group dim list, entry number 1"
+[1] "----------- group list: ----------"
+[1] "Group 1, named , is at level 1 and has full qual parent named :"
+[1] ".... dim 1: x (length=3)"
+[1] ".... var 1: value"
+[1] "nc_create: checking to see if we MUST produce a netcdf-version 4 file"
+[1] "var: >value<  Use shuffle: >FALSE<  use_compression: >FALSE<  use_chunking: >FALSE<"
+[1] "Not forcing netcdf version 4 format file since no var is using compression or chunking"
+[1] "nc_create: checking to see if there are multiple unlimited dims (which would force V4 file)"
+[1] "nc_create: No, there are not any multiple unlimited dims in this file"
+[1] "Calling R_nc4_create for file  /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/env_cache/.environment-debug-567fcc79e6ed/tiny-ncdf-567fc247c0150.nc"
+[1] "back from R_nc4_create for file  /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/env_cache/.environment-debug-567fcc79e6ed/tiny-ncdf-567fc247c0150.nc"
+[1] "nc_create: about to create the vars"
+[1] "ncvar_add: entering with indefine= TRUE"
+[1] "ncvar_add: ncid of file to add to= 65536    filename= /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/env_cache/.environment-debug-567fcc79e6ed/tiny-ncdf-567fc247c0150.nc     writable= TRUE"
+[1] "ncvar_add: varname to add= value"
+[1] "ncvar_add: creating 1 dims for var value"
+[1] "ncvar_add: working on dim > x < (number 1 ) for var value"
+[1] "ncvar_add: creating dim x (which has not been seen before)"
+[1] "ncdim_create: entering for ncid= 65536"
+[1] "ncdim_create: entering for dim x"
+[1] "ncdim_create: about to call R_nc4_def_dim with ncid2use= 65536  NOT fully qualified dim name= x"
+[1] "ncdim_create: making dimvar for dim x"
+[1] "ncdim_create: about to call R_nc4_def_var_int for dimvar x"
+[1] "ncdim_create: about to call R_nc4_put_vara_int dimvals for dimvar x  ncid= 65536  dimvarid= 0  start= 0  count= 3"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 0 attname= units attval= 1 prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >units< att_len: 1 value: >1<"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 0 attname= long_name attval= x prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >long_name< att_len: 1 value: >x<"
+[1] "ncdim_create: exiting for ncid= 65536   dim= x"
+[1] "ncvar_add: figuring out ncid to use"
+[1] "ncvar_add: ncid2use= 65536 name2use= value"
+[1] "ncvar_add: creating double precision var value"
+[1] "nc_create: C call returned value 0"
+[1] "nc_var_add: adding attributes"
+[1] "nc_var_add: creating missing value if requested"
+[1] "ncatt_put_inner: entering with ncid= 65536 varid= 1 attname= _FillValue attval= -999 prec= double storage.mode(attval)= double"
+[1] "ncatt_put_inner: using specified attribute prec of double"
+[1] "ncatt_put_inner: prec to create: double"
+[1] "nc_var_add: creating long name attribute"
+[1] "nc_var_add: returning"
+[1] "nc_create: setting names attribute on $var and $dim lists"
+[1] "nc_create: exiting define mode"
+[1] "file /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/env_cache/.environment-debug-567fcc79e6ed/tiny-ncdf-567fc247c0150.nc is format NC_FORMAT_NETCDF4"
+[2026-10-16T13:22:04+0200] [environment-debug] Tiny NetCDF round trip: NC_FORMAT_NETCDF4
+[2026-10-16T13:22:04+0200] [environment-debug] PASS tiny_netcdf_environmental_cache_v4 elapsed=0.13s
+[2026-10-16T13:22:04+0200] [environment-debug] START tiny_geopackage_environmental_cache
+Writing layer `tiny-sf-567fc6bd688f0' to data source 
+  `/gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/env_cache/.environment-debug-567fcc79e6ed/tiny-sf-567fc6bd688f0.gpkg' using driver `GPKG'
+Writing 1 features with 1 fields and geometry type Point.
+Reading layer `tiny-sf-567fc6bd688f0' from data source 
+  `/gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/env_cache/.environment-debug-567fcc79e6ed/tiny-sf-567fc6bd688f0.gpkg' 
+  using driver `GPKG'
+Simple feature collection with 1 feature and 1 field
+Geometry type: POINT
+Dimension:     XY
+Bounding box:  xmin: 0 ymin: 0 xmax: 0 ymax: 0
+Geodetic CRS:  WGS 84
+[2026-10-16T13:22:29+0200] [environment-debug] PASS tiny_geopackage_environmental_cache elapsed=25.45s
+[2026-10-16T13:22:29+0200] [environment-debug] PASS filesystem_environmental_cache elapsed=26.17s
+[2026-10-16T13:22:29+0200] [environment-debug] START shared_map_read_land
+[2026-10-16T13:22:30+0200] [environment-debug] FAIL shared_map_read_land elapsed=0.24s | Cannot open "/gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/ne_cache/ne_10m_land.gpkg"; The source could be corrupt or not supported. See `st_drivers()` for a list of supported formats.
+[2026-10-16T13:22:30+0200] [environment-debug] START private_map_download_land
+[2026-10-16T13:22:30+0200] [environment-debug] Fresh private map download: /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/debug/environment-7209563-20261016T112045Z-DusY4H/private-land-567fcf2bf304
+Reading 'ne_10m_land.zip' from naturalearth...
+Writing 'ne_10m_land.gpkg' to
+'/gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/debug/environment-7209563-20261016T112045Z-DusY4H/private-land-567fcf2bf304'...
+[2026-10-16T13:26:18+0200] [environment-debug] Private map rows=11
+[2026-10-16T13:26:18+0200] [environment-debug] PASS private_map_download_land elapsed=227.78s
+[2026-10-16T13:26:18+0200] [environment-debug] START shared_map_read_ocean
+[2026-10-16T13:26:18+0200] [environment-debug] Shared map rows=1
+[2026-10-16T13:26:18+0200] [environment-debug] PASS shared_map_read_ocean elapsed=0.6s
+[2026-10-16T13:26:18+0200] [environment-debug] START private_map_download_ocean
+[2026-10-16T13:26:18+0200] [environment-debug] Fresh private map download: /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/debug/environment-7209563-20261016T112045Z-DusY4H/private-ocean-567fc31557897
+Reading 'ne_10m_ocean.zip' from naturalearth...
+Writing 'ne_10m_ocean.gpkg' to
+'/gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/debug/environment-7209563-20261016T112045Z-DusY4H/private-ocean-567fc31557897'...
+[2026-10-16T13:29:15+0200] [environment-debug] Private map rows=1
+[2026-10-16T13:29:15+0200] [environment-debug] PASS private_map_download_ocean elapsed=176.34s
+[2026-10-16T13:29:15+0200] [environment-debug] START small_request_original_writer
+[2026-10-16T13:29:15+0200] [environment-debug] Request small_request: product=GLOBAL_MULTIYEAR_PHY_001_030; region=8.895,55.18,9.895,56.18; time=1998-01-01/1998-01-31
+[2026-10-16T13:29:15+0200] [environment-debug] WARNING small_request_original_writer: Failed to log in
+ℹ Trying to proceed without credentials
+[2026-10-16T13:29:16+0200] [environment-debug] WARNING small_request_original_writer: Your system is mis-configured: ‘/etc/localtime’ is not a symlink
+[2026-10-16T13:29:20+0200] [environment-debug] Download returned for small_request
+[2026-10-16T13:29:20+0200] [environment-debug] Returned class: stars; object.size MiB=0.01
+[2026-10-16T13:29:20+0200] [environment-debug] Dimensions: longitude=13, latitude=13, elevation=1, time=1
+          from to     offset   delta         refsys x/y
+longitude    1 13      8.875 0.08333 WGS 84 (CRS84) [x]
+latitude     1 13      55.13 0.08333 WGS 84 (CRS84) [y]
+elevation    1  1 -0.494 [m]      NA        udunits    
+time         1  1 1998-01-01      NA           Date    
+[2026-10-16T13:29:20+0200] [environment-debug] Variable so: type=double; dimensions=13x13x1x1; values=169; estimated double output GiB=1.2591e-06; above roughly 2GiB=FALSE
+[2026-10-16T13:29:20+0200] [environment-debug] Original package writer destination=/tmp/RtmpA2xAiX/file567fc2c96bde9.nc
+[2026-10-16T13:29:20+0200] [environment-debug] Filesystem: /tmp/RtmpA2xAiX; writable=TRUE
+Filesystem     1024-blocks      Used  Available Capacity Mounted on
+/dev/nvme0n1p5  1766797216 201022584 1475952476      12% /tmp 
+Filesystem        Inodes IUsed     IFree IUse% Mounted on
+/dev/nvme0n1p5 112263168   241 112262927    1% /tmp 
+[2026-10-16T13:29:20+0200] [environment-debug] Original NetCDF write completed; bytes=3944
+cmems_mod_glo_phy_my_0.083deg_P1M-m / so : downloaded 1 time step(s) - layer names: so_elevation=-0.494025 
+[2026-10-16T13:29:20+0200] [environment-debug] Original raster: rows=13; columns=13; layers=1
+[2026-10-16T13:29:20+0200] [environment-debug] PASS small_request_original_writer elapsed=4.78s
+[2026-10-16T13:29:20+0200] [environment-debug] START full_request_original_writer
+[2026-10-16T13:29:20+0200] [environment-debug] Request full_request: product=GLOBAL_MULTIYEAR_PHY_001_030; region=-136.4045,40.731,155.1945,70.629; time=1998-01-01/2022-12-31
+[2026-10-16T13:29:20+0200] [environment-debug] WARNING full_request_original_writer: Failed to log in
+ℹ Trying to proceed without credentials
+[2026-10-16T13:29:22+0200] [environment-debug] WARNING full_request_original_writer: GDAL Error 2: CACHE_SIZE=2145755545 is not big enough to cache all needed tiles. At least 2573598720 bytes would be needed
+[2026-10-16T13:36:09+0200] [environment-debug] Download returned for full_request
+[2026-10-16T13:36:09+0200] [environment-debug] Returned class: stars; object.size MiB=2883.98
+[2026-10-16T13:36:09+0200] [environment-debug] Dimensions: longitude=3500, latitude=360, elevation=1, time=300
+          from   to     offset   delta         refsys
+longitude    1 3500         NA      NA WGS 84 (CRS84)
+latitude     1  360      40.71 0.08333 WGS 84 (CRS84)
+elevation    1    1 -0.494 [m]      NA        udunits
+time         1  300         NA      NA           Date
+                                               values x/y
+longitude [-136.4583,-136.375),...,[155.125,155.2083) [x]
+latitude                                         NULL [y]
+elevation                                        NULL    
+time                        1998-01-01,...,2022-12-01    
+[2026-10-16T13:36:09+0200] [environment-debug] Variable so: type=double; dimensions=3500x360x1x300; values=378000000; estimated double output GiB=2.8163; above roughly 2GiB=TRUE
+[2026-10-16T13:36:09+0200] [environment-debug] Original package writer destination=/tmp/RtmpA2xAiX/file567fc69d5ab9a.nc
+[2026-10-16T13:36:09+0200] [environment-debug] Filesystem: /tmp/RtmpA2xAiX; writable=TRUE
+Filesystem     1024-blocks      Used  Available Capacity Mounted on
+/dev/nvme0n1p5  1766797216 236926276 1440048784      15% /tmp 
+Filesystem        Inodes IUsed     IFree IUse% Mounted on
+/dev/nvme0n1p5 112263168   246 112262922    1% /tmp 
+Error in R_nc4_enddef: NetCDF: One or more variable sizes violate format constraints
+[1] "Error, nc_enddef returned an error! Error happened with filename= /tmp/RtmpA2xAiX/file567fc69d5ab9a.nc and vars:"
+[1] "1 : longitude_bnds"
+[1] "2 : latitude_bnds"
+[1] "3 : elevation_bnds"
+[1] "4 : time_bnds"
+[1] "5 : so"
+[1] "6 : crs"
+[2026-10-16T13:36:09+0200] [environment-debug] FAIL full_request_original_writer elapsed=408.71s | fatal error in nc_create
+[2026-10-16T13:36:09+0200] [environment-debug] ERROR CALL: ncdf4::nc_create(file, nc_vars)
+[2026-10-16T13:36:09+0200] [environment-debug] Failed stage for full_request: original NetCDF write
+[2026-10-16T13:36:09+0200] [environment-debug] START full_request_same_data_netcdf4
+[2026-10-16T13:36:09+0200] [environment-debug] Same object, same R temp directory, diagnostic NetCDF4 destination=/tmp/RtmpA2xAiX/full_request-v4-567fc6f37d52a.nc
+[2026-10-16T13:36:09+0200] [environment-debug] nc_create: force_v4=TRUE
+[1] "nc_create: entering, package version ncdf4_1.24_20250325 | underlying netcdf library version 4.10.1 of Jul 13 2026 22:34:28 $"
+[1] "nc_create: input was a list of vars"
+[1] "nc_create: parsing group structure"
+[1] "nc_parse_group_structure: entering"
+[1] "------------- nc_parse_group_structure: working on var longitude_bnds"
+[1] "nc_parse_group_structure: var longitude_bnds is in root group"
+[1] "working on var longitude_bnds 's dim 1 named nv"
+[1] "nc_parse_group_structure: dim nv has no specified group (and so is in root group)"
+[1] "adding dim nv to root group dim list, entry number 1"
+[1] "working on var longitude_bnds 's dim 2 named longitude"
+[1] "nc_parse_group_structure: dim longitude has no specified group (and so is in root group)"
+[1] "adding dim longitude to root group dim list, entry number 2"
+[1] "------------- nc_parse_group_structure: working on var latitude_bnds"
+[1] "nc_parse_group_structure: var latitude_bnds is in root group"
+[1] "working on var latitude_bnds 's dim 1 named nv"
+[1] "nc_parse_group_structure: dim nv has no specified group (and so is in root group)"
+[1] "dim nv is already in root group dim list, entry number 1"
+[1] "working on var latitude_bnds 's dim 2 named latitude"
+[1] "nc_parse_group_structure: dim latitude has no specified group (and so is in root group)"
+[1] "adding dim latitude to root group dim list, entry number 3"
+[1] "------------- nc_parse_group_structure: working on var elevation_bnds"
+[1] "nc_parse_group_structure: var elevation_bnds is in root group"
+[1] "working on var elevation_bnds 's dim 1 named nv"
+[1] "nc_parse_group_structure: dim nv has no specified group (and so is in root group)"
+[1] "dim nv is already in root group dim list, entry number 1"
+[1] "working on var elevation_bnds 's dim 2 named elevation"
+[1] "nc_parse_group_structure: dim elevation has no specified group (and so is in root group)"
+[1] "adding dim elevation to root group dim list, entry number 4"
+[1] "------------- nc_parse_group_structure: working on var time_bnds"
+[1] "nc_parse_group_structure: var time_bnds is in root group"
+[1] "working on var time_bnds 's dim 1 named nv"
+[1] "nc_parse_group_structure: dim nv has no specified group (and so is in root group)"
+[1] "dim nv is already in root group dim list, entry number 1"
+[1] "working on var time_bnds 's dim 2 named time"
+[1] "nc_parse_group_structure: dim time has no specified group (and so is in root group)"
+[1] "adding dim time to root group dim list, entry number 5"
+[1] "------------- nc_parse_group_structure: working on var so"
+[1] "nc_parse_group_structure: var so is in root group"
+[1] "working on var so 's dim 1 named longitude"
+[1] "nc_parse_group_structure: dim longitude has no specified group (and so is in root group)"
+[1] "dim longitude is already in root group dim list, entry number 2"
+[1] "working on var so 's dim 2 named latitude"
+[1] "nc_parse_group_structure: dim latitude has no specified group (and so is in root group)"
+[1] "dim latitude is already in root group dim list, entry number 3"
+[1] "working on var so 's dim 3 named elevation"
+[1] "nc_parse_group_structure: dim elevation has no specified group (and so is in root group)"
+[1] "dim elevation is already in root group dim list, entry number 4"
+[1] "working on var so 's dim 4 named time"
+[1] "nc_parse_group_structure: dim time has no specified group (and so is in root group)"
+[1] "dim time is already in root group dim list, entry number 5"
+[1] "------------- nc_parse_group_structure: working on var crs"
+[1] "nc_parse_group_structure: var crs is in root group"
+[1] "----------- group list: ----------"
+[1] "Group 1, named , is at level 1 and has full qual parent named :"
+[1] ".... dim 1: nv (length=2)"
+[1] ".... dim 2: longitude (length=3500)"
+[1] ".... dim 3: latitude (length=360)"
+[1] ".... dim 4: elevation (length=1)"
+[1] ".... dim 5: time (length=300)"
+[1] ".... var 1: longitude_bnds"
+[1] ".... var 2: latitude_bnds"
+[1] ".... var 3: elevation_bnds"
+[1] ".... var 4: time_bnds"
+[1] ".... var 5: so"
+[1] ".... var 6: crs"
+[1] "nc_create: checking to see if we MUST produce a netcdf-version 4 file"
+[1] "var: >longitude_bnds<  Use shuffle: >FALSE<  use_compression: >FALSE<  use_chunking: >FALSE<"
+[1] "Not forcing netcdf version 4 format file since no var is using compression or chunking"
+[1] "var: >latitude_bnds<  Use shuffle: >FALSE<  use_compression: >FALSE<  use_chunking: >FALSE<"
+[1] "Not forcing netcdf version 4 format file since no var is using compression or chunking"
+[1] "var: >elevation_bnds<  Use shuffle: >FALSE<  use_compression: >FALSE<  use_chunking: >FALSE<"
+[1] "Not forcing netcdf version 4 format file since no var is using compression or chunking"
+[1] "var: >time_bnds<  Use shuffle: >FALSE<  use_compression: >FALSE<  use_chunking: >FALSE<"
+[1] "Not forcing netcdf version 4 format file since no var is using compression or chunking"
+[1] "var: >so<  Use shuffle: >FALSE<  use_compression: >FALSE<  use_chunking: >FALSE<"
+[1] "Not forcing netcdf version 4 format file since no var is using compression or chunking"
+[1] "var: >crs<  Use shuffle: >FALSE<  use_compression: >FALSE<  use_chunking: >FALSE<"
+[1] "Not forcing netcdf version 4 format file since no var is using compression or chunking"
+[1] "nc_create: checking to see if there are multiple unlimited dims (which would force V4 file)"
+[1] "nc_create: No, there are not any multiple unlimited dims in this file"
+[1] "Calling R_nc4_create for file  /tmp/RtmpA2xAiX/full_request-v4-567fc6f37d52a.nc"
+[1] "back from R_nc4_create for file  /tmp/RtmpA2xAiX/full_request-v4-567fc6f37d52a.nc"
+[1] "nc_create: about to create the vars"
+[1] "ncvar_add: entering with indefine= TRUE"
+[1] "ncvar_add: ncid of file to add to= 131072    filename= /tmp/RtmpA2xAiX/full_request-v4-567fc6f37d52a.nc     writable= TRUE"
+[1] "ncvar_add: varname to add= longitude_bnds"
+[1] "ncvar_add: creating 2 dims for var longitude_bnds"
+[1] "ncvar_add: working on dim > nv < (number 1 ) for var longitude_bnds"
+[1] "ncvar_add: creating dim nv (which has not been seen before)"
+[1] "ncdim_create: entering for ncid= 131072"
+[1] "ncdim_create: entering for dim nv"
+[1] "ncdim_create: about to call R_nc4_def_dim with ncid2use= 131072  NOT fully qualified dim name= nv"
+[1] "ncdim_create: NOT making dimvar for dim nv"
+[1] "ncdim_create: exiting for ncid= 131072   dim= nv"
+[1] "ncvar_add: working on dim > longitude < (number 2 ) for var longitude_bnds"
+[1] "ncvar_add: creating dim longitude (which has not been seen before)"
+[1] "ncdim_create: entering for ncid= 131072"
+[1] "ncdim_create: entering for dim longitude"
+[1] "ncdim_create: about to call R_nc4_def_dim with ncid2use= 131072  NOT fully qualified dim name= longitude"
+[1] "ncdim_create: making dimvar for dim longitude"
+[1] "ncdim_create: about to call R_nc4_def_var_double for dimvar longitude"
+[1] "ncdim_create: about to call Rsx_nc4_put_vara_double dimvals for dimvar longitude"
+[1] "ncatt_put_inner: entering with ncid= 131072 varid= 0 attname= units attval= degrees_east prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >units< att_len: 1 value: >degrees_east<"
+[1] "ncatt_put_inner: entering with ncid= 131072 varid= 0 attname= long_name attval= longitude prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >long_name< att_len: 1 value: >longitude<"
+[1] "ncdim_create: exiting for ncid= 131072   dim= longitude"
+[1] "ncvar_add: figuring out ncid to use"
+[1] "ncvar_add: ncid2use= 131072 name2use= longitude_bnds"
+[1] "ncvar_add: creating double precision var longitude_bnds"
+[1] "nc_create: C call returned value 0"
+[1] "nc_var_add: adding attributes"
+[1] "nc_var_add: creating missing value if requested"
+[1] "nc_var_add: creating long name attribute"
+[1] "nc_var_add: returning"
+[1] "ncvar_add: entering with indefine= TRUE"
+[1] "ncvar_add: ncid of file to add to= 131072    filename= /tmp/RtmpA2xAiX/full_request-v4-567fc6f37d52a.nc     writable= TRUE"
+[1] "ncvar_add: varname to add= latitude_bnds"
+[1] "ncvar_add: creating 2 dims for var latitude_bnds"
+[1] "ncvar_add: working on dim > nv < (number 1 ) for var latitude_bnds"
+[1] "ncvar_add: dim nv has been seen before"
+[1] "ncvar_add: working on dim > latitude < (number 2 ) for var latitude_bnds"
+[1] "ncvar_add: creating dim latitude (which has not been seen before)"
+[1] "ncdim_create: entering for ncid= 131072"
+[1] "ncdim_create: entering for dim latitude"
+[1] "ncdim_create: about to call R_nc4_def_dim with ncid2use= 131072  NOT fully qualified dim name= latitude"
+[1] "ncdim_create: making dimvar for dim latitude"
+[1] "ncdim_create: about to call R_nc4_def_var_double for dimvar latitude"
+[1] "ncdim_create: about to call Rsx_nc4_put_vara_double dimvals for dimvar latitude"
+[1] "ncatt_put_inner: entering with ncid= 131072 varid= 2 attname= units attval= degrees_north prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >units< att_len: 1 value: >degrees_north<"
+[1] "ncatt_put_inner: entering with ncid= 131072 varid= 2 attname= long_name attval= latitude prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >long_name< att_len: 1 value: >latitude<"
+[1] "ncdim_create: exiting for ncid= 131072   dim= latitude"
+[1] "ncvar_add: figuring out ncid to use"
+[1] "ncvar_add: ncid2use= 131072 name2use= latitude_bnds"
+[1] "ncvar_add: creating double precision var latitude_bnds"
+[1] "nc_create: C call returned value 0"
+[1] "nc_var_add: adding attributes"
+[1] "nc_var_add: creating missing value if requested"
+[1] "nc_var_add: creating long name attribute"
+[1] "nc_var_add: returning"
+[1] "ncvar_add: entering with indefine= TRUE"
+[1] "ncvar_add: ncid of file to add to= 131072    filename= /tmp/RtmpA2xAiX/full_request-v4-567fc6f37d52a.nc     writable= TRUE"
+[1] "ncvar_add: varname to add= elevation_bnds"
+[1] "ncvar_add: creating 2 dims for var elevation_bnds"
+[1] "ncvar_add: working on dim > nv < (number 1 ) for var elevation_bnds"
+[1] "ncvar_add: dim nv has been seen before"
+[1] "ncvar_add: working on dim > elevation < (number 2 ) for var elevation_bnds"
+[1] "ncvar_add: creating dim elevation (which has not been seen before)"
+[1] "ncdim_create: entering for ncid= 131072"
+[1] "ncdim_create: entering for dim elevation"
+[1] "ncdim_create: about to call R_nc4_def_dim with ncid2use= 131072  NOT fully qualified dim name= elevation"
+[1] "ncdim_create: making dimvar for dim elevation"
+[1] "ncdim_create: about to call R_nc4_def_var_double for dimvar elevation"
+[1] "ncdim_create: about to call Rsx_nc4_put_vara_double dimvals for dimvar elevation"
+[1] "ncatt_put_inner: entering with ncid= 131072 varid= 4 attname= units attval= m prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >units< att_len: 1 value: >m<"
+[1] "ncatt_put_inner: entering with ncid= 131072 varid= 4 attname= long_name attval= elevation prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >long_name< att_len: 1 value: >elevation<"
+[1] "ncdim_create: exiting for ncid= 131072   dim= elevation"
+[1] "ncvar_add: figuring out ncid to use"
+[1] "ncvar_add: ncid2use= 131072 name2use= elevation_bnds"
+[1] "ncvar_add: creating double precision var elevation_bnds"
+[1] "nc_create: C call returned value 0"
+[1] "nc_var_add: adding attributes"
+[1] "nc_var_add: creating missing value if requested"
+[1] "nc_var_add: creating long name attribute"
+[1] "nc_var_add: returning"
+[1] "ncvar_add: entering with indefine= TRUE"
+[1] "ncvar_add: ncid of file to add to= 131072    filename= /tmp/RtmpA2xAiX/full_request-v4-567fc6f37d52a.nc     writable= TRUE"
+[1] "ncvar_add: varname to add= time_bnds"
+[1] "ncvar_add: creating 2 dims for var time_bnds"
+[1] "ncvar_add: working on dim > nv < (number 1 ) for var time_bnds"
+[1] "ncvar_add: dim nv has been seen before"
+[1] "ncvar_add: working on dim > time < (number 2 ) for var time_bnds"
+[1] "ncvar_add: creating dim time (which has not been seen before)"
+[1] "ncdim_create: entering for ncid= 131072"
+[1] "ncdim_create: entering for dim time"
+[1] "ncdim_create: about to call R_nc4_def_dim with ncid2use= 131072  NOT fully qualified dim name= time"
+[1] "ncdim_create: making dimvar for dim time"
+[1] "ncdim_create: about to call R_nc4_def_var_double for dimvar time"
+[1] "ncdim_create: about to call Rsx_nc4_put_vara_double dimvals for dimvar time"
+[1] "ncatt_put_inner: entering with ncid= 131072 varid= 6 attname= units attval= seconds since 1970-01-01 00:00:00 UTC prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >units< att_len: 1 value: >seconds since 1970-01-01 00:00:00 UTC<"
+[1] "ncatt_put_inner: entering with ncid= 131072 varid= 6 attname= long_name attval= time prec= NA storage.mode(attval)= character"
+[1] "ncatt_put_inner: no user-specified att type was given, figuring it out..."
+[1] "ncatt_put_inner: using deduced attribute prec of character"
+[1] "ncatt_put_inner: prec to create: character"
+[1] "Calling R_nc4_put_att_text with name >long_name< att_len: 1 value: >time<"
+[1] "ncdim_create: exiting for ncid= 131072   dim= time"
+[1] "ncvar_add: figuring out ncid to use"
+[1] "ncvar_add: ncid2use= 131072 name2use= time_bnds"
+[1] "ncvar_add: creating double precision var time_bnds"
+[1] "nc_create: C call returned value 0"
+[1] "nc_var_add: adding attributes"
+[1] "nc_var_add: creating missing value if requested"
+[1] "nc_var_add: creating long name attribute"
+[1] "nc_var_add: returning"
+[1] "ncvar_add: entering with indefine= TRUE"
+[1] "ncvar_add: ncid of file to add to= 131072    filename= /tmp/RtmpA2xAiX/full_request-v4-567fc6f37d52a.nc     writable= TRUE"
+[1] "ncvar_add: varname to add= so"
+[1] "ncvar_add: creating 4 dims for var so"
+[1] "ncvar_add: working on dim > longitude < (number 1 ) for var so"
+[1] "ncvar_add: dim longitude has been seen before"
+[1] "ncvar_add: working on dim > latitude < (number 2 ) for var so"
+[1] "ncvar_add: dim latitude has been seen before"
+[1] "ncvar_add: working on dim > elevation < (number 3 ) for var so"
+[1] "ncvar_add: dim elevation has been seen before"
+[1] "ncvar_add: working on dim > time < (number 4 ) for var so"
+[1] "ncvar_add: dim time has been seen before"
+[1] "ncvar_add: figuring out ncid to use"
+[1] "ncvar_add: ncid2use= 131072 name2use= so"
+[1] "ncvar_add: creating double precision var so"
+[1] "nc_create: C call returned value 0"
+[1] "nc_var_add: adding attributes"
+[1] "nc_var_add: creating missing value if requested"
+[1] "ncatt_put_inner: entering with ncid= 131072 varid= 8 attname= _FillValue attval= -999 prec= double storage.mode(attval)= double"
+[1] "ncatt_put_inner: using specified attribute prec of double"
+[1] "ncatt_put_inner: prec to create: double"
+[1] "nc_var_add: creating long name attribute"
+[1] "nc_var_add: returning"
+[1] "ncvar_add: entering with indefine= TRUE"
+[1] "ncvar_add: ncid of file to add to= 131072    filename= /tmp/RtmpA2xAiX/full_request-v4-567fc6f37d52a.nc     writable= TRUE"
+[1] "ncvar_add: varname to add= crs"
+[1] "ncvar_add: creating 0 dims for var crs"
+[1] "ncvar_add: figuring out ncid to use"
+[1] "ncvar_add: ncid2use= 131072 name2use= crs"
+[1] "ncvar_add: creating char precision var crs"
+[1] "nc_create: C call returned value 0"
+[1] "nc_var_add: adding attributes"
+[1] "nc_var_add: creating missing value if requested"
+[1] "nc_var_add: creating long name attribute"
+[1] "nc_var_add: returning"
+[1] "nc_create: setting names attribute on $var and $dim lists"
+[1] "nc_create: exiting define mode"
+[1] "file /tmp/RtmpA2xAiX/full_request-v4-567fc6f37d52a.nc is format NC_FORMAT_NETCDF4"
+[2026-10-16T13:36:17+0200] [environment-debug] NetCDF4 write completed; bytes=3024115703; opening with terra::rast
+[2026-10-16T13:36:17+0200] [environment-debug] NetCDF4 raster: rows=360; columns=3500; layers=300
+[2026-10-16T13:36:17+0200] [environment-debug] PASS full_request_same_data_netcdf4 elapsed=8.8s
+                                   probe status seconds
+           tiny_netcdf_R_tempdir_classic   PASS   0.329
+                tiny_netcdf_R_tempdir_v4   PASS   0.007
+               tiny_geopackage_R_tempdir   PASS   0.495
+                    filesystem_R_tempdir   PASS   1.385
+   tiny_netcdf_diagnostic_output_classic   PASS   0.707
+        tiny_netcdf_diagnostic_output_v4   PASS   0.256
+       tiny_geopackage_diagnostic_output   PASS  32.481
+            filesystem_diagnostic_output   PASS  34.583
+ tiny_netcdf_Natural_Earth_cache_classic   PASS   0.129
+      tiny_netcdf_Natural_Earth_cache_v4   PASS   1.064
+     tiny_geopackage_Natural_Earth_cache   PASS  18.266
+          filesystem_Natural_Earth_cache   PASS  19.978
+ tiny_netcdf_environmental_cache_classic   PASS   0.165
+      tiny_netcdf_environmental_cache_v4   PASS   0.132
+     tiny_geopackage_environmental_cache   PASS  25.455
+          filesystem_environmental_cache   PASS  26.175
+                    shared_map_read_land   FAIL   0.243
+               private_map_download_land   PASS 227.782
+                   shared_map_read_ocean   PASS   0.596
+              private_map_download_ocean   PASS 176.338
+           small_request_original_writer   PASS   4.783
+            full_request_original_writer   FAIL 408.711
+          full_request_same_data_netcdf4   PASS   8.800
+                                                                                                                                                                                                                                                  detail
+                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                        
+ Cannot open "/gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/gene_catalog/herring_sentieon_125ind_pi/temp/ne_cache/ne_10m_land.gpkg"; The source could be corrupt or not supported. See `st_drivers()` for a list of supported formats.
+                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                fatal error in nc_create
+                                                                                                                                                                                                                                                        
+[2026-10-16T13:36:18+0200] [environment-debug] DONE probes=23; failed probes=2; see results.tsv and debug.log. A failed probe is diagnostic evidence.
+Finish: 2026-10-16T11:36:19Z
+Exit status: 1
+Diagnostic log: /gorilla/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/debug/environment-7209563-20261016T112045Z-DusY4H/debug.log

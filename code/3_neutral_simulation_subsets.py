@@ -6,15 +6,23 @@ Uses only Python's standard library; no bcftools commands are executed here.
 
 The helper commands support step 2's Bash bcftools operations: they prepare
 coordinate lists, check VCF records and record the selected subsets for the Rmd.
+Command -> Snakemake rule:
+  pool-target-markers -> extract_neutral_pool
+  check-pool-records -> validate_neutral_pool
+  plan -> plan_neutral_subsets
+  prepare-subsets, check-subset, finish-subsets -> materialize_neutral_vcfs
 Run `plan --help` for sampling, or `--help` for those helper commands.
 """
 import argparse
 import csv
+from contextlib import nullcontext
 import gzip
 import hashlib
 import json
 import random
 import re
+import sys
+import time
 from pathlib import Path
 
 
@@ -85,9 +93,8 @@ def guard_paths(args):
         raise ValueError("Neutral inputs and outputs must be distinct files; an output would overwrite an input or another output")
 
 
-def read_markers(path, input_format):
-    """Read converted tables or ready neutral coordinates, without table conversion."""
-    markers = {}
+def marker_positions(path, input_format):
+    """Parse neutral coordinates without retaining a second full collection."""
     with open_text(path) as stream:
         rows = csv.DictReader(stream, delimiter="\t") if input_format == "normalized" else csv.reader(stream, delimiter="\t")
         if input_format == "normalized" and not {"CHROM", "POS"}.issubset(rows.fieldnames or []):
@@ -112,8 +119,17 @@ def read_markers(path, input_format):
                         raise ValueError(f"Row {number}: BED neutral sites must be single-base SNP intervals")
             if not chrom or not position.isdigit() or int(position) < 1:
                 raise ValueError(f"Invalid CHROM/POS on row {number}")
-            key = (chrom, int(position))
-            markers[key] = None
+            yield chrom, int(position)
+
+
+def read_markers(path, input_format):
+    """Read converted tables or ready neutral coordinates, without table conversion."""
+    # Intern chromosome labels: millions of positions share very few names.
+    names = {}
+    markers = {}
+    for chrom, position in marker_positions(path, input_format):
+        chrom = names.setdefault(chrom, chrom)
+        markers[(chrom, position)] = None
     if not markers:
         raise ValueError("No neutral markers supplied")
     return markers
@@ -131,16 +147,22 @@ def pool_target_markers(args):
         if key in aliases and aliases[key] != contig:
             raise ValueError(f"VCF contains ambiguous contigs {aliases[key]} and {contig}")
         aliases[key] = contig
-    wanted = {}
-    for chrom, pos in read_markers(args.markers, args.markers_format):
-        key = (canonical_chrom(chrom), pos)
-        if key in wanted:
+    wanted, names, canonical_names = {}, {}, {}
+    for chrom, pos in marker_positions(args.markers, args.markers_format):
+        chrom = names.setdefault(chrom, chrom)
+        if chrom not in canonical_names:
+            canonical_names[chrom] = canonical_chrom(chrom)
+        key = (canonical_names[chrom], pos)
+        if key in wanted and wanted[key] != chrom:
             raise ValueError(f"Ambiguous marker position after chromosome normalization: {key}")
-        wanted[key] = aliases.get(key[0])
+        wanted[key] = chrom
+    if not wanted:
+        raise ValueError("No neutral markers supplied")
     Path(args.target_markers_output).parent.mkdir(parents=True, exist_ok=True)
     mapped = 0
     with open(args.target_markers_output, "w", encoding="utf-8", newline="\n") as stream:
-        for (_, pos), vcf_chrom in wanted.items():
+        for (canonical, pos) in wanted:
+            vcf_chrom = aliases.get(canonical)
             if vcf_chrom:
                 stream.write(f"{vcf_chrom}\t{pos}\n")
                 mapped += 1
@@ -151,30 +173,49 @@ def pool_target_markers(args):
 
 def check_pool_records(args):
     """Keep biallelic SNPs and check that each selected position occurs once."""
+    validate_only = getattr(args, "validate_only", False)
+    if not validate_only and not args.validated_vcf:
+        raise ValueError("Set --validated-vcf, or use --validate-only for an already-filtered pool")
     wanted = read_markers(args.target_markers, "positions")
-    matched = set()
-    with open_text(args.candidates) as source, open(args.validated_vcf, "w", encoding="utf-8", newline="\n") as dest:
+    matched = 0
+    started = time.monotonic()
+    destination = (nullcontext(None) if validate_only else
+                   open(args.validated_vcf, "w", encoding="utf-8", newline="\n"))
+    with open_text(args.candidates) as source, destination as dest:
         for line in source:
             if line.startswith("#"):
-                dest.write(line)
+                if dest is not None:
+                    dest.write(line)
                 continue
             if not line.strip():
                 continue
-            fields = line.rstrip("\r\n").split("\t")
+            # Site checks need the fixed fields only. Keep the genotype tail in
+            # one string instead of allocating a string for every sample.
+            fields = line.rstrip("\r\n").split("\t", 7)
             if len(fields) < 8:
                 raise ValueError("Malformed VCF record")
             key = (fields[0], int(fields[1]))
             if key not in wanted:
                 raise ValueError("bcftools returned a position outside the neutral target list")
             if not is_biallelic_snp(fields[3], fields[4]):
+                if validate_only:
+                    raise ValueError("Filtered neutral pool contains a non-biallelic SNP")
                 continue
-            if key in matched:
+            # Reuse the coordinate dictionary for duplicate detection rather
+            # than retaining another set containing millions of the same keys.
+            if wanted[key] is True:
                 raise ValueError(f"Multiple VCF records match neutral position {key}; supply a VCF with one SNP record per position")
-            matched.add(key)
-            dest.write(line)
+            wanted[key] = True
+            matched += 1
+            if dest is not None:
+                dest.write(line)
+            if matched % 500000 == 0:
+                print(f"Validated {matched:,} neutral SNP records in {time.monotonic()-started:.1f}s",
+                      file=sys.stderr, flush=True)
     if not matched:
         raise ValueError("No neutral biallelic SNPs matched; check marker coordinates and the VCF records")
-    print(f"Retained {len(matched)}/{len(wanted)} targeted positions as neutral biallelic SNPs")
+    print(f"Retained {matched}/{len(wanted)} targeted positions as neutral biallelic SNPs",
+          file=sys.stderr, flush=True)
 
 
 def check_pool(args):
@@ -212,6 +253,9 @@ def check_pool(args):
 
 def plan(args):
     """Draw seeded, SNP-count-matched neutral subsets for one gene."""
+    started = time.monotonic()
+    print(f"[plan_neutral_subsets] START gene={args.gene}; "
+          f"technical_replicates={args.technical_replicates}", file=sys.stderr, flush=True)
     guard_paths(argparse.Namespace(input=[args.pool, args.gene_vcf], output=[args.output, args.metadata]))
     if args.technical_replicates < 1 or args.seed < 0:
         raise ValueError("technical_replicates must be positive and seed nonnegative")
@@ -246,6 +290,9 @@ def plan(args):
         pool_md5=md5_fingerprint(args.pool), gene_vcf_md5=md5_fingerprint(args.gene_vcf),
         plan_md5=md5_fingerprint(args.output), plan_sha256=fingerprint(args.output)))
     print(f"{args.gene}: {status}; target={k}, available={len(available)}")
+    print(f"[plan_neutral_subsets] DONE gene={args.gene}; status={status}; "
+          f"technical_replicates={args.technical_replicates}; "
+          f"elapsed={time.monotonic() - started:.1f}s", file=sys.stderr, flush=True)
 
 
 def prepare_subsets(args):
@@ -377,15 +424,17 @@ def main():
     sub = command("pool-target-markers", pool_target_markers, "vcf-header markers target-markers-output")
     sub.add_argument("--markers-format", choices=("normalized", "positions", "bed"), default="normalized")
     sub.add_argument("--contigs", default="")
-    command("check-pool-records", check_pool_records, "candidates target-markers validated-vcf")
+    sub = command("check-pool-records", check_pool_records, "candidates target-markers")
+    sub.add_argument("--validated-vcf")
+    sub.add_argument("--validate-only", action="store_true")
     command("check-pool", check_pool, "vcf")
     sub = command("prepare-subsets", prepare_subsets, "pool gene-vcf plan metadata output-dir work-dir")
     sub.add_argument("--pool-index", default="")
     command("check-subset", check_subset, "vcf manifest filename")
     command("finish-subsets", finish_subsets, "manifest output bcftools-version")
     args = parser.parse_args()
-    args.func(args)
+    return args.func(args)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

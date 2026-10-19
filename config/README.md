@@ -15,18 +15,11 @@ Two independent settings decides what the pipeline does with the genes:
 * **how each gene's variants are found in the VCF:** `vcf_annotation_format`.
 | Variable | Purpose |
 |---|---|
-
-
 | `gene_list_file`, `genes` | Defines which genes to run. The file type is read from the extension: `.bed` is a BED file (chrom, start, end, gene ID; one row per gene), any other extension is a text file with one gene ID per line. If the path is set but the file doesn't exist yet, `batch_job_gene_catalog_snakemake.sh` creates it from the SnpEff annotation of `input_vcf` (needs a SnpEff-annotated VCF). |
-
 | `genes` | a hardcoded array of genes to run, used when `gene_list_file` is not set. |
-
 | `gene_list_limit` | Run only the first N genes of the list, useful for a quick test run. |
-
 | `vcf_annotation_format` | `snpeff` \| `bed`: How a gene's variants are found in the VCF. `snpeff` matches the gene ID in the `INFO/ANN` field. `bed` extracts the gene's `chrom:start-end` region using the coordinates in the BED gene list, so it requires `gene_list_file` to be a `.bed` file, but it works for VCF files without SnpEff annotation. |
-
 | `gene_chrom_file` | Chromosome of each gene (`chrom<TAB>gene_id` per line, built by `code/build_gene_chrom_map.py`). Only needed for a text gene list or `genes` array combined with `vcf_annotation_format: snpeff`. With a BED gene list the chromosomes are read from the BED and this setting is not used. If the path is set but the file doesn't exist yet, the batch script builds it from the SnpEff annotation. |
-
 | `gene_scope` | `all` \| `body` \| `exonic` \| `cds`: Used if `vcf_annotation_format`:`snpeff`. Runs filter_vcf_by_scope.sh to narrow down the gene-filtered VCF down (based off the ANN block) to filter the scope of the genes down to: `body` (gene body), `exonic` (exonic region), `cds` (coding sequence). Default option is `all`, which includes the whole gene region including upstream and downstream region annotations. |
 
 ## Gene list file formats
@@ -49,8 +42,9 @@ These parameter settings are environment variables used in `code/2_Herring_Winge
 ### Naming notation
 `study_species`: free-text label used in the output filenames and plot titles.
 ### Genetic diversity statistic
-`gd_stat`: `"pi"` (default) \| `"Ho"` \| `"biallelic_richness"`. Determines which statistic `window_gd()` maps, carried through everything downstream: window stats, per-location stats, plot titles, `gene_catalog.html`'s column headers, and output filenames.
+`gd_stat`: `"pi"` (default) \| `"Ho"` \| `"biallelic_richness"`\|`"theta"` (hierfstat::theta.Watt.dosage)\| `"tajimas_d"` (hierfstat::TajimaD.dosage). Determines which statistic `window_gd()` maps, carried through everything downstream: window stats, per-location stats, plot titles, `gene_catalog.html`'s column headers, and output filenames.
 
+additional support has been added for 
 `gd_label` / `gd_label_short`: optional text overrides for how the chosen statistic is displayed. `gd_label` is the long form (plot titles, the `gene_catalog.html` heading); `gd_label_short` is the short form (Legends, column headers). If not set, following defaults are used:
 
 | `gd_stat` | `gd_label` (default) | `gd_label_short` (default) |
@@ -58,6 +52,8 @@ These parameter settings are environment variables used in `code/2_Herring_Winge
 | `pi` | Nucleotide diversity (π) | π |
 | `Ho` | Observed heterozygosity (Ho) | Ho |
 | `biallelic_richness` | Allelic richness (biallelic) | AR |
+| `theta` | Wattersons Theta (θ) | θ |
+| `tajimas_d` | Tajimas D (D) | D |
 
 **Worth knowing:**
 
@@ -74,11 +70,15 @@ To subset your dataset into a "boxed" region to restrict which *individuals* are
 Which statistic this section's settings tune is controlled by `gd_stat` above (`pi` by default). (`window_general()`, wingen's dataframe-based alternative, isn't wired into this pipeline at all yet — see `README.md`.)
 
 `WDIM` (`wdim` in `window_gd()`): window dimensions in aggregated cells.
+
 `FACT` (`fact` in `window_gd()`): aggregation factor applied to the raster before windowing.
+
 `MIN_N_SAMPLES_PER_CALC` (`min_n` in `window_gd()`): minimum number of empirical samples a window needs; fewer than this and the focal cell gets `NA`. Default: `2`.
 
 `use_rarify`: equivalent to rarify in window_gd()
+
 `rarify_n`: equivalent to rarify_n in window_gd(), only used if rarify = TRUE. Defines the number of points to use for rarefaction (defaults to min_n). [Default: 2]
+
 `RARIFY_N_ITERATIONS` (`rarify_nit` in `window_gd()`, only used if `rarify = TRUE`): number of iterations to use for rarefaction (defaults to 5). Can also be set to `"all"` to use every combination of samples of size `RARIFY_N` within the window.
 
 `LOCATION_RARIFY`: `auto` (default) | `TRUE` | `FALSE`. Whether location diversity uses repeated draws of `rarify_n` individuals. `auto` uses individual subsampling only for `biallelic_richness` when `USE_RARIFY` is enabled, while Pi and Ho instead uses all eligible individuals in a cluster. 
@@ -89,9 +89,11 @@ diversity from each cluster's pooled genotypes. Environmental values are then av
 
 ## Kriging Settings (Interpolation) - `wkrig_gd()`
 `GRD_DISAGG_FACTOR`: parameter previously existing in the old `krig_gd(disagg_grd)` to disaggregate the prediction grid (smoothing) prior to kriging. Here, `terra`'s `disagg` function is used instead since `wkrig_gd()` lacks this functionality. This parameter subdivides each lyr cell into `grd_disagg_factor^2` sub-cells for smoothing (finer pixel spacing) in the kriging prediction grid. Setting this parameter to 1 keeps grd stays at lyr's native resolution.
+
 `USE_WEIGHTED_KRIGING`: Boolean determining whether weighted kriging should be performed (currently weights are assigned based on sample count: `wkrig_gd(weight_r = wgd_confident[["sample_count"]])`).
 
 `NMAX_NEIGHBOURS`(`nmax` in `wkrig_gd()`): decides the maximum number of neighboring observations to use for kriging at each prediction location.
+
 `MAXDIST` (`maxdist` in `wkrig_gd()`): maximum distance to a neighboring point to still consider it. Left unset by default and resolved automatically from the computed `MAX_INTERP_DIST` below (the smallest value that won't exclude a centroid a surviving prediction could need). Set explicitly only to override that.
 
 `MAX_RANGE_FRAC`: equivalent to `max_range_frac` in `wkrig_gd()` — caps how much of the fitted variogram's range parameter is used when searching for neighbors. Default `0.5`. Live, not overridden.
@@ -170,19 +172,17 @@ saved values, including environmental product IDs and requested depths.
 
 ## Neutral-marker comparison
 
-Set `run_neutral_sim: true` and provide `markers_file` or `neutral_vcf`.
-`markers_file` can be omitted when `neutral_vcf` is supplied.
-This toggle controls both the neutral Snakemake rules and the Rmd's
-`RUN_NEUTRAL_SIM` boolean. All settings below are top-level `config.yaml`
-entries. 
+Set `run_neutral_sim: true` and provide `markers_file` or `neutral_vcf`. A third option, if the user has a SnpEff-annotated VCF-file, is to automatically create a neutral marker file by setting `vcf_annotation_format: snpeff` and leave both neutral inputs null/unset to extract intergenic SNP coordinates automatically from `input_vcf`.
+Input precedence is `neutral_vcf`, then `markers_file`, then automatic extraction.
+This toggle controls both the neutral Snakemake rules and the Rmd's `RUN_NEUTRAL_SIM` boolean. All settings below are top-level `config.yaml` entries. 
 ### Input and sampling parameters
 
 | Parameter | Default | Purpose |
 |---|---|---|
 | `run_neutral_sim` | `false` | Enable neutral preparation and comparison. The observed gene analysis runs with either setting. Requires `calc_gen_diversity_stats: TRUE`. |
-| `markers_file` | | File path to a XLSX/CSV/TSV table or bed file containing neutral marker annotation. Required only when simulations are enabled and `neutral_vcf` is absent. |
+| `markers_file` | | File path to an XLSX/CSV/TSV marker table, ready CHROM/POS list or single-base BED, containing neutral marker annotation and positions. Required in `bed` mode when simulations are enabled and `neutral_vcf` is absent. In `snpeff` mode, leave null/unset for automatic intergenic extraction. A supplied file overrides automatic extraction. |
 | `neutral_vcf` | `null` | Path to an already neutral marker filtered vcf-file. If defined, `markers_file` is not considered. |
-| `input_format` | `auto` | `auto`, `table`, `positions` or `bed`. `auto` uses BED for `.bed`/`.bed.gz`, otherwise a table. Only tables run the table converter; direct position/BED inputs bypass it. |
+| `input_format` | `auto` | `auto`, `table`, `positions` or `bed`. `auto` uses BED for `.bed`/`.bed.gz`, otherwise a table. Only tables run the table converter; direct position/BED inputs bypass it. Ignored for automatic SnpEff extraction and supplied `neutral_vcf`. |
 | `technical_replicates` | `100` | Number of random neutral sets per gene. Each set has the target gene's final SNP count. A gene with 40 SNPs produces 100 VCFs of 40 SNPs each. |
 | `seed` | `42` | Base seed for reproducible marker sampling. This is separate from `wingen_params.SEED`, which controls individual rarefaction. |
 | `min_valid_fraction` | `0.9` | Minimum fraction of requested sets yielding finite correlations, checked separately for Pearson and Spearman for each predictor. With 100 sets, at least 90 are required; otherwise that empirical comparison is unavailable. Statistical failures and job errors differ; see below. |
@@ -190,8 +190,7 @@ entries.
 
 ### Table parameters
 
-These parameters apply to XLSX/CSV/TSV tables; they are ignored for ready
-`positions` or `bed` inputs and when `neutral_vcf` is supplied.
+These parameters apply to XLSX/CSV/TSV tables; they are ignored for ready `positions` or `bed` inputs, automatic SnpEff extraction, and when `neutral_vcf` is supplied.
 
 | Parameter | Default | Purpose |
 |---|---|---|

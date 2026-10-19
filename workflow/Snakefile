@@ -103,9 +103,8 @@ def abspath_pwd(path):
 ENV_CACHE_DIR_ABS = abspath_pwd(f"{RESULTS_DIR}/temp/env_cache")
 NE_CACHE_DIR_ABS = abspath_pwd(f"{RESULTS_DIR}/temp/ne_cache")
 
-# Optional neutral reference: provide an already-neutral VCF, or marker
-# coordinates used to extract one from input_vcf. Per-gene plans then use the
-# final scope-filtered gene VCF to determine the number of SNPs to sample.
+# Optional neutral reference: provide an already-neutral VCF, marker coordinates, or use intergenic SnpEff annotations from input_vcf when neither is supplied.
+# Per-gene plans then use the final scope-filtered gene VCF's SNP count to determine the number of SNPs to sample. 
 RUN_NEUTRAL_SIM = config.get("run_neutral_sim", False)
 if not isinstance(RUN_NEUTRAL_SIM, bool):
     raise ValueError("run_neutral_sim must be a YAML boolean")
@@ -115,8 +114,12 @@ NEUTRAL_POOL = NEUTRAL_SUPPLIED_POOL or f"{NEUTRAL_DIR}/neutral_pool.vcf.gz"
 NEUTRAL_POOL_INDEX = (f"{NEUTRAL_DIR}/supplied_pool.csi" if NEUTRAL_SUPPLIED_POOL
                       else f"{NEUTRAL_POOL}.csi")
 NEUTRAL_MARKER_SOURCE = config.get("markers_file") or ""
+# Snpeff alternative:
+NEUTRAL_EXTRACT_SNPEFF = (not NEUTRAL_SUPPLIED_POOL and not NEUTRAL_MARKER_SOURCE
+                         and config.get("vcf_annotation_format") == "snpeff")
+
 NEUTRAL_INPUT_FORMAT = str(config.get("input_format") or "auto").strip().lower()
-if (RUN_NEUTRAL_SIM and not NEUTRAL_SUPPLIED_POOL
+if (RUN_NEUTRAL_SIM and not NEUTRAL_SUPPLIED_POOL and not NEUTRAL_EXTRACT_SNPEFF
         and NEUTRAL_INPUT_FORMAT not in ("auto", "table", "positions", "bed")):
     raise ValueError("input_format must be auto, table, positions or bed")
 if NEUTRAL_INPUT_FORMAT == "auto":
@@ -124,17 +127,20 @@ if NEUTRAL_INPUT_FORMAT == "auto":
                             else "table")
 # Script 1 reads XLSX/CSV/TSV tables, selects rows labelled neutral (unless the
 # table is already neutral-only), and writes CHROM/POS TSV. A supplied neutral
-# VCF or ready positions/BED skips this table-reading step.
-NEUTRAL_READ_MARKER_TABLE = not NEUTRAL_SUPPLIED_POOL and NEUTRAL_INPUT_FORMAT == "table"
-NEUTRAL_MARKERS = (f"{NEUTRAL_DIR}/markers.tsv" if NEUTRAL_READ_MARKER_TABLE
+# VCF, ready positions/BED or automatic SnpEff extraction skips table reading.
+NEUTRAL_READ_MARKER_TABLE = (not NEUTRAL_SUPPLIED_POOL and not NEUTRAL_EXTRACT_SNPEFF
+                             and NEUTRAL_INPUT_FORMAT == "table")
+NEUTRAL_MARKERS = (f"{NEUTRAL_DIR}/markers.tsv" if NEUTRAL_READ_MARKER_TABLE or NEUTRAL_EXTRACT_SNPEFF
                    else NEUTRAL_MARKER_SOURCE)
-NEUTRAL_MARKERS_FORMAT = "normalized" if NEUTRAL_READ_MARKER_TABLE else NEUTRAL_INPUT_FORMAT
+NEUTRAL_MARKERS_FORMAT = ("normalized" if NEUTRAL_READ_MARKER_TABLE or NEUTRAL_EXTRACT_SNPEFF
+                          else NEUTRAL_INPUT_FORMAT)
 NEUTRAL_EXTREME_VALUE_PERCENTILES = ""
 if RUN_NEUTRAL_SIM:
     if not config.get("calc_gen_diversity_stats"):
         raise ValueError("run_neutral_sim requires calc_gen_diversity_stats: TRUE")
-    if not NEUTRAL_SUPPLIED_POOL and not NEUTRAL_MARKER_SOURCE:
-        raise ValueError("Set markers_file or neutral_vcf before running neutral simulations")
+    if not NEUTRAL_SUPPLIED_POOL and not NEUTRAL_MARKER_SOURCE and not NEUTRAL_EXTRACT_SNPEFF:
+        raise ValueError("Set markers_file or neutral_vcf before running neutral simulations, "
+                         "or use vcf_annotation_format: snpeff for automatic intergenic extraction")
     if int(config.get("technical_replicates", 100)) < 1:
         raise ValueError("technical_replicates must be positive")
     if not 0 < float(config.get("min_valid_fraction", 0.9)) <= 1:
@@ -152,7 +158,6 @@ if RUN_NEUTRAL_SIM:
     if len(set(_extreme_value_percentiles)) != len(_extreme_value_percentiles):
         raise ValueError("extreme_value_percentiles must be unique to six decimal places")
     NEUTRAL_EXTREME_VALUE_PERCENTILES = ",".join(f"{value:.6f}".rstrip("0").rstrip(".") for value in _extreme_value_percentiles)
-
 
 def neutral_normalization_options():
     options = {
@@ -307,6 +312,9 @@ if GENE_LIST_FILE:
     gene_list_source = "bed" if GENE_LIST_FILE.lower().endswith(".bed") else "txt"
 elif GENES_INLINE:
     gene_list_source = "array"
+elif VCF_ANNOTATION_FORMAT == "snpeff":
+    GENE_LIST_FILE = os.path.join(os.path.dirname(config["input_vcf"]) or ".", "unique_genes.txt")
+    gene_list_source = "txt"
 else:
     raise ValueError(
         "No genes to run - set config['gene_list_file'] (a .bed, or a text file with one "
@@ -375,12 +383,13 @@ if LIST_BED is not None:
 else:
     CHROM_SOURCE = config.get("gene_chrom_file")
     if not CHROM_SOURCE:
-        raise ValueError(
-            "gene_chrom_file is required for a txt gene list (or the inline 'genes' list) "
-            "together with vcf_annotation_format: snpeff - build it with "
-            "code/build_gene_chrom_map.py. With a BED gene list the chromosomes are read from "
-            "the BED instead, and it can be left out."
-        )
+        # raise ValueError(
+        #     "gene_chrom_file is required for a txt gene list (or the inline 'genes' list) "
+        #     "together with vcf_annotation_format: snpeff - build it with "
+        #     "code/build_gene_chrom_map.py. With a BED gene list the chromosomes are read from "
+        #     "the BED instead, and it can be left out."
+        # )
+        CHROM_SOURCE = os.path.join(os.path.dirname(config["input_vcf"]) or ".", "gene_chrom.tsv")
     with open(CHROM_SOURCE) as f:
         for line in f:
             line = line.strip()
@@ -428,14 +437,20 @@ if GENE_SCOPE != "all" and VCF_ANNOTATION_FORMAT == "bed":
     )
 
 
-# ---- Genetic diversity statistic (window_gd(stat = ...)) ----
+# ---- Genetic diversity statistic ----
 # The Rmd validates gd_stat again 
-# Matched case-insensitively and mapped back to wingen's exact spelling, so "ho" in
-# config.yaml still reaches window_gd() as "Ho".
-GD_STATS = ("pi", "Ho", "biallelic_richness")
-GD_STAT = {s.lower(): s for s in GD_STATS}.get(str(config.get("gd_stat") or "pi").lower())
+# Matched case-insensitively to the names from wingen; "ho" in config.yaml still reaches window_gd() as "Ho". The Rmd dispatches the dosage metrics to window_general().
+GD_STATS = ("pi", "Ho", "biallelic_richness", "tajimas_d", "theta")
+GD_STAT_NAMES = {s.lower(): s for s in GD_STATS}
+GD_STAT_NAMES["watterson_theta"] = "theta"  # compatibility with earlier configurations
+GD_STAT = GD_STAT_NAMES.get(str(config.get("gd_stat") or "pi").lower())
 if GD_STAT is None:
     raise ValueError(f"gd_stat must be one of {', '.join(GD_STATS)}, got {config.get('gd_stat')!r}")
+
+GD_DOSAGE_MISSING_POLICY = str(config.get("gd_dosage_missing_policy") or "hierfstat").lower()
+if GD_DOSAGE_MISSING_POLICY not in ("complete_sites", "hierfstat"):
+    raise ValueError("gd_dosage_missing_policy must be complete_sites or hierfstat, "
+                     f"got {config.get('gd_dosage_missing_policy')!r}")
 
 def gd_stat_of_existing_results():
     """gd_stat recorded in the first gene_summary.json already under RESULTS_DIR, or None
@@ -633,6 +648,19 @@ def wingen_vcf_input(wildcards):
         return f"{RESULTS_DIR}/temp/filtered_vcf/{wildcards.chrom}/{wildcards.gene}_{GENE_SCOPE}.vcf.gz"
     return f"{RESULTS_DIR}/temp/filtered_vcf/{wildcards.chrom}/{wildcards.gene}_filtered.vcf.gz"
 
+if RUN_NEUTRAL_SIM and NEUTRAL_EXTRACT_SNPEFF:
+    rule extract_neutral_markers_snpeff:
+        input:
+            vcf=config["input_vcf"],
+            script="code/snpeff_vcf_create_neutral_marker_file.sh",
+        output:
+            markers=NEUTRAL_MARKERS,
+        container:
+            CONTAINER
+        resources:
+            mem_mb=1000,
+        shell:
+            "bash {input.script:q} {input.vcf:q} {output.markers:q}"
 
 if RUN_NEUTRAL_SIM and NEUTRAL_READ_MARKER_TABLE:
     rule normalize_neutral_markers:
@@ -657,20 +685,42 @@ if RUN_NEUTRAL_SIM and not NEUTRAL_SUPPLIED_POOL:
             helper="code/3_neutral_simulation_subsets.py",
         output:
             pool=NEUTRAL_POOL,
-            index=f"{NEUTRAL_POOL}.csi",
             target_markers=f"{NEUTRAL_DIR}/target_markers.tsv",
         params:
             markers_format=NEUTRAL_MARKERS_FORMAT,
         container:
             CONTAINER
-        threads: 2
+        benchmark:
+            f"{RESULTS_DIR}/benchmarks/neutral_pool.tsv"
+        threads: 8
         resources:
-            mem_mb=2000,
+            mem_mb=8000,
         shell:
             """
-            bash {input.script:q} pool --vcf {input.vcf:q} --markers {input.markers:q} \
+            bash {input.script:q} extract-pool --vcf {input.vcf:q} --markers {input.markers:q} \
                 --output {output.pool:q} --target-markers-output {output.target_markers:q} \
                 --markers-format {params.markers_format:q} --threads {threads}
+            """
+
+    rule validate_neutral_pool:
+        input:
+            pool=NEUTRAL_POOL,
+            markers=f"{NEUTRAL_DIR}/target_markers.tsv",
+            script="code/2_neutral_simulation_vcfs.sh",
+            helper="code/3_neutral_simulation_subsets.py",
+        output:
+            index=NEUTRAL_POOL_INDEX,
+        container:
+            CONTAINER
+        benchmark:
+            f"{RESULTS_DIR}/benchmarks/neutral_pool_validation.tsv"
+        threads: 2
+        resources:
+            mem_mb=8000,
+        shell:
+            """
+            bash {input.script:q} validate-pool --vcf {input.pool:q} --markers {input.markers:q} \
+                --index-output {output.index:q} --threads {threads}
             """
 
 if RUN_NEUTRAL_SIM and NEUTRAL_SUPPLIED_POOL:
@@ -825,6 +875,7 @@ rule run_wingen_report:
         calc_gen_diversity_stats=config["calc_gen_diversity_stats"],
         use_copernicus_marine=config["use_copernicus_marine"],
         gd_stat=GD_STAT,
+        gd_dosage_missing_policy=GD_DOSAGE_MISSING_POLICY,
         gd_label=config.get("gd_label", ""),
         gd_label_short=config.get("gd_label_short", ""),
         lat_min=config.get("lat_min", ""),
@@ -904,7 +955,9 @@ rule run_wingen_report:
         calc_gen_diversity_stats={params.calc_gen_diversity_stats} \
         USE_COPERNICUS_MARINE={params.use_copernicus_marine} \
         RUN_NEUTRAL_SIM={params.run_neutral_sim} \
+        GENE_CATALOG_RUN=TRUE \
         GD_STAT={params.gd_stat:q} \
+        GD_DOSAGE_MISSING_POLICY={params.gd_dosage_missing_policy:q} \
         GD_LABEL={params.gd_label:q} \
         GD_LABEL_SHORT={params.gd_label_short:q} \
         LAT_MIN={params.lat_min} \
@@ -920,8 +973,12 @@ rule run_wingen_report:
         NEUTRAL_PREPARED_MANIFEST={params.neutral_prepared_manifest_abs:q} \
         NEUTRAL_EXTREME_VALUE_PERCENTILES={params.neutral_extreme_value_percentiles:q} \
         {params.wingen_env} \
-        Rscript -e "rmarkdown::render('{params.rmd_abs}', run_pandoc=FALSE, intermediates_dir='{params.outdir_abs}/.render_{wildcards.gene}')"
-
+        Rscript -e "
+        future::plan(future::multisession, workers = {threads})
+        message('[wingen] future workers: ', future::nbrOfWorkers())
+        rmarkdown::render('{params.rmd_abs}', run_pandoc=FALSE, intermediates_dir='{params.outdir_abs}/.render_{wildcards.gene}')
+        future::plan(future::sequential)
+        " 2>&1 | gawk 'BEGIN {{ RS="\\r|\\n" }} {{ sub(/^ *Progress: [ ─-]*100%/, ""); if (length($0)) {{ print; fflush() }} }}'
         rm -rf {params.outdir_abs}/.render_{wildcards.gene}
 
         mkdir -p "$(dirname {output.done})"

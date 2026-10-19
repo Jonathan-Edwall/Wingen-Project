@@ -1,7 +1,7 @@
 ---
 title: "Wingen Genetic Diversity Map"
 output: html_document
-date: "2026-09-27"
+date: "2026-10-09"
 ---
 # Preparation
 ```{r setup, echo = FALSE, results = 'hide', warning = FALSE}
@@ -48,6 +48,10 @@ if (!file.exists(input_coordinate_file_path)) {
 study_species <- Sys.getenv("study_species", unset = "Herring_SECD") # dataset_species_name
 
 vcf_filter_value <- Sys.getenv("vcf_filter_value", unset = "") # contains gene name/CHR region etc.
+
+# Snakemake flag so its expected gene-ID filenames stay unchanged.
+# Direct Rmd runs instead use the full, metric-specific output prefix for summaries.
+gene_catalog_run <- isTRUE(as.logical(Sys.getenv("GENE_CATALOG_RUN", unset = "FALSE")))
 
 if (Sys.getenv("wingen_output_dir") != "") {
   output_dir <- Sys.getenv("wingen_output_dir")
@@ -103,23 +107,31 @@ resolution_m <- as.numeric(Sys.getenv("RESOLUTION_KM", unset = 2.5)) * 1e3 # To-
 
 
 ######### Genetic diversity statistic (window_gd(stat = ...)) #########
-# Which statistic window_gd() maps: "pi", "Ho" or "biallelic_richness", unset falls back to "pi"
+# Which genetic diversity metric window_gd() (Or window_general()) maps (default pi): pi, Ho and biallelic_richness use window_gd(); tajimas_d and theta use window_general() with a dosage matrix.
 #   gd_stat        - Decides what is computed and is the source of gd_key below
 #   gd_label       - long display text: plot titles (Also used as the heading of gene_catalog.html (GD_LABEL))
 #   gd_label_short - short display text: colour-bar/legend titles (Also used as the column headers of gene_catalog.html (GD_LABEL_SHORT))
-# gd_label & gd_label_short are display text only and is what ends up in a file name or a field name.
+# gd_label & gd_label_short are display text only; filenames and field names use gd_key (lowercased gs_stat).
 # PNG names, the gene_summary.json keys and so, downstream, the TSV headers is built from gd_key instead
 # Note: Comments further talking about "pi" actually references "the chosen statistic" (gd_stat) (with one exception where pi is used as a constant)
 GD_STAT_DEFAULTS <- list(
   pi                 = list(label = "Nucleotide diversity (\u03c0)", short = "\u03c0"),
   Ho                 = list(label = "Observed heterozygosity (Ho)", short = "Ho"),
-  biallelic_richness = list(label = "Allelic richness (biallelic)",  short = "AR")
+  biallelic_richness = list(label = "Allelic richness (biallelic)",  short = "AR"),
+  tajimas_d = list(label = "Tajima's D",  short = "D"),
+  theta = list(label = "Watterson's theta (\u03b8)",  short = "\u03b8")
 )
+# Display labels can contain UTF-8 symbols (pi/theta); the metric keys themselves
+# are ASCII and use ordinary Sys.getenv below. This helper does not map symbols
+# to statistic names or affect the estimator.
 getenv_utf8 <- function(name) { x <- Sys.getenv(name, unset = ""); Encoding(x) <- "UTF-8"; x }
 
-gd_stat_requested <- getenv_utf8("GD_STAT")
+gd_stat_requested <- Sys.getenv("GD_STAT", unset = "tajimas_d") # Edit unset for a standalone run; GD_STAT takes precedence.
 if (!nzchar(gd_stat_requested)) gd_stat_requested <- "pi"
-# case-insensitive, mapped back to wingen's exact spelling ("ho" -> "Ho")
+# Accept the previous spelling, but always name new outputs theta.
+if (tolower(gd_stat_requested) == "watterson_theta") gd_stat_requested <- "theta"
+# Case-insensitive, mapped back to Wingen's exact spelling ("ho" -> "Ho").
+
 gd_stat <- names(GD_STAT_DEFAULTS)[match(tolower(gd_stat_requested), tolower(names(GD_STAT_DEFAULTS)))]
 if (is.na(gd_stat)) {
   stop("GD_STAT (gd_stat in config.yaml) must be one of: ", paste(names(GD_STAT_DEFAULTS), collapse = ", "),
@@ -129,7 +141,16 @@ gd_label <- getenv_utf8("GD_LABEL")
 if (!nzchar(gd_label)) gd_label <- GD_STAT_DEFAULTS[[gd_stat]]$label
 gd_label_short <- getenv_utf8("GD_LABEL_SHORT")
 if (!nzchar(gd_label_short)) gd_label_short <- GD_STAT_DEFAULTS[[gd_stat]]$short
-gd_key <- tolower(gd_stat)   # "pi", "ho", "biallelic_richness": file names and gene_summary.json field names
+gd_key <- tolower(gd_stat)   # file names and gene_summary.json field names
+
+gd_uses_general <- gd_stat %in% c("tajimas_d", "theta")
+# Missing data means an individual's genotype is unknown at a marker (NA in one matrix cell).
+# The default/native hierfstat handling keeps the other individuals' calls.
+# Optional complete_sites drops a whole marker if ANY selected individual has NA there, separately for each window/location/rarefaction draw. Only D/theta use this option; pi keeps Wingen's existing handling. Theta/D's harmonic constants use 2*nrow(x), whereas pi corrects sample size separately at each marker.
+gd_dosage_missing_policy <- tolower(Sys.getenv("GD_DOSAGE_MISSING_POLICY", unset = "hierfstat"))
+if (!gd_dosage_missing_policy %in% c("complete_sites", "hierfstat")) {
+  stop("GD_DOSAGE_MISSING_POLICY must be complete_sites or hierfstat")
+}
 
 
 ######### Defining Window settings for window_gd() #########
@@ -148,9 +169,8 @@ use_rarify <- as.logical(Sys.getenv("USE_RARIFY", unset = FALSE)) # [Default: FA
 # use_rarify <- TRUE
 rarify_n <- as.numeric(Sys.getenv("RARIFY_N", unset = min_n_samples_per_calc)) # rarify_n: If rarify = TRUE, number of points to use for rarefaction (defaults to min_n). [Default: min_n]
 # rarify_n <- 4
-rarify_n_iterations <- as.numeric(Sys.getenv("RARIFY_N_ITERATIONS", unset = 5)) # If rarify = TRUE, number of iterations to use for rarefaction (defaults to 5). Can also be set to "all" to use all possible combinations of samples of size rarify_n within the window. [Default: 5]
-# rarify_n_iterations <-"all" # use all possible combinations of samples of size rarify_n within the window
-
+rarify_n_iterations <- Sys.getenv("RARIFY_N_ITERATIONS", unset = "5") # If rarify = TRUE: Number of iterations to use for rarefaction (defaults to 5). Can also be set to "all" to use all possible combinations of samples of size rarify_n within the window.
+rarify_n_iterations <- if (tolower(rarify_n_iterations) == "all") "all" else as.numeric(rarify_n_iterations) # Converting non-all input to numeric.
 
 ######### Reproducibility + optional outputs (all set in config.yaml -> wingen_params) #########
 # SEED: window_gd() rarefies by drawing random subsets of individuals (rarify_n individuals x rarify_n_iterations draws per
@@ -164,10 +184,8 @@ seed_value <- as.integer(Sys.getenv("SEED", unset = 42))
 #   WRITE_PER_LOCATION_TSV - {gene}_per_location.tsv next to the plots: one row per location (audit trail)
 #   WRITE_LOCATION_STATS   - n, signed r, 95% CI, p and Spearman rho of each location-level fit, added to the JSON
 #   WRITE_RUN_SETTINGS     - the settings that produced this gene's numbers, added to the JSON
-# LOCATION_RARIFY: whether the per-location values (the "Location" columns, and everything fitted against the
-# environment at location level) are rarefied to rarify_n individuals like the window values are. "auto" (default) = only
-# for biallelic_richness, which depends on sample size; pi and Ho are computed from all individuals, which keeps them
-# deterministic and as precise as the data allow. TRUE/FALSE force it either way. See section 4 for the details.
+# LOCATION_RARIFY: whether the per-location values (the "Location" columns, and everything fitted against the environment at location level) are rarefied to rarify_n individuals like the window values are. "auto" (default) = only for biallelic_richness, which depends on sample size.
+# Other metrics uses all individuals by default. TRUE/FALSE force it either way. See section 4 for the details.
 location_rarify_setting <- tolower(Sys.getenv("LOCATION_RARIFY", unset = "auto"))
 location_rarify <- switch(location_rarify_setting,
   auto    = use_rarify && gd_stat == "biallelic_richness",
@@ -383,14 +401,16 @@ region_tag <- if (ROI_ACTIVE) "_subpop_" else "_"
 # region_tag <- if (ROI_ACTIVE) "_subpop_" else "_"
 #####################################################################
 ######### Temporary code to easily run zostera marina dataset #########
-# input_vcf_file <- file.path(github_repository_path, "data/raw/zostera_marina/zostera_monitoring_230504_2138_SNPs_all_no_replicates.vcf")
-# input_coordinate_file_path <- file.path(github_repository_path,"data/raw/zostera_marina/individuals_w_mapped_geographical_coordinates_pop_info.csv")
-# # SPHERICAL_GRID <- TRUE
-# MIN_SAMPLE_COUNT_MODE <- "none"
-# minval_sample_count <- 0
-# MAX_INTERP_DIST_SCALE <- 1.5
-# compute_genetic_diversity_statistics <- TRUE
-# study_species <- paste0("zostera_marina")
+if (!gene_catalog_run) {
+  input_vcf_file <- file.path(github_repository_path, "data/raw/zostera_marina/zostera_monitoring_230504_2138_SNPs_all_no_replicates.vcf")
+  input_coordinate_file_path <- file.path(github_repository_path,"data/raw/zostera_marina/individuals_w_mapped_geographical_coordinates_pop_info.csv")
+  # SPHERICAL_GRID <- TRUE
+  MIN_SAMPLE_COUNT_MODE <- "none"
+  minval_sample_count <- 0
+  MAX_INTERP_DIST_SCALE <- 1.5
+  compute_genetic_diversity_statistics <- TRUE
+  study_species <- paste0("zostera_marina")
+}
 
 # # Ries et al mimic with masking polygon:
 # MAX_INTERP_DIST_MODE <- "none"
@@ -434,100 +454,40 @@ region_tag <- if (ROI_ACTIVE) "_subpop_" else "_"
 # # SPHERICAL_GRID <- TRUE
 ######################################################################
 
-if (use_weighted_kriging){
-  weighted_kriging_text <- "_wkriging"
-} else {
-  weighted_kriging_text <- ""
-}
+# Shared filter settings for filenames and plot titles. Empty gene_scope means all.
+filter_active <- Sys.getenv("vcf_filter_mode") != "" && Sys.getenv("vcf_filter_value") != ""
+gene_scope_value <- Sys.getenv("gene_scope", unset = "all")
+if (gene_scope_value == "") gene_scope_value <- "all"
 
-if (use_rarify){
-  rarify_window_calc_text <- paste0("_rarify_n",rarify_n,"_it",rarify_n_iterations)
-} else {
-  rarify_window_calc_text <- ""
-}
-
-if (!is.null(ctr_disagg)) {
-  coords_to_raster_disagg_text <-  paste0("ctr_disagg",ctr_disagg,"_")
-} else {
-  coords_to_raster_disagg_text <- ""
-}
-# File prefix text describing the plot settings + resolution
-if (SPHERICAL_GRID){
-  plot_settings_text <- paste0("spherical_palet_",HEATMAP_COLOR_PALETTE,"_",MAX_INTERP_DIST_SCALE,"_scale_", signif(resolution_m /1e3, digits=2),"km_res")
-} else {
-  plot_settings_text <- paste0("palet_",HEATMAP_COLOR_PALETTE,"_",MAX_INTERP_DIST_SCALE,"_scale_", signif(resolution_m /1e3, digits=2),"km_res")
-}
-
-
-if (compute_genetic_diversity_statistics == TRUE) {
-  date_txt <-"" # Skipping dating for gene catalog runs
-} else {
-  date_txt <- paste0(format(Sys.Date(), "%Y-%m-%d"),"_")
- }
-
-
-# Define naming prefix of the output files
-if (Sys.getenv("vcf_filter_mode") != "" & Sys.getenv("vcf_filter_value") != "" & Sys.getenv("gene_scope") != "all") {
-  
-  output_prefix <- paste0(
-    date_txt,
-    study_species,
-    "_", Sys.getenv("vcf_filter_value"),
-    "_", Sys.getenv("gene_scope"),
-    region_tag,
-    plot_settings_text,
-    coords_to_raster_disagg_text,
-    "wdim", wdim_value,
-    "_fact", fact_value,
-    "_minn",min_n_samples_per_calc,
-    rarify_window_calc_text,
-    "_disagg_grd", grd_disagg_factor,
-    weighted_kriging_text,
-    "_nmax", nmax_neighbours,
-    "_minval", minval_sample_count,    
-    "_"
-  )
-  
-} else if (Sys.getenv("vcf_filter_mode") != "" & Sys.getenv("vcf_filter_value") != "") {
-  
-  output_prefix <- paste0(
-    date_txt,
-    study_species,
-    "_", Sys.getenv("vcf_filter_value"),
-    region_tag,
-    plot_settings_text,
-    coords_to_raster_disagg_text,
-    "wdim", wdim_value,
-    "_fact", fact_value,
-    "_minn",min_n_samples_per_calc,
-    rarify_window_calc_text,
-    "_disagg_grd", grd_disagg_factor,
-    weighted_kriging_text,
-    "_nmax", nmax_neighbours,
-    "_minval", minval_sample_count,    
-    "_"
-  )
-  
-} else {
-  
-  output_prefix <- paste0(
-    date_txt,
-    study_species,
-    region_tag,
-    plot_settings_text,
-    coords_to_raster_disagg_text,
-    "wdim", wdim_value,
-    "_fact", fact_value,
-    "_minn",min_n_samples_per_calc,
-    rarify_window_calc_text,
-    "_disagg_grd", grd_disagg_factor,
-    weighted_kriging_text,
-    "_nmax", nmax_neighbours,
-    "_minval", minval_sample_count,
-    "_"
-  
-  )
-}
+# Preserve the original, readable filename labels and all encoded setting values.
+# Keep species and filter IDs intact, including their internal underscores.
+# Every plot uses the same metric-specific prefix. Join it once so the separator before the metric is a single underscore rather than the former double one.
+filename_parts <- c(
+  if (!gene_catalog_run) format(Sys.Date(), "%Y-%m-%d"),
+  study_species,
+  if (filter_active) Sys.getenv("vcf_filter_value"),
+  if (filter_active && gene_scope_value != "all") gene_scope_value,
+  if (ROI_ACTIVE) "subpop",
+  if (SPHERICAL_GRID) "spherical",
+  paste0("palet_", HEATMAP_COLOR_PALETTE, "_", MAX_INTERP_DIST_SCALE,
+         "_scale_", signif(resolution_m / 1e3, digits = 2), "km_res",
+         if (!is.null(ctr_disagg)) paste0("ctr_disagg", ctr_disagg, "_") else "",
+         "wdim", wdim_value),
+  paste0("fact", fact_value),
+  paste0("minn", min_n_samples_per_calc),
+  if (use_rarify) paste0("rarify_n", rarify_n),
+  if (use_rarify) paste0("it", rarify_n_iterations),
+  paste0("disagg_grd", grd_disagg_factor),
+  if (use_weighted_kriging) "wkriging",
+  paste0("nmax", nmax_neighbours),
+  paste0("minval", minval_sample_count),
+  gd_key
+)
+output_prefix <- paste0(paste(filename_parts, collapse = "_"), "_")
+# Gene catalogs expect {gene}_gene_summary.json / {gene}_per_location.tsv and
+# enforce a separate results_dir for each metric. Standalone runs need their
+# own metric-specific stem, even when vcf_filter_value is empty.
+statistics_output_prefix <- if (gene_catalog_run) vcf_filter_value else sub("_$", "", output_prefix)
 
 
 # ---------------------------------------------------------------------------
@@ -590,8 +550,7 @@ One script, two modes, controlled entirely by LAT/LON_MIN/MAX above:
   - all four NULL  -> full, unfiltered dataset
   - all four set   -> restricted to that lat/long box (a "subpopulation")
 Everything from section 1b onward is unchanged either way - it already
-operates generically on vcf/coords_file_df/sample_order, so restricting
-those three objects once, early (section 1.2), is enough.
+operates generically on vcf/coords_file_df/sample_order, so restricting those three objects once, early (section 1.2), is enough.
 
 Two automatic masks are used for display:
   minval_sample_count - cells with too few real samples nearby
@@ -615,23 +574,29 @@ library(lubridate)         # month() extraction for the winter/summer split - se
 # Location estimators used by the observed gene analysis and, when requested,
 # by neutral subsets. These are available regardless of RUN_NEUTRAL_SIM.
 make_location_draws <- function(groups, samples, min_n, rarefy, rarefy_n, iterations, seed) {
+  all_draws <- identical(iterations, "all")
   if (length(seed) != 1L || !is.finite(seed) || seed < 0 || seed > .Machine$integer.max ||
-      min_n < 1 || rarefy_n < 1 || iterations < 1) stop("Invalid location sampling settings")
+      min_n < 1 || rarefy_n < 1 || (!all_draws && iterations < 1)) stop("Invalid location sampling settings")
   set.seed(seed)
   lapply(groups, function(ids) {
     ids <- intersect(ids, samples)
     if (length(ids) < max(min_n, 2)) return(list())
     if (!rarefy || length(ids) <= rarefy_n) return(list(ids))
+    # "all" means every combination here as well as in Wingen's windows.
+    # The same list is reused for the observed target and all neutral subsets.
+    if (all_draws) return(utils::combn(ids, rarefy_n, simplify = FALSE))
     replicate(iterations, sample(ids, rarefy_n), simplify = FALSE)
   })
 }
 
-location_gd_from_draws <- function(x, draws, statistic) {
+location_gd_from_draws <- function(x, draws, statistic, na.rm = FALSE) {
   vapply(draws, function(location) {
     if (!length(location)) return(NA_real_)
     values <- vapply(location, function(ids) statistic(x[ids, , drop = FALSE]), numeric(1))
-    # Retain the existing policy: a failed draw makes that location unavailable.
-    mean(values)
+    # For D/theta, na.rm=TRUE matches Wingen's default mean across rarefaction
+    # draws. The existing three metrics retain their previous location policy.
+    value <- mean(values, na.rm = na.rm)
+    if (is.nan(value)) NA_real_ else value
   }, numeric(1))
 }
 
@@ -651,11 +616,39 @@ location_association <- function(y, x) {
   out
 }
 ```
+# Genetic Diversity Metric Functions
+```{r genetic_metric_functions, include=FALSE}
+# One visible switch selects the same estimator for observed locations, neutral
+# locations and the two custom window metrics. Metric/policy validation is done
+# once in the settings above; genotype validation is done during VCF conversion.
+gd_of <- function(x) {
+  # Wingen drops matrix dimensions when a selected subset has only one marker.
+  x <- as.matrix(x)
+  input_n_sites <- ncol(x)
+  if (gd_stat %in% c("tajimas_d", "theta")) {
+    if (nrow(x) < 2L || input_n_sites == 0L || all(is.na(x))) return(NA_real_)
+    if (gd_dosage_missing_policy == "complete_sites") {
+      x <- x[, colSums(is.na(x)) == 0L, drop = FALSE]
+      if (ncol(x) == 0L) return(NA_real_)
+    }
+  }
+  # L is the ORIGINAL number of input marker columns, including invariant and
+  # optionally excluded columns, as in the existing pi convention. This is per
+  # input marker, not per surveyed nucleotide. D has no L argument.
+  value <- switch(gd_stat,
+    pi = hierfstat::pi.dosage(x, L = input_n_sites),
+    Ho = gd_subset_fun(x),
+    biallelic_richness = gd_subset_fun(x, rarify_alleles = TRUE),
+    tajimas_d = hierfstat::TajimaD.dosage(x),
+    theta = hierfstat::theta.Watt.dosage(x, L = input_n_sites))
+  # D is undefined when no segregating site remains; represent NaN/Inf as NA.
+  if (gd_stat %in% c("tajimas_d", "theta") && !is.finite(value)) return(NA_real_)
+  unname(value)
+}
+```
 ```{r 1.0 gd_stat validation}
-# Per-population counterpart of the chosen statistic, for the gene summary (section 7). pi goes straight through
-# hierfstat::pi.dosage() there; Ho and biallelic_richness reuse wingen's own (unexported) per-subset functions,
-# so a population's value is defined exactly like a window's. Looked up here, at the start of the run, so a
-# wingen without them stops it here.
+# Ho and biallelic_richness reuse Wingen's unexported per-subset functions.
+# pi, Tajima's D and Watterson's theta use hierfstat's exported dosage functions.
 gd_wingen_internal <- function(fn_name) {
   tryCatch(utils::getFromNamespace(fn_name, "wingen"), error = function(e) {
     wingen_version <- tryCatch(as.character(utils::packageVersion("wingen")), error = function(e) "(not installed)")
@@ -663,13 +656,48 @@ gd_wingen_internal <- function(fn_name) {
          " does not have (written against 2.2.0). Use gd_stat: pi, or install wingen 2.2.0.", call. = FALSE)
   })
 }
+
 gd_subset_fun <- switch(gd_stat,
-  pi                 = NULL,
   Ho                 = gd_wingen_internal("calc_mean_het"),
-  biallelic_richness = gd_wingen_internal("calc_mean_biar"))
+  biallelic_richness = gd_wingen_internal("calc_mean_biar"), NULL)
 gd_het_fun <- if (gd_stat == "Ho") gd_wingen_internal("vcf_to_het") else NULL
+# A named number tells Wingen what to call the custom-statistic raster layer.
+# This wrapper changes only its name, not its value or calculation.
+gd_window_fun <- function(x) setNames(gd_of(x), gd_stat)
 
-
+gd_input_from_vcf <- function(vcf, statistic, samples = colnames(vcf@gt)[-1], het_fun = gd_het_fun) {
+  vcf_samples <- colnames(vcf@gt)[-1]
+  if (anyDuplicated(vcf_samples) || !identical(vcf_samples, samples)) {
+    stop("VCF individuals must have unique IDs and be in the requested sample order")
+  }
+  if (statistic %in% c("tajimas_d", "theta")) {
+    # The 0/1/2 dosage implementation represents ONE alternate allele at a
+    # diploid marker; multiallelic or haploid calls need a different encoding.
+    if (!all(vcfR::is.biallelic(vcf))) stop("This dosage workflow requires biallelic markers for Tajima's D/theta")
+    gt <- vcfR::extract.gt(vcf, element = "GT")
+    if (any(!is.na(gt) & !grepl("^[01.][/|][01.]$", gt))) {
+      stop("Tajima's D and Watterson's theta require diploid genotypes")
+    }
+  }
+  # Both matrices have individuals in rows and markers in columns, in VCF order.
+  if (statistic == "Ho") {
+    # Heterozygosity: 0/FALSE = homozygous, 1/TRUE = heterozygous, NA = missing.
+    x <- het_fun(vcf)
+  } else {
+    # Dosage: 0 = ref/ref, 1 = ref/alt, 2 = alt/alt, NA = missing genotype.
+    x <- wingen::vcf_to_dosage(vcf)
+  }
+  # Keep IDs attached to the correct matrix rows. A changed shape/order must
+  # stop the run instead of silently pairing genotypes with another location.
+  if (nrow(x) != length(samples) || ncol(x) != nrow(vcf@fix)) {
+    stop("Genotype matrix dimensions differ from VCF samples/sites")
+  }
+  if (!is.null(rownames(x)) && !identical(rownames(x), samples)) {
+    stop("Genotype conversion changed the individual order")
+  }
+  rownames(x) <- samples
+  x
+}
 ```
 ## 1.1 Loading the Datasets
 ### 1.1.1 Load VCF
@@ -884,20 +912,102 @@ map_type_world_map <- "land" # ne_download(type): type of natural earth file to 
 # is per-chromosome, see the Snakefile's outdir_abs), so it's shared by
 # every chromosome, not just this one.
 #
-# ne_download() itself has no built-in "skip if already downloaded"
-# behavior - destdir only says where to SAVE, not to check first (confirmed
-# against its own docs) - so the skip has to happen here: try ne_load()
-# from the cache first, and only fall through to ne_download() (which
-# writes to destdir, making it tomorrow's cache) if that read fails, e.g.
-# because nothing has been cached yet.
+# Share completed Natural Earth vector files between reports. Each layer gets
+# its own directory lock, and downloads are written in a private directory on
+# the cache filesystem before a validated GeoPackage is published by rename.
 ne_cache_dir <- Sys.getenv("NE_CACHE_DIR", unset = file.path(dirname(output_dir), "ne_cache"))
 dir.create(ne_cache_dir, showWarnings = FALSE, recursive = TRUE)
 
-ne_get <- function(type, category, scale, returnclass) {
+ne_get <- function(type, category, scale, returnclass,
+                   lock_timeout = 600, poll_interval = 0.25) {
+  scales <- c(small = 110L, medium = 50L, large = 10L)
+  scale_text <- as.character(scale)
+  if (length(scale_text) != 1L || is.na(scale_text)) stop("Natural Earth scale must be one value.")
+  scale_number <- if (scale_text %in% names(scales)) unname(scales[[scale_text]]) else suppressWarnings(as.numeric(scale_text))
+  if (is.na(scale_number) || !scale_number %in% c(10L, 50L, 110L)) {
+    stop("Natural Earth scale must be 10, 50, 110, small, medium, or large.")
+  }
+  # These are the physical vector layers used by this report. Keeping their
+  # filenames explicit avoids relying on private rnaturalearth functions.
+  if (!identical(category, "physical") || length(type) != 1L || !type %in% c("land", "ocean")) {
+    stop("This report's Natural Earth cache supports physical land and ocean vectors.")
+  }
+  if (!is.numeric(lock_timeout) || length(lock_timeout) != 1L || !is.finite(lock_timeout) || lock_timeout < 0 ||
+      !is.numeric(poll_interval) || length(poll_interval) != 1L || !is.finite(poll_interval) || poll_interval <= 0) {
+    stop("Natural Earth lock_timeout must be nonnegative and poll_interval must be positive.")
+  }
+  dir.create(ne_cache_dir, showWarnings = FALSE, recursive = TRUE)
+  if (!dir.exists(ne_cache_dir)) stop("Cannot create Natural Earth cache: ", ne_cache_dir)
+  cache_dir <- normalizePath(ne_cache_dir, mustWork = TRUE)
+  file_name <- sprintf("ne_%dm_%s.gpkg", scale_number, type)
+  destination <- file.path(cache_dir, file_name)
+  load_from <- function(directory) {
+    ne_load(type = type, category = category, scale = scale_number,
+            destdir = directory, returnclass = returnclass)
+  }
+  cached <- tryCatch(suppressWarnings(load_from(cache_dir)), error = function(e) NULL)
+  if (!is.null(cached)) return(cached)
+
+  lock_dir <- paste0(destination, ".lock")
+  started <- proc.time()[["elapsed"]]
+  repeat {
+    if (dir.create(lock_dir, showWarnings = FALSE)) break
+    if (proc.time()[["elapsed"]] - started >= lock_timeout) {
+      stop("Timed out waiting for Natural Earth cache lock: ", lock_dir,
+           ". Check the owner file and running jobs. If no job is using it, remove that lock directory and rerun.")
+    }
+    Sys.sleep(poll_interval)
+  }
+  owner_file <- file.path(lock_dir, basename(tempfile("owner-")))
   tryCatch(
-    ne_load(type = type, category = category, scale = scale, destdir = ne_cache_dir, returnclass = returnclass),
-    error = function(e) ne_download(type = type, category = category, scale = scale, destdir = ne_cache_dir, returnclass = returnclass)
+    writeLines(c(paste0("pid=", Sys.getpid()), paste0("host=", Sys.info()[["nodename"]]),
+                 paste0("started=", format(Sys.time(), tz = "UTC", usetz = TRUE))), owner_file),
+    error = function(e) {
+      # dir.create() just established our ownership; a failed marker write
+      # must release this newly created lock rather than leave a stale lock.
+      unlink(lock_dir, recursive = TRUE)
+      stop("Cannot record Natural Earth lock owner: ", conditionMessage(e))
+    }
   )
+  on.exit({
+    # Only release the lock if our unique ownership marker still exists.
+    if (file.exists(owner_file)) unlink(lock_dir, recursive = TRUE)
+  }, add = TRUE)
+
+  # Another report may have completed the layer while we waited for its lock.
+  cached <- tryCatch(suppressWarnings(load_from(cache_dir)), error = function(e) NULL)
+  if (!is.null(cached)) return(cached)
+
+  stage_dir <- tempfile(paste0(".", tools::file_path_sans_ext(file_name), "-"), tmpdir = cache_dir)
+  if (!dir.create(stage_dir)) stop("Cannot create private Natural Earth download directory: ", stage_dir)
+  on.exit(if (nzchar(stage_dir)) unlink(stage_dir, recursive = TRUE), add = TRUE)
+  message("Natural Earth: downloading ", file_name, " into a private cache directory.")
+  ne_download(type = type, category = category, scale = scale_number,
+              destdir = stage_dir, returnclass = returnclass, load = FALSE)
+  # load=FALSE and a new directory bypass rnaturalearth's reuse of an existing,
+  # potentially corrupt GeoPackage. Validate the completed file before publish.
+  invisible(load_from(stage_dir))
+  staged_file <- file.path(stage_dir, file_name)
+  if (!file.exists(staged_file)) stop("Natural Earth download did not create expected file: ", staged_file)
+  published <- suppressWarnings(file.rename(staged_file, destination))
+  if (!published && .Platform$OS.type == "windows" && file.exists(destination)) {
+    # Windows base R cannot rename over an existing file. Preserve the known
+    # unreadable destination inside our stage directory while replacing it.
+    backup <- file.path(stage_dir, "previous-unreadable.gpkg")
+    if (!file.rename(destination, backup)) stop("Cannot preserve unreadable Natural Earth file: ", destination)
+    published <- suppressWarnings(file.rename(staged_file, destination))
+    if (!published) {
+      if (!file.rename(backup, destination)) {
+        # Keep the owned stage directory when restoration fails so the prior
+        # file is recoverable; remove only our lock on exit.
+        stage_dir <- ""
+        stop("Natural Earth publish and restore failed. Previous file retained at: ", backup)
+      }
+    }
+  }
+  if (!published) stop("Cannot publish completed Natural Earth file: ", destination)
+  message("Natural Earth: published validated ", file_name, ".")
+  load_from(cache_dir)
 }
 # world_land <- ne_download(type = map_type_world_map, category = "physical", scale = world_map_scale, returnclass = "sf")
 world_land <- ne_get(type = map_type_world_map, category = "physical", scale = world_map_scale, returnclass = "sf")
@@ -1262,6 +1372,9 @@ if (RUN_NEUTRAL_SIM) {
     metadata$min_valid_fraction <- min_valid_fraction
     metadata$location_mask <- "observed_complete_cases_fixed_per_predictor"
     metadata$common_individual_draws <- TRUE
+    metadata$gd_stat <- gd_stat
+    metadata$gd_dosage_missing_policy <- if (gd_stat %in% c("tajimas_d", "theta"))
+      gd_dosage_missing_policy else NA_character_
     if (metadata$status != "ok") {
       # Replace stale replicate results on a rerun with an unavailable target.
       write.table(data.frame(variable = character(), replicate = integer(),
@@ -1301,11 +1414,12 @@ if (RUN_NEUTRAL_SIM) {
         stop("Neutral VCF sample IDs do not match the target")
       }
       pool_vcf <- pool_vcf[, c(1L, match(samples, pool_samples) + 1L)]
-      x <- if (gd_stat == "Ho") het_fun(pool_vcf) else wingen::vcf_to_dosage(pool_vcf)
+      # Conversion still uses het_fun ONLY for Ho; the converter's explicit if/else uses dosage for pi, richness, theta and D.
+      # The same checks and encoding are applied to observed and neutral VCFs after sample reordering.
+      x <- gd_input_from_vcf(pool_vcf, gd_stat, samples, het_fun)
       if (nrow(x) != length(samples) || ncol(x) != length(pool_indices)) {
         stop("Neutral genotype matrix dimensions differ from prepared VCF")
       }
-      rownames(x) <- samples
       x
     }
     null_gd <- matrix(NA_real_, nrow = length(observed), ncol = length(indices))
@@ -1315,7 +1429,8 @@ if (RUN_NEUTRAL_SIM) {
       if (length(entry$pool_indices) != metadata$n_variants) stop("Prepared replicate VCF has the wrong SNP count")
       i <- neutral_column_indices(indices[[b]], entry$pool_indices, metadata$n_variants, pool_n_matched)
       x <- read_matrix(entry$path, entry$pool_indices)
-      null_gd[, b] <- location_gd_from_draws(x[, i, drop = FALSE], draws, statistic)
+      null_gd[, b] <- location_gd_from_draws(x[, i, drop = FALSE], draws, statistic,
+        na.rm = gd_stat %in% c("tajimas_d", "theta"))
       rm(x)
     }
     comparison <- compare_neutral_locations(observed, predictors, null_gd, nrow(plan), min_valid_fraction,
@@ -1631,6 +1746,33 @@ if (USE_COPERNICUS_MARINE) {
     terra::rast(cache_path)
   }
 
+  # The package ignores ... when creating its file, so set the flag in a private
+  # copy of its writer. Installed package functions and precision stay unchanged.
+  write_env_netcdf4 <- local({
+    make_writer <- function(writer) {
+      count <- 0L
+      use_netcdf4 <- function(x) {
+        if (!is.call(x)) return(x)
+        if (identical(x[[1]], quote(ncdf4::nc_create))) {
+          x$force_v4 <- TRUE
+          count <<- count + 1L
+        }
+        for (i in seq_along(x)) {
+          if (!identical(x[[i]], quote(expr = ))) x[[i]] <- use_netcdf4(x[[i]])
+        }
+        x
+      }
+      body(writer) <- use_netcdf4(body(writer))
+      if (count != 1L) stop("Expected one ncdf4::nc_create call in the Copernicus writer; found ", count)
+      writer
+    }
+    writer <- NULL
+    function(raw, file) {
+      if (is.null(writer)) writer <<- make_writer(getExportedValue("CopernicusMarine", "cms_write_ncdf"))
+      writer(raw, file)
+    }
+  })
+
   # Retain monthly time steps so vector components can be combined before
   # temporal averaging. NetCDF preserves the timestamps for alignment.
   download_env_series <- function(product, layer, variable, years, vertical = env_verticalrange) {
@@ -1642,7 +1784,7 @@ if (USE_COPERNICUS_MARINE) {
       progress = FALSE
     )
     nc_tmp <- tempfile(fileext = ".nc")
-    cms_write_ncdf(raw, nc_tmp)
+    write_env_netcdf4(raw, nc_tmp)
     r <- terra::rast(nc_tmp)
     cat(layer, "/", variable, ": downloaded", terra::nlyr(r), "time step(s) - layer names:",
         paste(names(r), collapse = ", "), "\n")
@@ -1811,30 +1953,53 @@ if (USE_COPERNICUS_MARINE) {
   # <<< [fill-count]
   }
 ```
-# 3. (window_gd) Moving window - PI calculation
+# 3. Moving-window genetic diversity (window_gd / window_general)
 ```{r 3. window-gd}
 start_window_gd_time <- Sys.time()
-# window_gd(..., fact = fact_value) would rebuild its own working grid
-# internally via terra::aggregate(lyr, fact, fun = mean) - without
-# na.rm = TRUE. Since lyr is sea = 1 / land = NA, that means an
-# aggregated cell only survives as non-NA if ALL of its resolution_m
-# sub-cells are sea; a single land sub-cell nulls the whole block, and
-# any cell whose own aggregated value is NA is skipped entirely
-# (sample_count = NA, no window ever evaluated), regardless of real
-# samples sitting right there. Aggregating with na.rm = TRUE ourselves
-# first, then passing fact = 0 so window_gd() doesn't re-aggregate,
-# keeps the same window geometry while fixing which cells are eligible
-# to be evaluated at all.
+# window_gd(..., fact = fact_value) would rebuild its own working grid internally via terra::aggregate(lyr, fact, fun = mean), without na.rm = TRUE.
+# Since lyr is sea = 1 / land = NA, that means an aggregated cell only survives as non-NA if ALL of its resolution_m sub-cells are sea; a single land sub-cell nulls the whole block, and any cell whose own aggregated value is NA is skipped entirely (sample_count = NA, no window ever evaluated), regardless of real samples sitting right there.
+# By aggregating with na.rm = TRUE first, then passing fact = 0 so window_gd() doesn't re-aggregate, keeps the same window geometry while fixing which cells are eligible to be evaluated at all.
 
 lyr_agg <- terra::aggregate(lyr, fact = fact_value, fun = mean, na.rm = TRUE)
 # lyr = lyr_agg with fact = 0 is required together, and must NOT be changed independently, since window_gd(fact = 0) stops window_gd() from redoing the aggregation made in lyr_agg.
 # window_gd(fact) would otherwise rebuild its own working grid internally via terra::aggregate(lyr, fact, fun = mean), WITHOUT na.rm = TRUE.
 # Since lyr is sea = (1 / land) = NA, an aggregated cell would then only survive as non-NA if ALL of its fact_value^2 sub-cells are sea
-# => a single land sub-cell nulls the whole block, silently dropping coastal samples from ever getting a window evaluated, regardless of resolution_m (finer resolution
-# => more sub-cells per block
-# => MORE chances one clips land, not fewer).
+#    => a single land sub-cell nulls the whole block, silently dropping coastal samples from ever getting a window evaluated, regardless of resolution_m (finer resolution => more sub-cells per block
+#    => MORE chances one clips land, not fewer).
+
+# Wingen subsets x with x[sub, ] and drops dimensions for one individual.
+# Requiring at least two prevents a many-marker row being mistaken for a one-marker column by the custom dosage callback. The normal default is 2.
+if (gd_uses_general && (min_n_samples_per_calc < 2L || (use_rarify && rarify_n < 2L))) {
+  stop("D/theta windows require MIN_N_SAMPLES_PER_CALC >= 2 and, when rarefying, RARIFY_N >= 2")
+}
+
 set.seed(seed_value) # rarefaction inside window_gd() draws random individuals; a fixed seed (SEED in config.yaml) makes every re-run give the same window values
-wgd <- window_gd(vcf,
+
+# gd_uses_general <- TRUE
+if (gd_uses_general) {
+  # The implemented custom hierfstat statistics of tajimas_d (hierfstat::TajimaD.dosage) and theta (hierfstat::theta.Watt.dosage) uses a custom callback, so converting to individuals x markers is done explicitly.
+  # Unlike the window_gd branch, this creates dosage_matrix in our environment, which can be reused by the later location calculations.
+  dosage_matrix <- gd_input_from_vcf(vcf, gd_stat)
+  if (!identical(as.character(coords_file_df$`Sample ID`), rownames(dosage_matrix)) ||
+      nrow(dosage_matrix) != nrow(coords_sf_mollweide)) {
+    stop("Dosage rows and coordinate rows must have identical individual order")
+  }
+  wgd <- window_general(
+    x = dosage_matrix,
+    coords = coords_sf_mollweide,
+    lyr = lyr_agg,
+    stat = gd_window_fun,
+    wdim = wdim_value, # [Default: 3x3 window]
+    fact = 0, # must stay 0 (see comment above) [Default: 0]
+    rarify = use_rarify,
+    rarify_n = rarify_n, # rarify_n: If rarify = TRUE, number of points to use for rarefaction (defaults to min_n). [Default: 2]
+    rarify_nit	= rarify_n_iterations, # If rarify = TRUE, number of iterations to use for rarefaction (defaults to 5). Can also be set to "all" to use all possible combinations of samples of size rarify_n within the window. [Default: 5]
+    min_n = min_n_samples_per_calc
+    # fun is omitted: Wingen defaults to mean and averages rarefaction draws with na.rm=TRUE, exactly as in window_gd(). No metric-specific override.
+    # L/rarify_alleles/sig are for Wingen's built-in estimators; the custom callback handles theta's L itself, and tajimas_d has no L argument.
+  )
+} else {
+  wgd <- window_gd(vcf,
                  coords = coords_sf_mollweide,
                  lyr = lyr_agg,
                  stat = gd_stat, # "pi", "Ho" or "biallelic_richness" 
@@ -1848,12 +2013,19 @@ wgd <- window_gd(vcf,
                  # L = 100 # For calculating "pi", L argument in pi.dosage function. Return the average nucleotide diversity per nucleotide given the length L of the sequence. The wingen default is L = "nvariants", which sets L to the number of variants in the VCF. If L = NULL, returns the sum over SNPs of nucleotide diversity (note: L = NULL is the pi.dosage default which wingen does not use). [Default: "nvariants"]
 
                  )
+}
+
+
+
 names(wgd)
 
-# Name of the statistic's layer in wgd ("pi", "Ho" or "biallelic_richness"). Everything below that touches the
-# statistic looks it up through this, never through a hardcoded name. 
+# Name of the chosen statistic's layer in wgd. Everything below looks it up through this variable, never through a hardcoded pi layer name.
 gd_layer_name <- setdiff(names(wgd), "sample_count")
-stopifnot(length(gd_layer_name) == 1)
+
+# Entirely undefined custom statistics can leave only sample_count in Wingen's result. A heatmap is required, so stop here rather than insert an empty layer or continue into location/neutral summaries without usable moving windows.
+if (length(gd_layer_name) != 1L || !any(is.finite(terra::values(wgd[[gd_layer_name]])))) {
+  stop("No defined ", gd_label, " moving windows were produced; heatmap computation cannot continue")
+}
 
 # wgd <- window_gd(vcf,
 #                  coords = coords_sf_mollweide,
@@ -1923,6 +2095,10 @@ head(support_check, 20)
 wgd_confident <- wgd
 wgd_confident[[gd_layer_name]] <- mask_gd(wgd[[gd_layer_name]], wgd[["sample_count"]], minval = minval_sample_count)
 
+if (!any(is.finite(terra::values(wgd_confident[[gd_layer_name]])))) {
+  stop("No defined ", gd_label, " windows remain after the sample-count mask; kriging cannot continue")
+}
+
 # nmax caps how many neighboring points can inform a single prediction -
 # unrelated to what gets interpolated (r's job, below) or where (grd's
 # job, below). wingen's own docs suggest ~30 as a speed/accuracy
@@ -1969,6 +2145,12 @@ kgd <- wkrig_gd(r = wgd_confident[[gd_layer_name]],
                   )
   
 }
+# Neighborhood settings can also produce only NA predictions without an error.
+# Require an actual kriged surface before proceeding to plots/location summaries.
+if (!any(is.finite(terra::values(kgd)))) {
+  stop("Kriging produced no defined ", gd_label, " predictions; heatmap computation cannot continue")
+}
+
 
 wkrig_gd_runtime <- difftime(Sys.time(), start_wkrig_gd_time , units = "secs")
 message("wkrig_gd runtime: ", round(wkrig_gd_runtime, 2), " seconds")
@@ -2210,15 +2392,20 @@ plot_with_context <- function(r, title, legend_name = "value", palette = HEATMAP
     scale_fill_viridis_c(option = palette, na.value = NA, name = legend_name)
 
   if (show_points) {
-    size_legend_name <- if (SAMPLE_POINT_SIZE_BY == "value") paste("empirical", gd_label_short) else "n samples"
+    size_legend_name <- if (SAMPLE_POINT_SIZE_BY == "value") {
+      paste("empirical", if (point_values_use_abs) paste0("|", gd_label_short, "|") else gd_label_short)
+    } else "n samples"
     p <- p +
       geom_point(data = sample_point_counts,
                  aes(x = Longitude, y = Latitude, size = size_value),
-                 shape = 21, fill = "white", color = "black", alpha = 0.5, stroke = 0.3) +
-      # _area, not scale_size(): keeps a 0 value at 0 size rather than a
-      # smaller-but-still-visible dot - more honest for both count and
-      # value data.
-      scale_size_area(max_size = 6, name = size_legend_name)
+                 shape = 21, fill = "white", color = "black", alpha = 0.5, stroke = 0.3)
+    if (SAMPLE_POINT_SIZE_BY == "value" && (point_values_use_abs || gd_stat == "tajimas_d")) {
+      # Keep zero-valued points visible for D or metrics sized by magnitude.
+      p <- p + scale_size(range = c(1, 6), name = size_legend_name)
+    } else {
+      # Nonnegative metrics/counts: a value of zero has zero point area.
+      p <- p + scale_size_area(max_size = 6, name = size_legend_name)
+    }
   }
   
   # Lambert Azimuthal Equal-Area, not orthographic: still curves the
@@ -2391,8 +2578,10 @@ if (CLUSTER_SAMPLE_POINTS) {
   sample_point_counts$value <- sample_point_value$value[value_idx]
 }
 
+# If any finite point value is negative (mixed signs or all negative), then absolute values are used for point sizes; heatmaps and analyses keep their signs.
+point_values_use_abs <- any(is.finite(sample_point_counts$value) & sample_point_counts$value < 0)
 sample_point_counts$size_value <- if (SAMPLE_POINT_SIZE_BY == "value") {
-  sample_point_counts$value
+  if (point_values_use_abs) abs(sample_point_counts$value) else sample_point_counts$value
 } else {
   sample_point_counts$n
 }
@@ -2446,7 +2635,7 @@ unmasked_plot_title <- paste0(study_species, " ", gd_label, if (use_weighted_kri
 gd_map_unmasked <- plot_with_context(mgd,
   make_gd_title(unmasked_plot_title, suffix = ", unmasked (land excluded only)"), gd_label_short)
 gd_map_unmasked
-ggsave(file.path(output_dir, paste0(output_prefix, "_", gd_key, "_map_unmasked.png")), gd_map_unmasked,
+ggsave(file.path(output_dir, paste0(output_prefix, "map_unmasked.png")), gd_map_unmasked,
        width = 10, height = 6, dpi = 300)
 
 # Plotting the regular pi map after masking
@@ -2455,7 +2644,7 @@ ggsave(file.path(output_dir, paste0(output_prefix, "_", gd_key, "_map_unmasked.p
 masked_plot_title <- paste0(study_species, " ", gd_label, " - ", region_tag, ", masked")
 gd_map <- plot_with_context(mgd_honest, make_gd_title(masked_plot_title), gd_label_short)
 gd_map
-ggsave(file.path(output_dir, paste0(output_prefix, "_", gd_key, "_map.png")), gd_map, width = 10, height = 6, dpi = 300)
+ggsave(file.path(output_dir, paste0(output_prefix, "map.png")), gd_map, width = 10, height = 6, dpi = 300)
 
 # Plotting the pi map with data points if SHOW_SAMPLE_POINTS == TRUE.
 # SAMPLE_POINT_SIZE_BY == "All" generates both the count- and value-sized
@@ -2470,15 +2659,18 @@ if (SHOW_SAMPLE_POINTS == TRUE) {
     # earlier - only matters for "All", which runs both modes here, but
     # cheap to always do correctly regardless.
     SAMPLE_POINT_SIZE_BY <- mode
-    sample_point_counts$size_value <- if (mode == "value") sample_point_counts$value else sample_point_counts$n
+    sample_point_counts$size_value <- if (mode == "value") {
+      if (point_values_use_abs) abs(sample_point_counts$value) else sample_point_counts$value
+    } else sample_point_counts$n
 
-    suffix <- if (mode == "value") paste0("_by_", gd_key, "_value") else "_by_sample_count"
+    # output_prefix already identifies the metric; the ending identifies point sizing.
+    suffix <- if (mode == "value") "_by_value" else "_by_count"
 
     gd_map_sample_points <- plot_with_context(mgd_honest,
       make_gd_title(masked_plot_title), gd_label_short,
       show_points = TRUE)
     print(gd_map_sample_points)  # bare object name doesn't auto-print inside a for loop
-    ggsave(file.path(output_dir, paste0(output_prefix, "_", gd_key, "_map_sample_points", suffix, ".png")),
+    ggsave(file.path(output_dir, paste0(output_prefix, "points", suffix, ".png")),
            gd_map_sample_points, width = 10, height = 6, dpi = 300)
   }
 }
@@ -2636,8 +2828,8 @@ if (compute_genetic_diversity_statistics == TRUE) {
   gd_median_raw_windows <- median(gd_values[reliable])
   gd_min_raw_windows <- min(gd_values[reliable])
   gd_max_raw_windows <- max(gd_values[reliable])
-
-
+  # Keep Mean and also record |Mean| (the absolute value of the mean) when the summary has both negative and positive values.
+  gd_abs_mean_raw_windows <- if (isTRUE(gd_min_raw_windows < 0 && gd_max_raw_windows > 0)) abs(gd_mean_raw_windows) else NA_real_
 
   # (A per-sample version of this - the same confident surface read off at
   # each individual's own coordinate instead of per grid cell - was tried
@@ -2733,47 +2925,25 @@ if (compute_genetic_diversity_statistics == TRUE) {
   CLUSTER_VARIANCE_POINTS_KM <- as.numeric(Sys.getenv("CLUSTER_VARIANCE_POINTS_KM", unset = 10))
   coords_file_df$variance_cluster_id <- assign_distance_clusters(coords_file_df, CLUSTER_VARIANCE_POINTS_KM)
 
-  dosage <- vcf_to_dosage(vcf)
-
-  # Confirmed (wingen vignette + hierfstat::pi.dosage docs) that rows should be individuals, in vcf's own column order.
-  # stopifnot() turns any future surprise here (i.e a package update changing this) into an immediate, specific error
-  # instead of dosage silently getting the wrong ID attached to each row. -
-  stopifnot(nrow(dosage) == length(current_samples))
-  rownames(dosage) <- current_samples
-
-  # What the per-population value is computed from: pi and biallelic_richness read the dosage matrix, Ho wingen's
-  # heterozygosity matrix (same layout - rows = individuals in vcf order - with 0 = homozygous, 1 = heterozygous).
-  # The per-population value has to be the SAME statistic window_gd() mapped. Otherwise the Location columns of the
-  # gene catalog would quietly stay pi next to Windows columns that are Ho.
-  gd_input <- dosage
-  if (gd_stat == "Ho") {
-    gd_input <- gd_het_fun(vcf)
-    stopifnot(nrow(gd_input) == length(current_samples))
-    rownames(gd_input) <- current_samples
+  # Per-location values are computed directly from these individuals' genotypes.
+  # pi, biallelic_richness, theta and tajimas_d use a DOSAGE matrix: individuals in rows, markers in columns; 0 = ref/ref, 1 = ref/alt, 2 = alt/alt, NA = missing.
+  # Ho uses Wingen's HETEROZYGOSITY matrix with the same row/column layout: 0/FALSE = homozygous, 1/TRUE = heterozygous, NA = missing. It does not preserve which homozygous allele was present, because Ho only counts heterozygotes.
+  # Only the D/theta window_general branch created dosage_matrix above, before computing its windows, so those metrics can reuse that exact input here.
+  # For pi/Ho/richness, window_gd converted internally; it did NOT create a dosage_matrix variable in this script. Convert here using gd_input_from_vcf, whose explicit Ho branch selects the heterozygosity matrix instead of dosage.
+  if (gd_uses_general) {
+    gd_input <- dosage_matrix
+  } else {
+    gd_input <- gd_input_from_vcf(vcf, gd_stat, current_samples)
   }
+  # Row IDs must stay in VCF order: a mismatched genotype/coordinate row could silently assign a statistic to the wrong location. The converter also checks dimensions. Stop on a changed ordering rather than attach incorrect IDs.
+  stopifnot(identical(rownames(gd_input), current_samples))
 
   cluster_groups <- split(coords_file_df$`Sample ID`, coords_file_df$variance_cluster_id)
 
-  # Whether the per-location values are rarefied is decided by location_rarify (LOCATION_RARIFY in config.yaml,
-  # resolved near the top of this file):
-  #   FALSE - each location's value is computed from ALL its individuals: deterministic, nothing random, and the most precise.
-  #           Right for pi (hierfstat::pi.dosage() uses the per-SNP estimator 2p(1-p) * 2n/(2n-1)) and for Ho (a mean
-  #           of observed heterozygosity): both have an expected value that does not depend on how many individuals a
-  #           location has - only their precision does. The price: locations differ in precision (a 5-individual location
-  #           is noisier than a 150-individual one), which inflates the across-location variance ("Var") somewhat.
-  #   TRUE  - a location with more than rarify_n individuals is sub-sampled rarify_n_iterations times at rarify_n individuals and the
-  #           draws averaged, exactly like window_gd() does per window. This reduces differences in sample size;
-  #           small clusters still use all individuals, and missingness can also leave differences in precision.
-  #           The original reason for rarefying them here: a bigger cluster would otherwise give a more precise
-  #           estimate than a small one purely from sample size, inflating the variance computed ACROSS locations for
-  #           reasons that have nothing to do with biology. It is especially relevant for biallelic_richness, which grows with
-  #           sample size. The price: with rarify_n = 4 every location rests on 4 individuals per draw, so the values are far
-  #           noisier and change with the seed, which weakens every location-level R2 / r / p. For regressions the
-  #           better remedy for unequal precision is weighting by individual per location (columns n_individuals in the per-location
-  #           TSV), not discarding individual.
-  #   "auto" (default) - TRUE for biallelic_richness when USE_RARIFY is on, FALSE otherwise.
-  # min_n_samples_per_calc drops a location below that size entirely, same as it does for a raster window; the
-  # max(., 2) enforces the pipeline's minimum of two individuals per location; pi.dosage() itself does not impose it.
+  # Whether the per-location values are rarefied is decided by location_rarify (LOCATION_RARIFY in config.yaml, resolved near the top of this file):
+  #   FALSE - each location's value is computed from ALL its individuals: deterministic, nothing random, and the most precise. Right for pi (hierfstat::pi.dosage() uses the per-SNP estimator 2p(1-p) * 2n/(2n-1)) and for Ho (a mean of observed heterozygosity): both have an expected value that does not depend on how many individuals a location has - only their precision does. The price: locations differ in precision (a 5-individual location is noisier than a 150-individual one), which inflates the across-location variance ("Var") somewhat.
+  #   TRUE  - a location with more than rarify_n individuals is sub-sampled rarify_n_iterations times at rarify_n individuals and the draws averaged, exactly like window_gd() does per window. This reduces differences in sample size; small clusters still use all individuals, and missingness can also leave differences in precision. The original reason for rarefying them here: a bigger cluster would otherwise give a more precise estimate than a small one purely from sample size, inflating the variance computed ACROSS locations for reasons that have nothing to do with biology. It is especially relevant for biallelic_richness, which grows with sample size. The price: with rarify_n = 4 every location rests on 4 individuals per draw, so the values are far noisier and change with the seed, which weakens every location-level R2 / r / p. For regressions the better remedy for unequal precision is weighting by individual per location (columns n_individuals in the per-location TSV), not discarding individual.
+  #   "auto" (default) - TRUE for biallelic_richness when USE_RARIFY is on, FALSE otherwise.min_n_samples_per_calc drops a location below that size entirely, same as it does for a raster window; the max(., 2) enforces the pipeline's minimum of two individuals per location; pi.dosage() itself does not impose it.
 
   # pi_for_cluster <- function(ids) {
   #   ids_in_vcf <- intersect(ids, current_samples)
@@ -2790,25 +2960,21 @@ if (compute_genetic_diversity_statistics == TRUE) {
   #   # mean(draws)
   # }
 
-  # One sampling plan for individuals, reused for the target and every neutral
-  # replicate. This preserves the original location estimator and random draws.
+  # One sampling plan for individuals, reused for the target and every neutral replicate. This preserves the original location estimator and random draws.
   location_draws <- make_location_draws(cluster_groups, current_samples,
     min_n_samples_per_calc, location_rarify, rarify_n, rarify_n_iterations, seed_value)
-  gd_of <- function(x) {
-    switch(gd_stat,
-      pi                 = hierfstat::pi.dosage(x, L = ncol(x)),
-      Ho                 = unname(gd_subset_fun(x)),
-      biallelic_richness = unname(gd_subset_fun(x, rarify_alleles = TRUE)))
-  }
-  per_location_gd <- location_gd_from_draws(gd_input, location_draws, gd_of)
-
-  gd_variance_per_location <- var(per_location_gd, na.rm = TRUE)
-  gd_mean_per_location <- mean(per_location_gd, na.rm = TRUE)
-  gd_median_per_location <- median(per_location_gd, na.rm = TRUE)
-  gd_min_per_location <- min(per_location_gd, na.rm = TRUE)
-  gd_max_per_location <- max(per_location_gd, na.rm = TRUE)
+  # gd_of uses the same selected metric as the moving windows. Passing that same function and those same individual draws to the neutral model keeps observed and neutral location estimates directly comparable.
+  per_location_gd <- location_gd_from_draws(gd_input, location_draws, gd_of,
+    na.rm = gd_uses_general)
 
   n_locations_used <- sum(!is.na(per_location_gd))
+  # Keep the calculations visible. A window spanning several locations can contain variation even if each location is fixed and its D is undefined; in that case report NA for the location summary rather than Inf/NaN.
+  gd_variance_per_location <- var(per_location_gd, na.rm = TRUE)
+  gd_mean_per_location <- if (n_locations_used) mean(per_location_gd, na.rm = TRUE) else NA_real_
+  gd_median_per_location <- if (n_locations_used) median(per_location_gd, na.rm = TRUE) else NA_real_
+  gd_min_per_location <- if (n_locations_used) min(per_location_gd, na.rm = TRUE) else NA_real_
+  gd_max_per_location <- if (n_locations_used) max(per_location_gd, na.rm = TRUE) else NA_real_
+  gd_abs_mean_per_location <- if (isTRUE(gd_min_per_location < 0 && gd_max_per_location > 0)) abs(gd_mean_per_location) else NA_real_
 
   # --------------------------------------------------------------------
   # 4b. Window-surface pi at each population's centroid (pairs with 4:
@@ -2967,18 +3133,14 @@ if (compute_genetic_diversity_statistics == TRUE) {
       Sys.getenv("NEUTRAL_EXTREME_VALUE_PERCENTILES", unset = "95,99"), ",", fixed = TRUE)[[1]])
     neutral_comparison <- run_neutral_model(neutral_plan_path, neutral_metadata_path,
       input_vcf_file, vcf, current_samples, location_draws, per_location_gd, neutral_predictors,
-      gd_stat, gd_of, gd_het_fun, file.path(output_dir, Sys.getenv("vcf_filter_value")),
+      gd_stat, gd_of, gd_het_fun, file.path(output_dir, statistics_output_prefix),
       min_valid_fraction, prepared_manifest_path = neutral_prepared_manifest_path,
       extreme_value_percentiles = extreme_value_percentiles)
   }
   # >>> [per-location-tsv] -----------------------------------------------------------------------------------
-  # Audit trail: one row per location (distance cluster) holding exactly the numbers the location-level fits were
-  # computed from (column `gd` = the statistic chosen with gd_stat, so the file has the same layout for pi, Ho and
-  # biallelic_richness). It lets every downstream analysis (partial R2, spatial autocorrelation, weighting by individuals per
-  # location, leave-one-out, checking that the environmental columns are identical across genes) run without
-  # re-running the window/kriging step. Written next to the plots in the shared per-chromosome folder; the HTML
-  # builder only lists .png files and the aggregator only reads *_gene_summary.json, so it cannot interfere with either.
-  # Switch off: WRITE_PER_LOCATION_TSV: FALSE in config.yaml (wingen_params).
+  # Audit trail: one row per location (distance cluster) holding exactly the numbers the location-level fits were computed from (column `gd` = the statistic chosen with gd_stat, so the file has the same layout for all genetic diversity metrics). It lets every downstream analysis (partial R2, spatial autocorrelation, weighting by individuals per location, leave-one-out, checking that the environmental columns are identical across genes) run without re-running the window/kriging step.
+  # Written next to the plots in the shared per-chromosome folder; the HTML builder only lists .png files and the aggregator only reads *_gene_summary.json, so it cannot interfere with either.
+  # Switch off by setting WRITE_PER_LOCATION_TSV: FALSE in config.yaml (wingen_params).
   if (isTRUE(WRITE_PER_LOCATION_TSV)) {
     loc_gene_id <- Sys.getenv("vcf_filter_value")
     loc_rows <- function(ids) match(ids, coords_file_df$`Sample ID`)
@@ -3000,14 +3162,13 @@ if (compute_genetic_diversity_statistics == TRUE) {
       per_location_table$chl_log     <- unname(perloc_env_chl_log)
       if (ENV_OXYGEN_ENABLED) per_location_table$oxygen <- unname(perloc_env_oxygen)
       if (ENV_CURRENT_SPEED_ENABLED) per_location_table$current_speed <- unname(perloc_env_current_speed)
-      # Per variable: how many of this location's individuals had no raw value in the environmental product (masked
-      # coastal cell) and were given a neighbour-filled one (section 2.6).
+      # Per variable: how many of this location's individuals had no raw value in the environmental product (masked coastal cell) and were given a neighbour-filled one (section 2.6).
       for (v in names(env_raw_na_flags)) {
         per_location_table[[paste0("n_individuals_filled_", v)]] <-
           unname(vapply(cluster_groups, function(ids) sum(env_raw_na_flags[[v]][ids], na.rm = TRUE), numeric(1)))
       }
     }
-    per_location_path <- file.path(output_dir, paste0(loc_gene_id, "_per_location.tsv"))
+    per_location_path <- file.path(output_dir, paste0(statistics_output_prefix, "_per_location.tsv"))
     write.table(per_location_table, per_location_path, sep = "\t", quote = FALSE, row.names = FALSE)
     cat("Per-location table written:", per_location_path, "\n")
   }
@@ -3016,17 +3177,9 @@ if (compute_genetic_diversity_statistics == TRUE) {
   # --------------------------------------------------------------------
   # 5. Assemble and write the per-gene manifest
   # --------------------------------------------------------------------
-  # Doubles as this gene's "did it actually finish" check, and its
-  # contents are the "is this gene worth a closer look" check - one file,
-  # both jobs. Filename is gene-ID-prefixed (not a plain "gene_summary.json")
-  # because output_dir is now the SHARED per-chromosome folder
-  # (results/gene_catalog/{chrom}, set by the Snakefile's outdir_abs) -
-  # every gene on the same chromosome writes here, so a fixed filename
-  # would have every later gene silently overwrite the previous one's
-  # entry. This is the actual fix for that: each gene's own ID in its own
-  # filename means no two genes on the same chromosome ever target the
-  # same path, so there is nothing to race or clobber even when several
-  # of that chromosome's genes render concurrently.
+  # Doubles as this gene's "did it actually finish" check, and its contents are the "is this gene worth a closer look" check: one file,both jobs.
+  # A catalog filename is gene-ID-prefixed (not a plain "gene_summary.json") because its output_dir is the SHARED per-chromosome folder
+  # (results/gene_catalog/{chrom}, set by the Snakefile's outdir_abs);every gene on the same chromosome writes here, so a fixed filename would have every later gene silently overwrite the previous one's entry. This is the actual fix for that: each gene's own ID in its own filename means no two genes on the same chromosome ever target the same path, so there is nothing to race or clobber even when several of that chromosome's genes render concurrently. Standalone filenames instead use statistics_output_prefix, which includes the species/settings/metric, protecting pi, theta and D summaries from overwriting one another.
   # centroid = list(variance = gd_variance_centroid_windows, mean = gd_mean_centroid_windows, median = gd_median_centroid_windows)
 
   gene_id <- Sys.getenv("vcf_filter_value")
@@ -3059,8 +3212,10 @@ if (compute_genetic_diversity_statistics == TRUE) {
     n_locations_used = n_locations_used,
     n_individuals_vcf = list(initial = n_individuals_input, retained = n_individuals_retained, vcf_error = n_pruned_vcf_error, coords_mismatch = n_pruned_coord_mismatch),
 
-    windows = list(variance = gd_variance_raw_windows, mean = gd_mean_raw_windows, median = gd_median_raw_windows, min = gd_min_raw_windows, max = gd_max_raw_windows),
-    location = list(variance = gd_variance_per_location, mean = gd_mean_per_location, median = gd_median_per_location, min = gd_min_per_location, max = gd_max_per_location),
+    windows = list(variance = gd_variance_raw_windows, mean = gd_mean_raw_windows, abs_mean = gd_abs_mean_raw_windows,
+                   median = gd_median_raw_windows, min = gd_min_raw_windows, max = gd_max_raw_windows),
+    location = list(variance = gd_variance_per_location, mean = gd_mean_per_location, abs_mean = gd_abs_mean_per_location,
+                    median = gd_median_per_location, min = gd_min_per_location, max = gd_max_per_location),
     latitude = gradient_fields("latitude", gd_latitude_r)
   )
 
@@ -3081,15 +3236,12 @@ if (compute_genetic_diversity_statistics == TRUE) {
   }
 
   # >>> [json-extras] ---------------------------------------------------------------------------------------
-  # Everything between the >>> / <<< markers is additive: it only ADDS fields to gene_summary. Each part has its own
-  # guard, so removing or disabling one never affects the others (or the original fields above).
+  # Everything between the >>> / <<< markers is additive: it only ADDS fields to gene_summary. Each part has its own guard, so removing or disabling one never affects the others (or the original fields above).
 
-  # (a) individuals actually used for the statistic. n_individuals$retained only SUBTRACTS the >50%-missing individuals from the
-  #     count - they are NOT removed from the calculation (the per-SNP functions handle missing genotypes).
+  # (a) individuals actually used for the statistic. n_individuals$retained only SUBTRACTS the >50%-missing individuals from the count; they are NOT removed from the calculation (the per-SNP functions handle missing genotypes).
   gene_summary$n_individuals$used_for_gd <- length(current_samples)
 
-  # (b) Coastal NA fill (section 2.6): how many individuals had no raw value in the environmental product (their cell was
-  #     masked) and were given a neighbour-filled value, and how many still had none after filling.
+  # (b) Coastal NA fill (section 2.6): how many individuals had no raw value in the environmental product (their cell was masked) and were given a neighbour-filled value, and how many still had none after filling.
   if (USE_COPERNICUS_MARINE && exists("env_before_na") && exists("env_after_na")) {
     gene_summary$env_quality <- c(
       list(n_individuals_total = nrow(coords_file_df)),
@@ -3098,8 +3250,7 @@ if (compute_genetic_diversity_statistics == TRUE) {
     )
   }
 
-  # (c) Location-level statistics (section 4c): n, signed r, analytic 95% CI, p, Spearman rho. Written INTO the
-  #     existing covariate structs so they flatten to e.g. salinity_location_salinity_r in the TSV/duckdb.
+  # (c) Location-level statistics (section 4c): n, signed r, analytic 95% CI, p, Spearman rho. Written INTO the existing covariate structs so they flatten to e.g. salinity_location_salinity_r in the TSV/duckdb.
   #     Switch off: WRITE_LOCATION_STATS: FALSE in config.yaml (wingen_params).
   if (USE_COPERNICUS_MARINE && isTRUE(WRITE_LOCATION_STATS) && exists("perloc_stats_salinity")) {
     stats_fields <- function(suffix, st) {
@@ -3139,6 +3290,7 @@ if (compute_genetic_diversity_statistics == TRUE) {
       pool_sha256 = info$pool_sha256, comparison = "upper_tail_absolute_correlation",
       min_valid_fraction = min_valid_fraction, common_individual_draws = TRUE,
       extreme_value_percentiles = info$extreme_value_percentiles,
+      gd_stat = info$gd_stat, gd_dosage_missing_policy = info$gd_dosage_missing_policy,
       pool_validation = info$pool_validation)
     if (!is.null(info$prepared_manifest_md5)) gene_summary$neutral_model$prepared_manifest_md5 <- info$prepared_manifest_md5
     gene_summary$neutral_model$n_markers_matched <- info$pool_n_matched
@@ -3148,6 +3300,7 @@ if (compute_genetic_diversity_statistics == TRUE) {
   if (isTRUE(WRITE_RUN_SETTINGS)) {
     gene_summary$run_settings <- list(
       gd_stat = gd_stat, seed = seed_value, use_rarify = use_rarify, location_rarify = location_rarify,
+      gd_dosage_missing_policy = if (gd_uses_general) gd_dosage_missing_policy else NA_character_,
       rarify_n = rarify_n, rarify_n_iterations = rarify_n_iterations,
       min_n_samples_per_calc = min_n_samples_per_calc, wdim = wdim_value, fact = fact_value,
       resolution_km = resolution_m / 1e3, cluster_variance_km = CLUSTER_VARIANCE_POINTS_KM,
@@ -3181,9 +3334,9 @@ if (compute_genetic_diversity_statistics == TRUE) {
   }
   # <<< [json-extras] ---------------------------------------------------------------------------------------
 
-  jsonlite::write_json(gene_summary, file.path(output_dir, paste0(gene_id, "_gene_summary.json")),
+  jsonlite::write_json(gene_summary, file.path(output_dir, paste0(statistics_output_prefix, "_gene_summary.json")),
                         auto_unbox = TRUE, digits = 8, na = "null")  # na = "null": NA becomes JSON null (the default writes the STRING "NA", which turns a whole DuckDB column into text)
-  print(file.path(output_dir, paste0(gene_id, "_gene_summary.json")))
+  print(file.path(output_dir, paste0(statistics_output_prefix, "_gene_summary.json")))
   
 }
 ```

@@ -302,8 +302,10 @@ const DEFAULT_ORDER = [[1, 'asc']];   // column 0 is the thumbnail, column 1 is 
 // gaps. Never substitute today's config or infer environmental products.
 function parseMapRunSettings(path) {
   const file = String(path).split(/[\\/]/).pop();
-  const pattern = /(?:spherical_)?(?:palet|palette)_[A-Za-z]+_([\d.]+)_scale_([\d.]+)_?km_res(?:ctr_disagg(\d+)_)?wdim(\d+)_fact(\d+)_(?:minn|min_n)(\d+)(?:_rarify_n([^_]+)_it([^_]+))?_disagg_grd(\d+)(_wkriging|_weighted_krig)?_nmax([^_]+)_minval([\d.]+)(?:_|\.)/;
-  const m = pattern.exec(file);
+  // Both filename formats capture the same settings in the same order.
+  const legacyPattern = /(?:spherical_)?(?:palet|palette)_[A-Za-z]+_([\d.]+)_scale_([\d.]+)_?km_res(?:ctr_disagg(\d+)_)?wdim(\d+)_fact(\d+)_(?:minn|min_n)(\d+)(?:_rarify_n([^_]+)_it([^_]+))?_disagg_grd(\d+)(_wkriging|_weighted_krig)?_nmax([^_]+)_minval([\d.]+)(?:_|\.)/;
+  const compactPattern = /(?:^|_)(?:sph_)?p[A-Za-z]+_i(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)_r(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)(?:_c(\d+))?_w(\d+)_f(\d+)_n(\d+)(?:_rn([^_]+)_it([^_]+))?_g(\d+)(_wk)?_k([^_]+)_m(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)_(?:pi|ho|biallelic_richness|theta|tajimas_d|watterson_theta)_/;
+  const m = compactPattern.exec(file) || legacyPattern.exec(file);
   if (!m) return null;
   const numberOrText = value => Number.isFinite(Number(value)) ? Number(value) : value;
   return {

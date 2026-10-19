@@ -30,8 +30,8 @@ struct cells don't make a great flat-file TSV, so the TSV export below
 flattens any top-level struct into "structname_field" columns instead.
 
 Which genetic diversity statistic a catalog holds (config.yaml's gd_stat: pi,
-Ho or biallelic_richness) travels with the data: the Rmd writes gd_stat,
-gd_label and gd_label_short into every gene's JSON, so they show up here as
+Ho, biallelic_richness, tajimas_d or watterson_theta) travels with the data:
+the Rmd writes gd_stat, gd_label and gd_label_short into every gene's JSON, so they show up here as
 plain columns - first in the TSV, right next to gene_id - and
 build_gene_catalog_html.py takes its column labels from them rather than from
 config.yaml. Columns such as windows_mean or location_mean are just numbers

@@ -1,1 +1,0 @@
-{"gene_id":"ENSCHAG00000000005","n_individuals_input":69,"n_individuals_retained":68,"n_pruned_vcf_error":1,"n_pruned_coord_mismatch":0,"n_variants":241,"pi_variance_raw_windows":0.00073169,"pi_latitude_r2":0.29387545,"pi_latitude_slope":0.00266144,"pi_variance_per_location":0.00083405,"n_locations_used":15}

@@ -24,18 +24,22 @@ slurm-*.out
 code/slurm-*.out
 workflow/slurm-*.out
 
-code/temp/
+/code/temp/
 
+# Avoid pushing temporary files
 temp/
+# Temporary generated files in gene catalog runs
+/gene_catalog/**/temp/
 
-results_gene_catalog/
-results_SECD/
-results - pre gene catalog/
-benchmarks - temp change/
-benchmarks/
-env_cache/
-ne_cache/
-results/
+debug/
 
-# Ignore compressed files in gene_catalog and all subdirectories
-gene_catalog/**/*.gz
+# Generated results
+/results/
+/results_gene_catalog/
+/results_SECD/
+/results - pre gene catalog/
+/benchmarks - temp change/
+/benchmarks/
+# Ignore gzipped files and associated index files in gene_catalog
+/gene_catalog/**/*.gz
+/gene_catalog/**/*.gz.*

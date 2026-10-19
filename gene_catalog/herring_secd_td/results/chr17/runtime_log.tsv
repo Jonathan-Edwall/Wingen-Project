@@ -1,0 +1,1 @@
+herring_SECD_Inversion_chr17_palet_turbo_1_scale_2.5km_reswdim7_fact3_minn2_rarify_n10_it5_disagg_grd3_wkriging_nmax15_minval0_tajimas_d_: script runtime: 307.7	read.vcfR runtime=0.3, wkrig_gd runtime=15.8, window_gd_runtime=82.6, distance_masking_runtime=170.6, plotting_runtime=20.7

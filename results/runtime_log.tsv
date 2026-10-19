@@ -1,2 +1,0 @@
-zostera_marina_palet_inferno_1.5_scale_2.5km_reswdim7_fact3_minn2_disagg_grd3_nmaxInf_minval0_: script runtime: 127.8	read.vcfR runtime=0.4, wkrig_gd runtime=26.8, window_gd_runtime=57.8, distance_masking_runtime=15.0, plotting_runtime=21.1
-zostera_marina_palet_inferno_1.5_scale_2.5km_reswdim7_fact3_minn2_disagg_grd3_nmaxInf_minval0_: script runtime: 140.1	read.vcfR runtime=0.9, wkrig_gd runtime=25.4, window_gd_runtime=59.7, distance_masking_runtime=14.9, plotting_runtime=21.3

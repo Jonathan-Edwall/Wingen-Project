@@ -25,6 +25,7 @@ code/slurm-*.out
 workflow/slurm-*.out
 
 /code/temp/
+/code/2_Herring_Wingen_files/
 
 # Avoid pushing temporary files
 temp/

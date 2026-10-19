@@ -1,1 +1,0 @@
-2026-09-29_herring_SECD_Inversion_chr6__palette_turbo_1_scale_2.5_km_reswdim7_fact3_min_n2_rarify_n4_it5_disagg_grd7_weighted_krig_nmax15_minval0_: script runtime: 1240.0	read.vcfR runtime=0.1, wkrig_gd runtime=81.1, window_gd_runtime=48.6, distance_masking_runtime=1045.6, plotting_runtime=49.8

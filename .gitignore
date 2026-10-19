@@ -38,4 +38,4 @@ ne_cache/
 results/
 
 # Ignore compressed files in gene_catalog and all subdirectories
-/gene_catalog/**/*.gz
+gene_catalog/**/*.gz

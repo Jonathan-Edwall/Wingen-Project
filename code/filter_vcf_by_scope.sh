@@ -25,6 +25,9 @@ script_start=$(date +%s)
 #
 # Usage:
 #   ./filter_vcf_by_scope.sh <input.vcf.gz|input.vcf> <gene_id> <scope> <output.vcf> [compress:true|false]
+#   VCF_RECORD_COUNT_FILE (optional environment variable): atomically write the
+#     successfully decoded output record count, including 0 for an empty VCF.
+#     Snakemake uses this status to skip empty genes before analysis.
 #
 #   scope : all | body | exonic | cds   (see snpeff_vcf_detect_unique_genes.sh for the
 #           exact definition of each - this uses the identical classification logic)
@@ -81,10 +84,20 @@ else
     OUTPUT_TYPE="v"
 fi
 
+VCF_RECORD_COUNT_FILE="${VCF_RECORD_COUNT_FILE:-}"
+if [[ -n "$VCF_RECORD_COUNT_FILE" ]] && [[
+    "$VCF_RECORD_COUNT_FILE" == "$INPUT" || "$VCF_RECORD_COUNT_FILE" == "$OUTPUT" ||
+    "$VCF_RECORD_COUNT_FILE" -ef "$INPUT" || "$VCF_RECORD_COUNT_FILE" -ef "$OUTPUT"
+]]; then
+    echo "ERROR: VCF_RECORD_COUNT_FILE must differ from the input and output VCF paths." >&2
+    exit 1
+fi
+
 ####################################
 # Confirm this is a SnpEff-annotated VCF - scope is meaningless without ANN to read
 ####################################
-if ! bcftools view -h "$INPUT" 2>/dev/null | grep -q '^##INFO=<ID=ANN,'; then
+VCF_HEADER=$(bcftools view -h "$INPUT")
+if ! grep -q '^##INFO=<ID=ANN,' <<< "$VCF_HEADER"; then
     echo "ERROR: '$INPUT' has no INFO/ANN field (not a SnpEff-annotated VCF) - scope filtering needs it." >&2
     exit 1
 fi
@@ -103,7 +116,7 @@ else
     # then back through bcftools for output formatting/compression. Same classification
     # logic (outside_gene / intronic / is_cds) as snpeff_vcf_detect_unique_genes.sh,
     # just applied as a keep/drop test per row instead of a catalog aggregation.
-    bcftools view "$INPUT" 2>/dev/null | awk -v gene="$GENE" -v scope="$SCOPE" -F'\t' '
+    bcftools view "$INPUT" | awk -v gene="$GENE" -v scope="$SCOPE" -F'\t' '
         /^#/ { print; next }
         {
             n = split($8, info, ";")
@@ -147,7 +160,21 @@ else
     ' | bcftools view -O "$OUTPUT_TYPE" -o "$OUTPUT" -
 fi
 
-n_variants=$(bcftools view -H "$OUTPUT" 2>/dev/null | wc -l)
+# A failed decode remains fatal under pipefail, rather than becoming count=0.
+n_variants=$(bcftools view -H -G "$OUTPUT" | awk 'END { print NR + 0 }')
+if [[ "$n_variants" -eq 0 ]]; then
+    echo "WARNING: no VCF records remain for gene '$GENE' after scope '$SCOPE'; this empty gene will be skipped by the catalog workflow." >&2
+fi
+
+# Parallel jobs publish separate integer files; no concurrent report appends.
+if [[ -n "$VCF_RECORD_COUNT_FILE" ]]; then
+    mkdir -p "$(dirname "$VCF_RECORD_COUNT_FILE")"
+    record_count_tmp=$(mktemp "${VCF_RECORD_COUNT_FILE}.tmp.XXXXXX")
+    trap 'rm -f -- "$record_count_tmp"' EXIT
+    printf '%s\n' "$n_variants" > "$record_count_tmp"
+    mv -f -- "$record_count_tmp" "$VCF_RECORD_COUNT_FILE"
+    trap - EXIT
+fi
 
 # Ending the timer
 script_end=$(date +%s)

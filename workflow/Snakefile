@@ -4,18 +4,26 @@ import glob
 import json
 import math
 import re
+import csv
+import io
+import tempfile
+from pathlib import Path
+from snakemake.exceptions import WorkflowError
+from types import SimpleNamespace
 """
 Snakefile - Wingen gene-catalog pipeline (skeleton)
 
 Maps onto 2_wingen_create_gene_catalog.sh + filter_vcf_by_chr_or_gene.sh:
 
     create_gene_vcf_file()  ->  rule filter_vcf_for_gene
-    create_gene_catalog()   ->  rule run_wingen_report
+    extraction results     ->  checkpoint select_nonempty_genes
+    create_gene_catalog()   ->  rule run_wingen_report (retained genes only)
 
 The bash script's manual `wait -n` / max_parallel_jobs_gene_catalog_creation
-loop is gone entirely: every gene's two rules form an independent chain in
-the DAG, and Snakemake parallelises them automatically up to whatever
---cores (local) or --jobs (cluster) you give it at run time.
+loop is gone entirely. Snakemake filters genes in parallel, then waits for
+all extraction/scope counts and publishes the skip report. Only after this
+checkpoint does it schedule neutral preparation and retained genes' reports,
+up to the --cores (local) or --jobs (cluster) limit.
 
 Lives at workflow/Snakefile, the standard Snakemake project layout - run
 from the REPO ROOT (not from inside workflow/), where it's auto-discovered
@@ -187,9 +195,9 @@ def neutral_normalization_options():
 # The type of the gene list is not configured, it is read from the list itself:
 #   gene_list_file ending in .bed  -> a BED: chrom, start, end, gene ID - one row per gene
 #   any other gene_list_file       -> a txt: one gene ID per line
-#   no gene_list_file              -> the 'genes' list in config.yaml
-# Setting both gene_list_file and genes is an error rather than a quiet tie-break, so a
-# gene_list_file left over from a full run can't swallow a small 'genes' test run.
+#   no gene_list_file              -> SnpEff: unique_genes.txt; BED: unique_genes.bed
+#                                    only with an existing annotation table, otherwise inline genes
+# A configured or automatically named gene file takes precedence over inline genes.
 #
 # The same BED row then does the rest of the work: its first column is the gene's chromosome
 # (it names the gene's output folder), and with vcf_annotation_format: bed - locating genes by
@@ -302,24 +310,18 @@ if VCF_ANNOTATION_FORMAT not in ("snpeff", "bed"):
 
 # 1. WHICH genes run, and what kind of list that is
 GENE_LIST_FILE = config.get("gene_list_file") or None  # unset, null and "" all mean "no file"
-GENES_INLINE = config.get("genes") or []
-if GENE_LIST_FILE and GENES_INLINE:
-    raise ValueError(
-        f"Both config['gene_list_file'] ({GENE_LIST_FILE}) and config['genes'] are set - use "
-        f"one of them. Comment out the one you don't want to run."
-    )
-if GENE_LIST_FILE:
-    gene_list_source = "bed" if GENE_LIST_FILE.lower().endswith(".bed") else "txt"
-elif GENES_INLINE:
-    gene_list_source = "array"
-elif VCF_ANNOTATION_FORMAT == "snpeff":
-    GENE_LIST_FILE = os.path.join(os.path.dirname(config["input_vcf"]) or ".", "unique_genes.txt")
-    gene_list_source = "txt"
-else:
-    raise ValueError(
-        "No genes to run - set config['gene_list_file'] (a .bed, or a text file with one "
-        "gene ID per line) or config['genes'] (a list of gene IDs)"
-    )
+if not GENE_LIST_FILE:
+    if VCF_ANNOTATION_FORMAT == "snpeff":
+        GENE_LIST_FILE = os.path.join(os.path.dirname(config["input_vcf"]) or ".", "unique_genes.txt")
+    elif config.get("gene_annotation_file") and os.path.isfile(config["gene_annotation_file"]):
+        GENE_LIST_FILE = os.path.join(os.path.dirname(config["input_vcf"]) or ".", "unique_genes.bed")
+elif not os.path.dirname(GENE_LIST_FILE):
+    GENE_LIST_FILE = os.path.join(os.path.dirname(config["input_vcf"]) or ".", GENE_LIST_FILE)
+gene_list_source = (
+    "array" if not GENE_LIST_FILE
+    else "bed" if GENE_LIST_FILE.lower().endswith(".bed")
+    else "txt"
+)
 
 # Retired keys. gene_list_source is no longer read, but a config that still sets it must not
 # quietly start meaning something else: a leftover that agrees with what is now inferred is
@@ -328,8 +330,9 @@ _old_source = config.get("gene_list_source")
 if _old_source and _old_source != gene_list_source:
     raise ValueError(
         f"config['gene_list_source'] is {_old_source!r}, but the gene list type is now read "
-        f"from gene_list_file's extension (.bed = bed, anything else = txt, no gene_list_file "
-        f"= the 'genes' list) and that gives {gene_list_source!r} here. Delete the "
+        f"from gene_list_file's extension (.bed = bed, anything else = txt; an omitted file "
+        f"defaults to SnpEff TXT or annotation-derived BED when available, otherwise inline genes) "
+        f"and that gives {gene_list_source!r} here. Delete the "
         f"gene_list_source line, and check that gene_list_file / genes are what you meant to run."
     )
 
@@ -361,7 +364,7 @@ if VCF_ANNOTATION_FORMAT == "bed":
 # 2. Read the list and resolve each chromosome/gene pair.
 LIST_BED = None
 if gene_list_source == "array":
-    GENES = list(GENES_INLINE)
+    GENES = list(config["genes"])
 elif gene_list_source == "txt":
     GENES = read_gene_txt(GENE_LIST_FILE)
 else:
@@ -390,6 +393,8 @@ else:
         #     "the BED instead, and it can be left out."
         # )
         CHROM_SOURCE = os.path.join(os.path.dirname(config["input_vcf"]) or ".", "gene_chrom.tsv")
+    elif not os.path.dirname(CHROM_SOURCE) and not os.path.isfile(CHROM_SOURCE):
+        CHROM_SOURCE = os.path.join(os.path.dirname(config["input_vcf"]) or ".", CHROM_SOURCE)
     with open(CHROM_SOURCE) as f:
         for line in f:
             line = line.strip()
@@ -418,14 +423,16 @@ if not GENES:
     raise ValueError("No genes to process - check config['genes'] or config['gene_list_file']")
 missing_chrom = [g for g in GENES if g not in GENE_CHROM]
 if missing_chrom:
-    raise ValueError(
-        f"{len(missing_chrom)} gene(s) have no chromosome mapping in {CHROM_SOURCE} "
-        f"(first few: {missing_chrom[:5]}) - check it is current (regenerate with "
-        f"code/build_gene_chrom_map.py) and covers every gene in "
-        f"config['gene_list_file']/config['genes']"
+    print(
+        f"{len(missing_chrom)} requested gene(s) have no chromosome mapping in "
+        f"{CHROM_SOURCE}; these will be recorded in {RESULTS_DIR}/skipped_genes.tsv. "
+        f"Regenerate the mapping if it may be out of date."
     )
 if LIST_BED is None:
-    LOCI = [(chrom, gene) for gene in GENES for chrom in GENE_CHROM[gene]]
+    # A map built from the input VCF legitimately has no entry for an absent gene.
+    # Keep such requests for the skip report, without scheduling a filter job.
+    LOCI = [(chrom, gene) for gene in GENES
+            for chrom in GENE_CHROM.get(gene, ["unmapped"])]
 # mirrors the gene_scope checks in 2_wingen_create_gene_catalog.sh
 GENE_SCOPE = config.get("gene_scope", "all")
 if GENE_SCOPE not in ("all", "body", "exonic", "cds"):
@@ -483,24 +490,54 @@ if _existing_gd_stat not in (None, GD_STAT):
 #     # benchmark:
 #     #     f"results/gene_catalog/{chrom}/{gene}_benchmark.tsv" # Placeholder until i fix chr/gene* structure.
 
-def done_marker_paths():
-    """Every gene's .done marker ({RESULTS_DIR}/.snakemake_gene_catalog/{chrom}/{gene}.done)
-    - what "this gene's render actually finished" means now that
-    run_wingen_report's real outputs (the pngs, {gene}_gene_summary.json)
-    sit in a folder shared by every gene on that chromosome and so can't
-    be declared as this one gene's Snakemake output. Used both as rule
-    all's own target list and as what aggregate_gene_summaries waits on -
-    one definition, so the two can't quietly drift apart.
+def done_marker_paths(wildcards):
+    """Schedule reports, including per-gene neutral jobs, only for nonempty VCFs.
 
-    Namespaced under RESULTS_DIR so a gene that's part of TWO catalogs
-    (e.g. the same gene under gene_scope: cds in one config.yaml and
-    gene_scope: body in another) gets two independent markers, one per
-    catalog - never a single shared marker that the second catalog's run
-    could mistake for its own gene already being finished."""
-    return [
-        f"{RESULTS_DIR}/.snakemake_gene_catalog/{chrom}/{gene}.done"
-        for chrom, gene in LOCI
-    ]
+    Checkpoint evaluation pauses DAG expansion until every requested gene has
+    been filtered. A zero-record VCF is a successful extraction, but is not an
+    input on which the R report or a neutral simulation should run.
+    """
+    manifest = checkpoints.select_nonempty_genes.get().output.manifest
+    with open(manifest) as handle:
+        selected = json.load(handle)
+    require_retained_genes(selected, f"{RESULTS_DIR}/skipped_genes.tsv")
+    return [gene["done_path"] for gene in selected["retained"]]
+
+
+def require_retained_genes(selected, report):
+    if not selected["retained"]:
+        raise WorkflowError(
+            f"All {selected['requested_count']} requested gene(s) were skipped. "
+            f"Run stopped before neutral preparation and catalog generation. "
+            f"Skipped gene IDs and reasons: {report}"
+        )
+
+
+def availability_manifest(wildcards):
+    # Aggregation also depends directly on the completed selection checkpoint.
+    return checkpoints.select_nonempty_genes.get().output.manifest
+
+
+def neutral_availability_manifest(wildcards):
+    """Every neutral preparation path waits for the completed gene selection."""
+    path = availability_manifest(wildcards)
+    with open(path) as handle:
+        require_retained_genes(json.load(handle), f"{RESULTS_DIR}/skipped_genes.tsv")
+    # This is an ordering dependency, not a biological pool input. Changing
+    # the requested gene list must not re-extract a reusable huge neutral pool.
+    return ancient(path)
+
+
+def neutral_source_after_selection(path):
+    """Resolve external neutral sources only after the checkpoint succeeds.
+
+    This also defers missing-source errors on directly requested neutral
+    targets, so the gene-selection report can be written first.
+    """
+    def resolve(wildcards):
+        neutral_availability_manifest(wildcards)
+        return path
+    return resolve
 
 # # GPT test for chr/gene* structure.
 # rule all:
@@ -569,8 +606,10 @@ rule filter_vcf_for_gene:
     """create_gene_vcf_file(): subset the cohort VCF to one gene's variants."""
     input:
         vcf=config["input_vcf"],
+        script="code/filter_vcf_by_chr_or_gene.sh",
     output:
         vcf=f"{RESULTS_DIR}/temp/filtered_vcf/{{chrom}}/{{gene}}_filtered.vcf.gz",
+        record_count=f"{RESULTS_DIR}/temp/filtered_vcf/{{chrom}}/{{gene}}_filtered.vcf.gz.record_count",
     params:
         mode=filter_mode,
         value=filter_value,
@@ -598,7 +637,8 @@ rule filter_vcf_for_gene:
     shell:
         """
         export FILTER_GENE_CHROM={params.chrom:q}
-        bash code/filter_vcf_by_chr_or_gene.sh \
+        export VCF_RECORD_COUNT_FILE={output.record_count:q}
+        bash {input.script:q} \
             {input.vcf:q} {params.mode:q} {params.value:q} {output.vcf:q} true
         """
 
@@ -614,8 +654,10 @@ rule narrow_vcf_by_scope:
     """
     input:
         vcf=rules.filter_vcf_for_gene.output.vcf,
+        script="code/filter_vcf_by_scope.sh",
     output:
         vcf=f"{RESULTS_DIR}/temp/filtered_vcf/{{chrom}}/{{gene}}_{GENE_SCOPE}.vcf.gz",
+        record_count=f"{RESULTS_DIR}/temp/filtered_vcf/{{chrom}}/{{gene}}_{GENE_SCOPE}.vcf.gz.record_count",
     params:
         gene=lambda wc: wc.gene,
         scope=GENE_SCOPE,
@@ -634,7 +676,8 @@ rule narrow_vcf_by_scope:
     retries: 2
     shell:
         """
-        bash code/filter_vcf_by_scope.sh \
+        export VCF_RECORD_COUNT_FILE={output.record_count:q}
+        bash {input.script:q} \
             {input.vcf} {params.gene} {params.scope} {output.vcf} true
         """
 
@@ -648,9 +691,143 @@ def wingen_vcf_input(wildcards):
         return f"{RESULTS_DIR}/temp/filtered_vcf/{wildcards.chrom}/{wildcards.gene}_{GENE_SCOPE}.vcf.gz"
     return f"{RESULTS_DIR}/temp/filtered_vcf/{wildcards.chrom}/{wildcards.gene}_filtered.vcf.gz"
 
+
+# Describe this run explicitly; do not discover old gene outputs by glob.
+GENE_REQUESTS = []
+for chrom, gene in LOCI:
+    locus = (chrom, gene)
+    record = {"gene_id": gene}
+    if locus in LOCUS_CHROM:
+        wildcard = SimpleNamespace(chrom=chrom, gene=gene)
+        record.update(
+            source_chrom=LOCUS_CHROM[locus],
+            region=filter_value(wildcard),
+            raw_vcf=f"{RESULTS_DIR}/temp/filtered_vcf/{chrom}/{gene}_filtered.vcf.gz",
+            final_vcf=wingen_vcf_input(wildcard),
+            summary_path=f"{RESULTS_DIR}/results/{chrom}/{gene}_gene_summary.json",
+            done_path=f"{RESULTS_DIR}/.snakemake_gene_catalog/{chrom}/{gene}.done",
+        )
+        record["raw_count"] = record["raw_vcf"] + ".record_count"
+        record["final_count"] = record["final_vcf"] + ".record_count"
+    else:
+        record["reason"] = "missing_gene_chromosome_mapping"
+    GENE_REQUESTS.append(record)
+
+# ---- Merge extraction results; the checkpoint never reopens the VCFs. ----
+REPORT_COLUMNS = (
+    "gene_id", "chromosome", "requested_region", "gene_scope", "reason",
+    "raw_vcf_records", "retained_vcf_records",
+)
+MISSING_MAPPING = "missing_gene_chromosome_mapping"
+
+
+def atomic_selection_text(path, contents):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+            stream.write(contents)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def read_gene_record_count(path):
+    # Written atomically by the successful Bash filter job. A missing or
+    # malformed status is a failed extraction, never an inferred zero.
+    value = Path(path).read_text(encoding="utf-8").strip()
+    if not re.fullmatch(r"[0-9]+", value):
+        raise ValueError(f"Invalid extraction record count: {path}")
+    return int(value)
+
+
+def publish_gene_selection(requests, scope, manifest_path, report_path):
+    manifest_path, report_path = Path(manifest_path), Path(report_path)
+    retained, skipped = [], []
+    for requested in requests:
+        record = dict(requested)
+        if record.get("reason") == MISSING_MAPPING:
+            record.update(raw_records=None, final_records=None)
+            skipped.append(record)
+            continue
+        raw = read_gene_record_count(record["raw_count"])
+        final = raw if record["final_count"] == record["raw_count"] else read_gene_record_count(record["final_count"])
+        if final > raw:
+            raise ValueError(f"Scope-filtered record count exceeds raw count for {record['gene_id']}")
+        record.update(raw_records=raw, final_records=final)
+        if not raw:
+            record["reason"] = "no_matching_input_records"
+            skipped.append(record)
+        elif not final:
+            record["reason"] = "no_records_after_scope_filter"
+            skipped.append(record)
+        else:
+            retained.append(record)
+    manifest = {"schema_version": 1, "gene_scope": scope,
+                "retained": retained, "skipped": skipped,
+                "requested_count": len(requests),
+                "retained_count": len(retained), "skipped_count": len(skipped)}
+
+    # Finish reading every status before publishing a report or removing the
+    # previous one. Parallel filter jobs never append to the same report.
+    if skipped:
+        buffer = io.StringIO(newline="")
+        writer = csv.writer(buffer, delimiter="\t", lineterminator="\n")
+        writer.writerow(REPORT_COLUMNS)
+        for record in skipped:
+            writer.writerow([
+                record["gene_id"], record.get("source_chrom") or ".", record.get("region") or ".",
+                scope, record["reason"],
+                record["raw_records"] if record["raw_records"] is not None else ".",
+                record["final_records"] if record["final_records"] is not None else ".",
+            ])
+        atomic_selection_text(report_path, buffer.getvalue())
+    elif report_path.exists():
+        report_path.unlink()
+    atomic_selection_text(manifest_path, json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+    return manifest
+
+# ---- Extraction dependencies ----
+# Changes to a gene list/map, its limit, scope or coordinates must
+# invalidate the selection manifest. JSON params also track inline gene lists.
+GENE_REQUEST_SOURCES = list(dict.fromkeys(
+    path for path in (GENE_LIST_FILE, CHROM_SOURCE) if path and os.path.isfile(path)
+))
+GENE_FILTERED_INPUTS = list(dict.fromkeys(
+    path for gene in GENE_REQUESTS
+    for path in (gene.get("raw_vcf"), gene.get("final_vcf"), gene.get("raw_count"), gene.get("final_count"))
+    if path is not None
+))
+
+
+checkpoint select_nonempty_genes:
+    input:
+        cohort=config["input_vcf"],
+        sources=GENE_REQUEST_SOURCES,
+        vcfs=GENE_FILTERED_INPUTS,
+    output:
+        manifest=f"{RESULTS_DIR}/temp/gene_availability.json",
+    params:
+        payload=json.dumps(GENE_REQUESTS, sort_keys=True),
+        scope=GENE_SCOPE,
+        report=f"{RESULTS_DIR}/skipped_genes.tsv",
+    resources:
+        mem_mb=1000,
+    run:
+        manifest = publish_gene_selection(json.loads(params.payload), params.scope,
+                                          output.manifest, params.report)
+        print(f"Gene availability: {manifest['retained_count']} retained; "
+              f"{manifest['skipped_count']} skipped", flush=True)
+        if manifest["skipped"]:
+            print(f"Skipped-gene details (before neutral preparation): {params.report}", flush=True)
+        require_retained_genes(manifest, params.report)
+
 if RUN_NEUTRAL_SIM and NEUTRAL_EXTRACT_SNPEFF:
     rule extract_neutral_markers_snpeff:
         input:
+            availability=neutral_availability_manifest,
             vcf=config["input_vcf"],
             script="code/snpeff_vcf_create_neutral_marker_file.sh",
         output:
@@ -665,7 +842,8 @@ if RUN_NEUTRAL_SIM and NEUTRAL_EXTRACT_SNPEFF:
 if RUN_NEUTRAL_SIM and NEUTRAL_READ_MARKER_TABLE:
     rule normalize_neutral_markers:
         input:
-            markers=config["markers_file"],
+            availability=neutral_availability_manifest,
+            markers=neutral_source_after_selection(config["markers_file"]),
             script="code/1_neutral_simulation_markers.py",
         output:
             markers=NEUTRAL_MARKERS,
@@ -679,8 +857,9 @@ if RUN_NEUTRAL_SIM and NEUTRAL_READ_MARKER_TABLE:
 if RUN_NEUTRAL_SIM and not NEUTRAL_SUPPLIED_POOL:
     rule extract_neutral_pool:
         input:
+            availability=neutral_availability_manifest,
             vcf=config["input_vcf"],
-            markers=NEUTRAL_MARKERS,
+            markers=neutral_source_after_selection(NEUTRAL_MARKERS),
             script="code/2_neutral_simulation_vcfs.sh",
             helper="code/3_neutral_simulation_subsets.py",
         output:
@@ -704,7 +883,8 @@ if RUN_NEUTRAL_SIM and not NEUTRAL_SUPPLIED_POOL:
 
     rule validate_neutral_pool:
         input:
-            pool=NEUTRAL_POOL,
+            availability=neutral_availability_manifest,
+            pool=neutral_source_after_selection(NEUTRAL_POOL),
             markers=f"{NEUTRAL_DIR}/target_markers.tsv",
             script="code/2_neutral_simulation_vcfs.sh",
             helper="code/3_neutral_simulation_subsets.py",
@@ -726,7 +906,8 @@ if RUN_NEUTRAL_SIM and not NEUTRAL_SUPPLIED_POOL:
 if RUN_NEUTRAL_SIM and NEUTRAL_SUPPLIED_POOL:
     rule prepare_existing_neutral_pool:
         input:
-            pool=NEUTRAL_POOL,
+            availability=neutral_availability_manifest,
+            pool=neutral_source_after_selection(NEUTRAL_POOL),
             script="code/2_neutral_simulation_vcfs.sh",
             helper="code/3_neutral_simulation_subsets.py",
         output:
@@ -744,7 +925,8 @@ if RUN_NEUTRAL_SIM and NEUTRAL_SUPPLIED_POOL:
 if RUN_NEUTRAL_SIM:
     rule plan_neutral_subsets:
         input:
-            pool=NEUTRAL_POOL,
+            availability=neutral_availability_manifest,
+            pool=neutral_source_after_selection(NEUTRAL_POOL),
             index=NEUTRAL_POOL_INDEX,
             gene_vcf=wingen_vcf_input,
             script="code/3_neutral_simulation_subsets.py",
@@ -771,7 +953,8 @@ if RUN_NEUTRAL_SIM:
         # Prepare every replicate for this chromosome/gene only. Its R report
         # waits here; other genes can prepare or analyse their own VCFs in parallel.
         input:
-            pool=NEUTRAL_POOL,
+            availability=neutral_availability_manifest,
+            pool=neutral_source_after_selection(NEUTRAL_POOL),
             index=NEUTRAL_POOL_INDEX,
             plan=rules.plan_neutral_subsets.output.plan,
             metadata=rules.plan_neutral_subsets.output.metadata,
@@ -1011,7 +1194,9 @@ rule run_wingen_report:
 
 rule aggregate_gene_summaries:
     input:
-        markers=done_marker_paths(),
+        markers=done_marker_paths,
+        availability=availability_manifest,
+        script="code/aggregate_gene_summaries.py",
 
     output:
         duckdb=f"{RESULTS_DIR}/results/gene_catalog.duckdb",
@@ -1022,9 +1207,10 @@ rule aggregate_gene_summaries:
     #     "wingen_env"
     shell:
         """
-        python code/aggregate_gene_summaries.py \
-            --duckdb {output.duckdb} \
-            --tsv {output.tsv}
+        python {input.script:q} \
+            --availability-manifest {input.availability:q} \
+            --duckdb {output.duckdb:q} \
+            --tsv {output.tsv:q}
         """
 
 
@@ -1102,17 +1288,23 @@ rule build_gene_catalog_html:
     """
     input:
         duckdb=rules.aggregate_gene_summaries.output.duckdb,
+        availability=availability_manifest,
+        builder="code/build_gene_catalog_html.py",
+        template="code/templates/gene_catalog_template.html",
     output:
         html=f"{RESULTS_DIR}/results/gene_catalog.html",
+    params:
+        skipped_genes=f"{RESULTS_DIR}/skipped_genes.tsv",
     container:
         CONTAINER
     # conda:
     #     "wingen_env"
     shell:
         """
-        python code/build_gene_catalog_html.py \
-            --duckdb {input.duckdb} \
-            --html {output.html}
+        python {input.builder:q} \
+            --duckdb {input.duckdb:q} \
+            --html {output.html:q} \
+            --skipped-genes {params.skipped_genes:q}
         """
 
 # rule build_gene_catalog_html:

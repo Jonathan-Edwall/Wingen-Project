@@ -37,6 +37,16 @@
     padding: 6px 10px;
   }
   .meta.error[hidden] { display: none; }
+  #skipped-genes { margin: 0 0 18px; }
+  #skipped-genes > summary { width: fit-content; }
+  #skipped-genes[open] > summary { margin-bottom: 10px; }
+  .skipped-report { overflow-x: auto; border: 1px solid var(--line); border-radius: 5px; padding: 12px; }
+  .skipped-report p { margin: 0 0 10px; color: var(--muted); }
+  .skipped-report table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  .skipped-report caption { text-align: left; font-weight: 600; margin-bottom: 8px; }
+  .skipped-report th, .skipped-report td { text-align: left; border-bottom: 1px solid var(--line); padding: 6px 10px; }
+  .skipped-report th { white-space: nowrap; }
+  .skipped-report td.num { text-align: right; }
   table.dataTable {
     width: 100% !important;
     border-collapse: collapse;
@@ -213,6 +223,30 @@
 {% if empty_columns_note %}<p class="meta">{{ empty_columns_note }}</p>{% endif %}
 {% if neutral_thresholds_present %}<p class="meta">Location results are grouped by Pearson and Spearman. Each p neutral compares the observed correlation magnitude with neutral simulations. Neutral |r| and |ρ| show upper percentiles of their corresponding neutral distributions; hover over a header for details. Sim status “ok” means the comparison is available.</p>{% endif %}
 <p id="table-error" class="meta error" role="alert" hidden></p>
+
+{% if skipped_genes %}
+<details id="skipped-genes">
+  <summary class="chip">Skipped genes ({{ skipped_genes | length }})</summary>
+  <div class="skipped-report">
+    <p>These genes were excluded from the catalog. The table contains the entries from this run's skipped_genes.tsv report.</p>
+    <table>
+      <caption>Skipped genes and reasons</caption>
+      <thead><tr>
+        <th scope="col">Gene ID</th><th scope="col">Chromosome</th><th scope="col">Requested region</th>
+        <th scope="col">Scope</th><th scope="col">Reason</th><th scope="col">Input records</th><th scope="col">Retained records</th>
+      </tr></thead>
+      <tbody>
+      {% for row in skipped_genes %}
+        <tr>
+          <td class="gene-id">{{ row.gene_id }}</td><td>{{ row.chromosome }}</td><td>{{ row.requested_region }}</td>
+          <td>{{ row.gene_scope }}</td><td>{{ row.reason }}</td><td class="num">{{ row.raw_vcf_records }}</td><td class="num">{{ row.retained_vcf_records }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</details>
+{% endif %}
 
 <div id="toolbar">
   <label class="decimals-control">Decimals: <input type="number" id="decimals-input" min="0" max="10" value="6"></label>

@@ -30,6 +30,8 @@ Run once, at the end of the DAG, on purpose (see the rule's own comment in
 the Snakefile) - re-run any time via `snakemake --forcerun build_gene_catalog_html`.
 """
 import argparse
+import csv
+import io
 import json
 import math
 import os
@@ -495,6 +497,38 @@ def embeddable_json(value):
     return json.dumps(value).replace("<", "\\u003c")
 
 
+def read_skipped_genes(path):
+    """Read the optional report; absent or row-free reports add no HTML control."""
+    if not path:
+        return []
+    try:
+        with open(path, encoding="utf-8-sig", newline="") as handle:
+            text = handle.read()
+    except FileNotFoundError:
+        return []
+    if not text.strip():
+        return []
+    reader = csv.reader(io.StringIO(text.lstrip("\r\n")), delimiter="\t")
+    columns = (
+        "gene_id", "chromosome", "requested_region", "gene_scope", "reason",
+        "raw_vcf_records", "retained_vcf_records",
+    )
+    header = next(reader, [])
+    if not set(columns).issubset(header) or len(header) != len(set(header)):
+        raise ValueError(f"Invalid skipped-gene report header: {path}")
+    records = []
+    for values in reader:
+        if not any(value.strip() for value in values):
+            continue
+        if len(values) != len(header):
+            raise ValueError(f"Invalid skipped-gene report row {reader.line_num}: {path}")
+        row = dict(zip(header, values))
+        if not row["gene_id"].strip():
+            raise ValueError(f"Missing gene_id in skipped-gene report row {reader.line_num}: {path}")
+        records.append(row)
+    return records
+
+
 def gene_plot_paths(gene_id, gene_dir, html_output_path):
     """PNGs for this specific gene, as paths relative to wherever the HTML
     file itself ends up (so the page keeps working if results/ is zipped
@@ -560,10 +594,12 @@ def read_gd_metric(con, table, existing_cols):
 parser = argparse.ArgumentParser()
 parser.add_argument("--duckdb", required=True)
 parser.add_argument("--html", required=True)
+parser.add_argument("--skipped-genes", help="Optional skipped_genes.tsv to embed in a collapsed report")
 args = parser.parse_args()
 
 duckdb_path = args.duckdb
 html_path = args.html
+skipped_genes = read_skipped_genes(args.skipped_genes)
 
 con = duckdb.connect(duckdb_path, read_only=True)
 # con = duckdb.connect(snakemake.input.duckdb, read_only=True)
@@ -616,6 +652,7 @@ html = env.get_template("gene_catalog_template.html").render(
     generated_at=generated_at_display,
     gd_stat=gd_stat,
     gd_label=gd_label,
+    skipped_genes=skipped_genes,
     empty_columns_note=empty_columns_note,
     neutral_thresholds_present=any(
         "_neutral_abs_r_q" in key or "_neutral_abs_rho_q" in key
@@ -625,7 +662,7 @@ html = env.get_template("gene_catalog_template.html").render(
     columns_json=embeddable_json(column_layout),
 )
 
-with open(html_path, "w") as f:
+with open(html_path, "w", encoding="utf-8") as f:
     f.write(html)
 
 print(f"wrote {len(records)} rows to {html_path}")

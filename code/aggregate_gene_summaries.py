@@ -41,6 +41,7 @@ statistics: that is checked right after the load below.
 Per-gene statistics are passed through without multiple-testing adjustment.
 """
 import argparse
+import json
 import os
 import re
 
@@ -49,6 +50,7 @@ import duckdb
 parser = argparse.ArgumentParser()
 parser.add_argument("--duckdb", required=True)
 parser.add_argument("--tsv", required=True)
+parser.add_argument("--availability-manifest", help="Read only retained summaries from this run.")
 args = parser.parse_args()
 
 duckdb_path = args.duckdb
@@ -65,6 +67,29 @@ tsv_path = args.tsv
 gene_catalog_dir = os.path.dirname(duckdb_path) or "."
 SUMMARY_GLOB = os.path.join(gene_catalog_dir, "*", "*_gene_summary.json")
 
+# Restrict a workflow run to its retained genes, ignoring stale summaries for
+# skipped genes or genes removed from the list. Validate before opening DuckDB
+# so an all-skipped run cannot create an empty catalog database or TSV.
+summary_source = SUMMARY_GLOB
+if args.availability_manifest:
+    with open(args.availability_manifest, encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    retained = manifest.get("retained")
+    if manifest.get("schema_version") != 1 or not isinstance(retained, list):
+        raise RuntimeError("Invalid gene availability manifest: expected schema_version 1 and retained list.")
+    if not retained:
+        raise RuntimeError("No genes have retained VCF records; see skipped_genes.tsv. No catalog was created.")
+    summary_source = []
+    for record in retained:
+        path = record["summary_path"]
+        if not os.path.isfile(path):
+            raise RuntimeError(f"Missing summary for retained gene {record['gene_id']!r}: {path}")
+        with open(path, encoding="utf-8") as handle:
+            summary = json.load(handle)
+        if not isinstance(summary, dict) or summary.get("gene_id") != record["gene_id"]:
+            raise RuntimeError(f"Summary gene_id does not match retained gene {record['gene_id']!r}: {path}")
+        summary_source.append(path)
+
 con = duckdb.connect(duckdb_path)
 # import os
 # import re
@@ -76,11 +101,12 @@ con = duckdb.connect(duckdb_path)
 # con = duckdb.connect(snakemake.output.duckdb)
 
 con.execute(
-    f"""
+    """
     CREATE OR REPLACE TABLE genes AS
     SELECT *
-    FROM read_json_auto('{SUMMARY_GLOB}', filename = true, union_by_name = true)
-    """
+    FROM read_json_auto(?, filename = true, union_by_name = true)
+    """,
+    [summary_source],
 )
 # con.execute(
 #     f"""

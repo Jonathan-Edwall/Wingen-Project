@@ -58,8 +58,15 @@ study_species: herring_SECD # Herring SECD
 # gene_list_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/unique_genes.txt"  
 # gene_list_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/herring_SECD_candidate_genes.bed"  # Herring SECD
 
+# Create the BED from the annotation table if gene_list_file does not exist.
+gene_annotation_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/ALL_SNP_Gene_Annotations.txt"
+# gene_list_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/herring_SECD_gene_list.bed"
+gene_list_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/herring_SECD_annotated_table_genes.bed"
+
+gene_annotation_include_biotypes: []  # all; or [protein_coding], [protein_coding, lncRNA, rRNA]
+
 # gene_chrom_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/gene_chrom.tsv"  # Herring 125 Ind Global Dataset required if the gene list comes from a txt file or or array; built by code/build_gene_chrom_map.py.
-gene_chrom_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/gene_chrom.tsv"  # Herring SECD
+gene_chrom_file: null  # not required in BED mode; chromosome comes from column 1
 
 # genes:
 #   - ENSCHAG00000000003
@@ -67,8 +74,9 @@ gene_chrom_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/r
 
 # optional - caps the resolved gene list to its first N genes, for a
 # quick test run without needing a separate small gene_list_file
-gene_list_limit: 12
+gene_list_limit: 20
 # gene_list_limit: 1
+# Keep the latest config's 12-gene test cap; set null for the full generated list.
 
 
 # "all" (default) | "body" | "exonic" | "cds" - narrows each gene's
@@ -129,7 +137,7 @@ gd_stat: "tajimas_d" # or "watterson_theta"
 gd_label: ""
 gd_label_short: ""
 # gd_dosage_missing_policy: "complete_sites"
-results_dir: "gene_catalog/herring_secd_td_v2"
+results_dir: "gene_catalog/herring_secd_at_td"
 # gd_stat: "watterson_theta" # or "watterson_theta"
 # gd_label: ""
 # gd_label_short: ""
@@ -148,7 +156,7 @@ run_neutral_sim: true  # single toggle for neutral Snakemake rules and RUN_NEUTR
 # The rule logs candidate/exclusion counts and writes a CHROM/POS TSV (1-based positions, no intervals) for extract_neutral_pool.
 # markers_file is required for bed mode when neutral_vcf is unset.
 # Accepts an annotated table, a table already containing only neutral markers, a headerless 1-based CHROM/POS list, or single-base BED intervals.
-# markers_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/pnas.2526500123.sd03.xlsx" # Herring SECD
+markers_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/pnas.2526500123.sd03.xlsx" # Herring SECD
 # neutral_vcf: null  # already-neutral BGZF VCF; when provided, markers_file and its table settings are ignored
 input_format: "auto"  # auto: .bed[.gz] -> bed, otherwise table; use positions for a headerless CHROM/POS list
 sheet: "Sheet1"

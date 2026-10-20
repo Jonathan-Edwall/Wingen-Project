@@ -22,6 +22,9 @@ script_start=$(date +%s)
 #     up automatically to match (.gz appended/stripped as needed), so the file
 #     on disk never lies about whether it's actually compressed.
 #   FILTER_GENE_CHROM (optional environment variable): limit gene mode to this chromosome.
+#   VCF_RECORD_COUNT_FILE (optional environment variable): atomically write the
+#     successfully decoded output record count, including 0 for an empty VCF.
+#     Snakemake uses this status to skip empty genes before analysis.
 #
 #   gene mode: <value> is always a single gene ID, e.g. ENSCHAG00000012345. What it's
 #   matched against depends on what $INPUT actually is (checked from its header, not the
@@ -116,20 +119,75 @@ else
     OUTPUT_TYPE="v"        # bcftools -O v = plain-text VCF
 fi
 
+VCF_RECORD_COUNT_FILE="${VCF_RECORD_COUNT_FILE:-}"
+if [[ -n "$VCF_RECORD_COUNT_FILE" ]] && [[
+    "$VCF_RECORD_COUNT_FILE" == "$INPUT" || "$VCF_RECORD_COUNT_FILE" == "$OUTPUT" ||
+    "$VCF_RECORD_COUNT_FILE" -ef "$INPUT" || "$VCF_RECORD_COUNT_FILE" -ef "$OUTPUT"
+]]; then
+    echo "ERROR: VCF_RECORD_COUNT_FILE must differ from the input and output VCF paths." >&2
+    exit 1
+fi
+
 ####################################
 # Running the filter
 ####################################
 
-if [[ "$MODE" == "chr" ]]; then
+if [[ "$MODE" != "chr" && "$MODE" != "gene" ]]; then
+    echo "ERROR: second argument must be 'chr' or 'gene' (got '$2')" >&2
+    exit 1
+fi
 
-    # Check chromosome naming convention in the input VCF.
-    # Get the CHROM value from the first actual variant row.
-    VCF_FIRST_CHROM=$(bcftools query -f '%CHROM\n' "$INPUT" | sed -n '1p')
+# Read chromosome names from the header instead of scanning the cohort merely
+# to inspect its first marker. Exact matches win; only a single chr-prefix
+# alias is accepted. A missing chromosome is a valid zero-record selection,
+# whereas unreadable input and ambiguous aliases remain errors.
+VCF_HEADER=$(bcftools view -h "$INPUT")
+VCF_CONTIG_TEXT=$(printf '%s\n' "$VCF_HEADER" | sed -n 's/^##contig=<ID=\([^,>]*\).*/\1/p')
+if [[ -z "$VCF_CONTIG_TEXT" ]]; then
+    # Older VCFs can omit ##contig definitions. This compatibility fallback
+    # reads their records, and propagates query errors rather than hiding them
+    # inside process substitution. A valid header-only VCF yields no contigs.
+    VCF_CONTIG_TEXT=$(bcftools query -f '%CHROM\n' "$INPUT" | sort -u)
+fi
+VCF_CONTIGS=()
+if [[ -n "$VCF_CONTIG_TEXT" ]]; then
+    mapfile -t VCF_CONTIGS <<< "$VCF_CONTIG_TEXT"
+fi
 
-    if [[ -z "$VCF_FIRST_CHROM" ]]; then
-        echo "ERROR: Could not determine chromosome naming from '$INPUT'." >&2
+resolve_contig() {
+    local requested="$1" canonical contig contig_canonical
+    local -a aliases=()
+    CHROM_MATCH=""
+    CONTIG_MISSING=false
+    for contig in "${VCF_CONTIGS[@]}"; do
+        if [[ "$contig" == "$requested" ]]; then
+            CHROM_MATCH="$contig"
+            return
+        fi
+    done
+    canonical="$requested"
+    [[ "${canonical,,}" != chr* ]] || canonical="${canonical:3}"
+    for contig in "${VCF_CONTIGS[@]}"; do
+        contig_canonical="$contig"
+        [[ "${contig_canonical,,}" != chr* ]] || contig_canonical="${contig_canonical:3}"
+        [[ "$contig_canonical" != "$canonical" ]] || aliases+=("$contig")
+    done
+    if [[ ${#aliases[@]} -gt 1 ]]; then
+        echo "ERROR: chromosome '$requested' has ambiguous matches in '$INPUT': ${aliases[*]}" >&2
         exit 1
+    elif [[ ${#aliases[@]} -eq 1 ]]; then
+        CHROM_MATCH="${aliases[0]}"
+    else
+        CONTIG_MISSING=true
     fi
+}
+
+write_empty_vcf() {
+    echo "No matching chromosome '$1' in '$INPUT'; writing a header-only VCF." >&2
+    bcftools view -h -O "$OUTPUT_TYPE" -o "$OUTPUT" "$INPUT"
+}
+
+if [[ "$MODE" == "chr" ]]; then
 
     # VALUE can be either:
     #   chr19
@@ -145,40 +203,15 @@ if [[ "$MODE" == "chr" ]]; then
         VALUE_CHROM="${VALUE%%:*}"
         VALUE_COORDS="${VALUE#*:}"
 
-        # Match VALUE chromosome naming to the VCF chromosome naming.
-        if [[ "$VCF_FIRST_CHROM" != chr* && "$VALUE_CHROM" == chr* ]]; then
-            VALUE_CHROM="${VALUE_CHROM#chr}"
-            echo "VCF uses chromosome names without 'chr'."
-            echo "Removed 'chr' prefix from VALUE."
-
-        elif [[ "$VCF_FIRST_CHROM" == chr* && "$VALUE_CHROM" != chr* ]]; then
-            VALUE_CHROM="chr${VALUE_CHROM}"
-            echo "VCF uses 'chr' chromosome names."
-            echo "Added 'chr' prefix to VALUE."
+        if [[ ! "$VALUE_COORDS" =~ ^[0-9]+(-[0-9]+)?$ ]]; then
+            echo "ERROR: invalid region coordinates '$VALUE_COORDS'." >&2
+            exit 1
         fi
-
-        # Reconstruct the region.
-        VALUE="${VALUE_CHROM}:${VALUE_COORDS}"
-
     else
-
-        # VALUE is just a chromosome, e.g. chr19 or 19.
-
-        if [[ "$VCF_FIRST_CHROM" != chr* && "$VALUE" == chr* ]]; then
-            VALUE="${VALUE#chr}"
-            echo "VCF uses chromosome names without 'chr'."
-            echo "Removed 'chr' prefix from VALUE."
-
-        elif [[ "$VCF_FIRST_CHROM" == chr* && "$VALUE" != chr* ]]; then
-            VALUE="chr${VALUE}"
-            echo "VCF uses 'chr' chromosome names."
-            echo "Added 'chr' prefix to VALUE."
-        fi
-
+        VALUE_CHROM="$VALUE"
+        VALUE_COORDS=""
     fi
-
-    echo "VCF chromosome naming detected from first variant: $VCF_FIRST_CHROM"
-    echo "Filtering in $MODE with -r (VALUE): $VALUE"
+    resolve_contig "$VALUE_CHROM"
 
     # The compressed VCF needs an index file (.tbi or .csi).
     # Rebuild the index if it is older than the VCF.
@@ -211,7 +244,13 @@ if [[ "$MODE" == "chr" ]]; then
     #                    v = plain-text VCF
     # -o "$OUTPUT"      path for the saved result
     # "$INPUT"           path for the input file
-    bcftools view -r "$VALUE" -O "$OUTPUT_TYPE" -o "$OUTPUT" "$INPUT"
+    if [[ "$CONTIG_MISSING" == true ]]; then
+        write_empty_vcf "$VALUE_CHROM"
+    else
+        VALUE="$CHROM_MATCH${VALUE_COORDS:+:$VALUE_COORDS}"
+        echo "Filtering in $MODE with -r (VALUE): $VALUE"
+        bcftools view -r "$VALUE" -O "$OUTPUT_TYPE" -o "$OUTPUT" "$INPUT"
+    fi
 
 elif [[ "$MODE" == "gene" ]]; then
 
@@ -219,39 +258,19 @@ elif [[ "$MODE" == "gene" ]]; then
     # from a BED file of coordinates, are both handled a level up (see the header
     # comment above and 2_wingen_create_gene_catalog.sh).
 
-    VCF_HEADER=$(bcftools view -h "$INPUT")
     CHROM_ARGS=()
+    CONTIG_MISSING=false
     if [[ -n "$GENE_CHROM" ]]; then
-        # Keep old chr-prefixed mapping files compatible with VCFs using bare names.
-        mapfile -t VCF_CONTIGS < <(printf '%s\n' "$VCF_HEADER" | sed -n 's/^##contig=<ID=\([^,>]*\).*/\1/p')
-        if [[ ${#VCF_CONTIGS[@]} -eq 0 ]]; then
-            mapfile -t VCF_CONTIGS < <(bcftools query -f '%CHROM\n' "$INPUT" | sort -u)
+        resolve_contig "$GENE_CHROM"
+        if [[ "$CONTIG_MISSING" == false ]]; then
+            CHROM_ARGS=(-t "$CHROM_MATCH")
         fi
-        REQUESTED_CANONICAL="$GENE_CHROM"
-        [[ "${REQUESTED_CANONICAL,,}" != chr* ]] || REQUESTED_CANONICAL="${REQUESTED_CANONICAL:3}"
-        CHROM_MATCH=""
-        CHROM_ALIASES=()
-        for CONTIG in "${VCF_CONTIGS[@]}"; do
-            if [[ "$CONTIG" == "$GENE_CHROM" ]]; then
-                CHROM_MATCH="$CONTIG"
-                break
-            fi
-            CONTIG_CANONICAL="$CONTIG"
-            [[ "${CONTIG_CANONICAL,,}" != chr* ]] || CONTIG_CANONICAL="${CONTIG_CANONICAL:3}"
-            [[ "$CONTIG_CANONICAL" != "$REQUESTED_CANONICAL" ]] || CHROM_ALIASES+=("$CONTIG")
-        done
-        if [[ -z "$CHROM_MATCH" && ${#CHROM_ALIASES[@]} -eq 1 ]]; then
-            CHROM_MATCH="${CHROM_ALIASES[0]}"
-        fi
-        if [[ -z "$CHROM_MATCH" ]]; then
-            echo "ERROR: chromosome '$GENE_CHROM' has no unambiguous match in '$INPUT'." >&2
-            exit 1
-        fi
-        CHROM_ARGS=(-t "$CHROM_MATCH")
     fi
 
     # Confirmed against the VCF's own header, whether plain or bgzip-compressed.
-    if grep -q '^##INFO=<ID=ANN,' <<< "$VCF_HEADER"; then
+    if [[ "$CONTIG_MISSING" == true ]]; then
+        write_empty_vcf "$GENE_CHROM"
+    elif grep -q '^##INFO=<ID=ANN,' <<< "$VCF_HEADER"; then
 
         ####################################
         # SnpEff-annotated VCF.
@@ -296,19 +315,32 @@ elif [[ "$MODE" == "gene" ]]; then
             | awk -F'\t' -v val="$VALUE" '/^#/ {print; next} index($8, val) > 0 {print}' \
             | bcftools view -O "$OUTPUT_TYPE" -o "$OUTPUT" -
 
-        n_matches=$(bcftools view -H "$OUTPUT" 2>/dev/null | wc -l)
-        if [ "$n_matches" -eq 0 ]; then
-            echo "WARNING: 0 variants matched '$VALUE'. With no known field structure to" >&2
-            echo "         confirm against, this could mean the gene has none, OR that" >&2
-            echo "         this VCF has no gene-tagging info in INFO at all - check a" >&2
-            echo "         known annotated line's INFO field by eye before trusting this." >&2
-        fi
     fi
 
 else
     # MODE was neither "chr" nor "gene" - stop instead of guessing what you meant
     echo "ERROR: second argument must be 'chr' or 'gene' (got '$2')" >&2
     exit 1
+fi
+
+# Decide whether extraction was empty here, while creating this gene's VCF.
+# pipefail keeps a failed decode from masquerading as a successful zero count.
+# Drop sample genotypes during counting to keep this validation inexpensive.
+n_variants=$(bcftools view -H -G "$OUTPUT" | awk 'END { print NR + 0 }')
+if [[ "$n_variants" -eq 0 ]]; then
+    echo "WARNING: no VCF records matched '$3'; this empty gene will be skipped by the catalog workflow." >&2
+fi
+
+# Each parallel extraction writes only its own integer sidecar. The workflow
+# merges them into one skip report after all extraction jobs have finished.
+# Publish only after successful filtering AND successful output decoding.
+if [[ -n "$VCF_RECORD_COUNT_FILE" ]]; then
+    mkdir -p "$(dirname "$VCF_RECORD_COUNT_FILE")"
+    record_count_tmp=$(mktemp "${VCF_RECORD_COUNT_FILE}.tmp.XXXXXX")
+    trap 'rm -f -- "$record_count_tmp"' EXIT
+    printf '%s\n' "$n_variants" > "$record_count_tmp"
+    mv -f -- "$record_count_tmp" "$VCF_RECORD_COUNT_FILE"
+    trap - EXIT
 fi
 
 echo "Done -> $OUTPUT" >&2
@@ -320,4 +352,5 @@ script_runtime=$((script_end-script_start))
 
 echo "Creating filtered VCF-file in BCFtools completed"
 echo "The outputfile is stored as: $OUTPUT"
+echo "Retained VCF records: $n_variants"
 echo "Runtime: $script_runtime seconds"

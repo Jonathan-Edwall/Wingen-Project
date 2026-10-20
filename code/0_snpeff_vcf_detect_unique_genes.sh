@@ -57,7 +57,7 @@ set -u   # nounset from here on - everything below only reads variables this
 ####################################
 # Options
 ####################################
-# Usage: snpeff_vcf_detect_unique_genes.sh [scope] [format] [output] [input_vcf]
+# Usage: 0_snpeff_vcf_detect_unique_genes.sh [scope] [format] [input_vcf] [output]
 #
 #   scope  : all | body | exonic | cds     (default: body)
 #     all    - every ANN mention, including upstream_gene_variant / downstream_gene_variant

@@ -42,7 +42,8 @@ Wingen-Project/
 │   ├── install_wingen_env.sh      # Optional local-conda alternative
 │   ├── filter_vcf_by_chr_or_gene.sh
 │   ├── filter_vcf_by_scope.sh
-│   ├── snpeff_vcf_detect_unique_genes.sh
+│   ├── 0_snpeff_vcf_detect_unique_genes.sh
+│   ├── 0_annotation_table_detect_unique_genes.sh
 │   ├── snpeff_vcf_create_neutral_marker_file.sh # intergenic SNPs -> CHROM/POS TSV
 │   ├── build_gene_chrom_map.py
 │   ├── aggregate_gene_summaries.py

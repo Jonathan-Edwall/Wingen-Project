@@ -729,6 +729,30 @@ def wingen_env_prefix(wildcards):
     return " ".join(f'{k}="{v}"' for k, v in params.items() if v is not None)
 
 
+def report_wingen_helper_inputs(wildcards):
+    """Track the required adapter and diagnostics when the optional file exists."""
+    paths = ["code/help_functions/wingen_efficiency.R"]
+    diagnostics = "code/help_functions/wingen_diagnostics.R"
+    if os.path.isfile(diagnostics):
+        paths.append(diagnostics)
+    return paths
+
+
+# BEGIN OLS_MODEL_AGREEMENT_DEPENDENCIES
+def report_location_screening_inputs(wildcards):
+    """Track the optional HTML viewer; the main Rmd fits and exports models."""
+    settings = config.get("wingen_params", {}) or {}
+    if not isinstance(settings, dict):
+        raise ValueError("wingen_params must be a YAML mapping")
+    enabled = settings.get("LOCATION_SCREENING_ENABLED", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("LOCATION_SCREENING_ENABLED must be a YAML boolean")
+    if not config.get("use_copernicus_marine", False) or not enabled:
+        return []
+    return ["code/templates/prediction_agreement.template.html"]
+# END OLS_MODEL_AGREEMENT_DEPENDENCIES
+
+
 rule filter_vcf_for_gene:
     """create_gene_vcf_file(): subset the cohort VCF to one gene's variants."""
     wildcard_constraints:
@@ -1234,6 +1258,8 @@ rule run_wingen_report:
         pool_metadata=lambda wc: [NEUTRAL_POOL_MANIFEST] if NEUTRAL_POOL_MAX_MARKERS is not None and (is_neutral_reference(wc) or run_neutral_for_locus(wc)) else [],
         coords=config["sample_coordinates_file"],
         rmd="code/2_Herring_Wingen.Rmd",
+        wingen_helpers=report_wingen_helper_inputs,
+        model_agreement_sources=report_location_screening_inputs,
         # One stable order-only dependency preserves reference reuse when the
         # ordinary gene limit/input list expands. Pool preparation stays earlier.
         ordinary_reports=lambda wc: [ancient(ORDINARY_REPORTS_COMPLETE)] if is_neutral_reference(wc) else [],
@@ -1527,7 +1553,7 @@ rule aggregate_gene_summaries:
 rule build_gene_catalog_html:
     """
     One static, sortable/searchable HTML page over the whole catalog -
-    DataTables.js loaded from its own CDN, no server needed. Deliberately
+    Pinned DataTables.js assets embedded locally, no server needed. Deliberately
     built only once, here, at the very end of the DAG, rather than kept
     continuously up to date - a stale-until-the-next-full-run catalog
     that's honest about it (see "generated <timestamp>" in the page
@@ -1543,6 +1569,12 @@ rule build_gene_catalog_html:
         availability=availability_manifest,
         builder="code/build_gene_catalog_html.py",
         template="code/templates/gene_catalog_template.html",
+        jquery_js="code/vendor/jquery-3.7.1.min.js",
+        datatables_js="code/vendor/dataTables-2.1.8.min.js",
+        datatables_css="code/vendor/dataTables-2.1.8.min.css",
+        jquery_license="code/vendor/jquery-LICENSE.txt",
+        datatables_license="code/vendor/dataTables-LICENSE.txt",
+        vendor_manifest="code/vendor/vendor_manifest.json",
     output:
         html=f"{RESULTS_DIR}/results/gene_catalog.html",
     params:

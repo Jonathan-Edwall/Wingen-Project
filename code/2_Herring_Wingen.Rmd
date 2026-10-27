@@ -231,6 +231,28 @@ WRITE_PER_LOCATION_TSV <- as.logical(Sys.getenv("WRITE_PER_LOCATION_TSV", unset 
 WRITE_LOCATION_STATS   <- as.logical(Sys.getenv("WRITE_LOCATION_STATS",   unset = TRUE))
 WRITE_RUN_SETTINGS     <- as.logical(Sys.getenv("WRITE_RUN_SETTINGS",     unset = TRUE))
 
+# >>> [environmental-model-agreement-settings]
+# This feature saves R-fitted full and cluster-withheld models with the maps.
+ema_toggle <- function(name) {
+  value <- tolower(trimws(Sys.getenv(name, "FALSE")))
+  if (!value %in% c("true", "false")) stop(name, " must be TRUE or FALSE")
+  value == "true"
+}
+LOCATION_SCREENING_ENABLED <- ema_toggle("LOCATION_SCREENING_ENABLED")
+LINKED_PERCENTILE_ENABLED <- LOCATION_SCREENING_ENABLED && ema_toggle("LINKED_PERCENTILE_ENABLED")
+if (tolower(Sys.getenv("LOCATION_SCREENING_ENV_WEIGHTING", "individual")) != "individual") stop("Environmental model agreement retains individual-weighted cluster means")
+ema_probs <- function(name, default, genetic = FALSE) {
+  raw <- trimws(Sys.getenv(name, default)); tokens <- strsplit(raw, ",", fixed = TRUE)[[1]]
+  value <- suppressWarnings(as.numeric(tokens))
+  if (startsWith(raw, ",") || endsWith(raw, ",") || any(!nzchar(trimws(tokens))) || length(value) < 2L || any(!is.finite(value)) || any(value < 0 | value > 1) ||
+      if (genetic) length(value) != 2L || any(value <= 0 | value >= 1) || any(diff(value) < 0) else value[1] != 0 || tail(value, 1) != 1 || any(diff(value) <= 0)) stop("Invalid ", name)
+  value
+}
+EMA_GD_PROBS <- ema_probs("LINKED_PERCENTILE_GD_PROBS", "0.3333333333333333,0.6666666666666667", TRUE)
+EMA_ENV_BREAKS <- ema_probs("LINKED_PERCENTILE_MATRIX_ENV_BREAKS", "0,.1,.2,.3,.4,.5,.6,.7,.8,.9,1")
+# Legacy direction/GAM/geographic/pair/interval flags are inert for this feature.
+# <<< [environmental-model-agreement-settings]
+
 
 ######### Defining kriging parameters for wkrig_gd() #########
 # grd_disagg_factor (previously used in krig_gd(disagg_grd), here used in terra:s disagg function instead since wkrigd_gd lacks this functionality:
@@ -581,6 +603,224 @@ knitr::opts_chunk$set(echo = TRUE)
 start_time <- Sys.time()
 
 
+```
+
+```{r environmental_model_data_export, include=FALSE}
+# >>> [environmental-model-agreement-model-functions]
+# Edit a label and its fit function here to change both full and withheld fits.
+# Models must support stats::coef(), stats::formula() and stats::predict(newdata).
+ema_model_definitions <- function() list(
+  linear = list(label = "Linear OLS", fit = function(data) stats::lm(gd ~ x_scaled, data = data, tol = 1e-10)),
+  quadratic = list(label = "Quadratic (degree 2)", fit = function(data) stats::lm(gd ~ x_scaled + I(x_scaled^2), data = data, tol = 1e-10))
+)
+ema_fit_models <- function(rows, definitions = ema_model_definitions()) {
+  stopifnot(is.data.frame(rows), all(c("cluster_id", "environment_value", "gd") %in% names(rows)),
+    all(c("linear", "quadratic") %in% names(definitions)))
+  x <- rows$environment_value; y <- rows$gd; ids <- as.character(rows$cluster_id)
+  paired <- which(is.finite(x) & is.finite(y)); n <- length(paired)
+  reason <- if (n < 4L) "At least four finite paired clusters are required." else
+    if (anyNA(ids[paired]) || any(!nzchar(trimws(ids[paired]))) || anyDuplicated(ids[paired])) "Paired cluster IDs must be present and unique." else
+    if (length(unique(x[paired])) < 2L) "The environmental values are constant." else
+    if (length(unique(y[paired])) < 2L) "The genetic values are constant." else NULL
+  eligible <- is.null(reason)
+  # x_scaled is centered/scaled using this training set only, never its heldout row.
+  fit_training <- function(train, definition) {
+    failed <- function(why) list(model = NULL, normalization = NULL, reason = why)
+    if (length(train) < 3L || length(unique(x[train])) < 2L) return(failed("Training environment is constant or has fewer than three pairs."))
+    divisor <- 1; center <- mean(x[train]); scale <- max(abs(x[train] - center))
+    if (!is.finite(scale)) {
+      divisor <- max(abs(x[train])); center <- mean(x[train]/divisor)
+      scale <- max(abs(x[train]/divisor - center))
+    }
+    normalization <- list(variable = "x_scaled", formula = "(environment_value / divisor - center) / scale",
+      divisor = divisor, center = center, scale = scale)
+    if (!is.finite(scale) || scale <= 0) return(failed("Training predictor cannot be scaled."))
+    data <- data.frame(gd = y[train], x_scaled = (x[train]/divisor - center)/scale)
+    model <- tryCatch(definition$fit(data), error = function(e) NULL)
+    coefficients <- if (is.null(model)) NULL else tryCatch(stats::coef(model), error = function(e) NULL)
+    if (is.null(coefficients) || !length(coefficients) || any(!is.finite(coefficients)) ||
+        (!is.null(model$rank) && model$rank != length(coefficients))) return(failed("Model fit failed or was rank deficient."))
+    list(model = model, normalization = normalization, reason = NULL)
+  }
+  predict_saved <- function(fitted, values) {
+    result <- rep(NA_real_, length(values))
+    if (is.null(fitted$model)) return(result)
+    z <- fitted$normalization
+    scaled <- (values/z$divisor - z$center)/z$scale
+    overflow <- !is.finite(scaled) & is.finite(values)
+    scaled[overflow] <- values[overflow]/z$divisor/z$scale - z$center/z$scale
+    prediction <- tryCatch(as.numeric(stats::predict(fitted$model,
+      newdata = data.frame(x_scaled = scaled))), error = function(e) result)
+    if (length(prediction) == length(result)) result[is.finite(prediction)] <- prediction[is.finite(prediction)]
+    result
+  }
+  rows$oof_ols <- rows$oof_quadratic <- rows$oof_baseline <- rep(NA_real_, nrow(rows))
+  grid <- data.frame(environment_value = numeric(), ols = numeric(), quadratic = numeric())
+  if (eligible) {
+    fraction <- seq(0, 1, length.out = 81L)
+    grid <- data.frame(environment_value = (1-fraction)*min(x[paired]) + fraction*max(x[paired]), ols = NA_real_, quadratic = NA_real_)
+    for (i in paired) rows$oof_baseline[i] <- mean(y[setdiff(paired, i)])
+  }
+  metadata <- list()
+  for (name in c("linear", "quadratic")) {
+    definition <- definitions[[name]]
+    full <- if (eligible) fit_training(paired, definition) else list(model = NULL, normalization = NULL, reason = reason)
+    column <- if (name == "linear") "oof_ols" else "oof_quadratic"
+    if (eligible) {
+      grid[[if (name == "linear") "ols" else "quadratic"]] <- predict_saved(full, grid$environment_value)
+      for (i in paired) rows[[column]][i] <- predict_saved(fit_training(setdiff(paired, i), definition), x[i])
+    }
+    metadata[[name]] <- list(label = definition$label, available = !is.null(full$model), reason = full$reason,
+      n_oof = sum(is.finite(rows[[column]])), formula = if (is.null(full$model)) NULL else paste(deparse(stats::formula(full$model)), collapse = " "),
+      call = if (is.null(full$model)) NULL else paste(deparse(full$model$call), collapse = " "),
+      coefficients = if (is.null(full$model)) NULL else as.list(stats::coef(full$model)), normalization = full$normalization,
+      fit_definition = paste(deparse(definition$fit), collapse = "\n"))
+  }
+  list(rows = rows, fit_grid = grid, on_demand = FALSE, fitting_engine = "R",
+    prediction_agreement = list(schema_version = 1L, metadata = list(prediction_column = "oof_ols", baseline_column = "oof_baseline")),
+    model_fitting = list(engine = "R", R_version = R.version.string, validation = "leave-one-cluster-out",
+      n_paired = n, eligible = eligible, reason = reason, models = metadata))
+}
+# <<< [environmental-model-agreement-model-functions]
+# >>> [environmental-model-agreement-export-functions]
+# Data, calibrated PNG overlays and a content/render-keyed environmental cache.
+# Existing report statistics and genetic calculations below remain unchanged.
+ema_hash <- function(value) {
+  file <- tempfile(fileext = ".rds"); on.exit(unlink(file))
+  saveRDS(value, file, compress = FALSE); unname(tools::md5sum(file))
+}
+ema_replace <- function(text, token, value) paste(strsplit(text, token, fixed = TRUE)[[1]], collapse = value)
+ema_escape <- function(text) {
+  for (pair in list(c("&", "&amp;"), c("<", "&lt;"), c(">", "&gt;"), c('"', "&quot;"))) text <- gsub(pair[1], pair[2], text, fixed = TRUE)
+  text
+}
+ema_canvas_positions <- function(points, box) {
+  x <- box$left + points$x * (box$right - box$left)
+  y <- box$bottom - points$y * (box$bottom - box$top)
+  inside <- is.finite(points$x) & is.finite(points$y) & points$x >= 0 & points$x <= 1 & points$y >= 0 & points$y <= 1
+  x[!inside] <- NA_real_; y[!inside] <- NA_real_
+  data.frame(x = x, y = y)
+}
+ema_save_map <- function(plot, filename, width, height, dpi) {
+  grDevices::png(filename, width = width, height = height, units = "in", res = dpi, bg = "white")
+  on.exit(grDevices::dev.off())
+  canvas <- grDevices::dev.size("in"); pixels <- grDevices::dev.size("px")
+  grob <- ggplot2::ggplotGrob(plot)
+  grid::grid.newpage(); grid::grid.draw(grob); grid::grid.force()
+  panel <- grob$layout[grob$layout$name == "panel", ]
+  if (nrow(panel) != 1L) stop("Agreement maps require one geographic panel")
+  grid::seekViewport(paste0("panel.", panel$t, "-", panel$l, "-", panel$b, "-", panel$r))
+  lo <- grid::deviceLoc(grid::unit(0, "npc"), grid::unit(0, "npc"), valueOnly = TRUE)
+  hi <- grid::deviceLoc(grid::unit(1, "npc"), grid::unit(1, "npc"), valueOnly = TRUE)
+  list(panel_bbox = list(left = lo$x/canvas[1], top = 1-hi$y/canvas[2], right = hi$x/canvas[1], bottom = 1-lo$y/canvas[2]),
+    dimensions = list(width = unname(pixels[1]), height = unname(pixels[2])))
+}
+ema_map_positions <- function(plot, rows, box) {
+  build <- ggplot2::ggplot_build(plot); coord <- build$layout$coord; panel <- build$layout$panel_params[[1]]
+  if (!inherits(coord, "CoordSf")) stop("Agreement maps require coord_sf")
+  input_crs <- if (is.null(coord$default_crs)) panel$crs else coord$default_crs
+  if (is.na(sf::st_crs(input_crs))) stop("Map input CRS is missing")
+  input <- data.frame(x = rep(NA_real_, nrow(rows)), y = rep(NA_real_, nrow(rows)))
+  valid <- which(is.finite(rows$lon_mean) & is.finite(rows$lat_mean) & abs(rows$lon_mean) <= 180 & abs(rows$lat_mean) <= 90)
+  if (length(valid)) {
+    points <- sf::st_as_sf(rows[valid, ], coords = c("lon_mean", "lat_mean"), crs = 4326)
+    xy <- sf::st_coordinates(sf::st_transform(points, input_crs)); input[valid, ] <- xy[, 1:2, drop = FALSE]
+  }
+  mapped <- ema_canvas_positions(coord$transform(input, panel), box)
+  data.frame(cluster_id = as.character(rows$cluster_id), mapped)
+}
+ema_geometry_ok <- function(meta) {
+  b <- unlist(meta$panel_bbox); d <- unlist(meta$dimensions)
+  isTRUE(length(b) == 4L && length(d) == 2L && all(is.finite(c(b, d))) && all(b >= 0 & b <= 1) && all(d > 0) && b["left"] < b["right"] && b["top"] < b["bottom"])
+}
+ema_cached_map <- function(directory, metric, key, render, timeout = 300) {
+  dir.create(directory, recursive = TRUE, showWarnings = FALSE)
+  file <- file.path(directory, paste0(gsub("[^A-Za-z0-9_]", "_", metric), "_", key, ".png"))
+  meta_file <- sub("\\.png$", ".json", file); lock <- paste0(file, ".lock")
+  ready <- function() {
+    if (!file.exists(file) || !file.exists(meta_file)) return(NULL)
+    meta <- tryCatch(jsonlite::read_json(meta_file), error = function(e) NULL)
+    if (is.null(meta) || !identical(meta$key, key) || !ema_geometry_ok(meta) ||
+        !identical(meta$image_md5, unname(tools::md5sum(file)))) return(NULL)
+    meta
+  }
+  deadline <- Sys.time() + timeout
+  repeat {
+    meta <- ready(); if (!is.null(meta)) return(c(list(file = file), meta))
+    if (dir.create(lock, showWarnings = FALSE)) break
+    if (Sys.time() > deadline) stop("Environmental image cache is busy or has an abandoned lock: ", lock)
+    Sys.sleep(.2)
+  }
+  on.exit(unlink(lock, recursive = TRUE), add = TRUE)
+  meta <- ready(); if (!is.null(meta)) return(c(list(file = file), meta))
+  pending <- tempfile(".environment-render-", tmpdir = directory, fileext = ".png")
+  pending_meta <- paste0(pending, ".json"); on.exit(unlink(c(pending, pending_meta)), add = TRUE)
+  meta <- c(list(key = key), render(pending)); meta$image_md5 <- unname(tools::md5sum(pending))
+  if (!ema_geometry_ok(meta)) stop("Environmental image has invalid measured geometry")
+  jsonlite::write_json(meta, pending_meta, auto_unbox = TRUE, digits = 15, pretty = TRUE)
+  # The metadata is the ready marker. Publish both files on this filesystem;
+  # readers never accept a partial PNG because its digest must match metadata.
+  unlink(meta_file); if (file.exists(file)) unlink(file)
+  if (!file.rename(pending, file) || !file.rename(pending_meta, meta_file)) stop("Could not publish environmental image cache")
+  c(list(file = file), meta)
+}
+ema_export <- function(table, layers, genetic_plot, environment_plot, output_dir, prefix, gene_id,
+    gd_stat, template_file, cache_dir, render_context, cluster_distance_km, gd_probs, environment_breaks,
+    width = 7, height = 10, dpi = 120, save_map = ema_save_map, positions = ema_map_positions,
+    raster_values = function(r) terra::values(r, mat = FALSE),
+    raster_geometry = function(r) list(crs = terra::crs(r), extent = as.vector(terra::ext(r)), resolution = terra::res(r), dimensions = dim(r)), genetic_summary = NULL) {
+  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+  manifest <- list(schema_version = 1L, gene_id = gene_id, gd_stat = gd_stat, on_demand = FALSE, fitting_engine = "R", metrics = list())
+  manifest_file <- file.path(output_dir, paste0(gene_id, "_linked_percentile_maps.json"))
+  if (nrow(table)) {
+    genetic_file <- paste0(prefix, "prediction_agreement_genetic.png")
+    genetic <- save_map(genetic_plot, file.path(output_dir, genetic_file), width, height, dpi)
+    genetic_positions <- positions(genetic_plot, table, genetic$panel_bbox)
+    labels <- c(salinity = "Salinity", temp_summer = "Summer water temperature", temp_winter = "Winter water temperature", chl_log = "ln(chlorophyll-a)", oxygen = "Dissolved oxygen", current_speed = "Current speed")
+    units <- c(salinity = "PSU", temp_summer = "deg C", temp_winter = "deg C", chl_log = "ln(mg/m^3)", oxygen = "mmol/m^3", current_speed = "m/s")
+    template <- paste(readLines(template_file, warn = FALSE, encoding = "UTF-8"), collapse = "\n")
+    if (!all(vapply(c("__PAGE_TITLE__", "__LINKED_PERCENTILE_DATA_JSON__"), function(token) grepl(token, template, fixed = TRUE), logical(1)))) stop("Unexpected environmental agreement template")
+    for (metric in intersect(names(layers), names(table))) {
+      label <- if (metric %in% names(labels)) labels[[metric]] else gsub("_", " ", metric)
+      unit <- if (metric %in% names(units)) units[[metric]] else ""
+      plot <- environment_plot(layers[[metric]], label, unit)
+      key <- ema_hash(list(metric = metric, values = raster_values(layers[[metric]]), geometry = raster_geometry(layers[[metric]]),
+        render = render_context, label = label, unit = unit, canvas = c(width, height, dpi)))
+      environment <- ema_cached_map(cache_dir, metric, key, function(file) save_map(plot, file, width, height, dpi))
+      shared <- if (normalizePath(dirname(cache_dir), winslash = "/") == normalizePath(output_dir, winslash = "/")) "environment_layers" else "../environment_layers"
+      environment_file <- paste0(shared, "/", basename(environment$file))
+      rows <- table[, intersect(c("cluster_id", "gd", "lat_mean", "lon_mean", "n_individuals", "n_individuals_for_gd"), names(table)), drop = FALSE]
+      rows$cluster_id <- as.character(rows$cluster_id); rows$environment_value <- table[[metric]]
+      rows$map_x <- genetic_positions$x; rows$map_y <- genetic_positions$y
+      fitted <- ema_fit_models(rows); rows <- fitted$rows
+      paired <- rows[is.finite(rows$gd) & is.finite(rows$environment_value), , drop = FALSE]
+      correlation <- function(method) if (nrow(paired) >= 2L && stats::sd(paired$gd) > 0 &&
+        stats::sd(paired$environment_value) > 0) unname(stats::cor(paired$gd, paired$environment_value, method = method)) else NA_real_
+      payload <- c(list(id = paste(gene_id, metric, sep = "__"), gene_id = gene_id, gd_stat = gd_stat, metric = metric,
+        label = label, unit = unit, environment_weighting = "individual", cluster_distance_km = cluster_distance_km,
+        correlations = list(pearson_r = correlation("pearson"), spearman_rho = correlation("spearman"), n = nrow(paired)),
+        genetic_summary = genetic_summary,
+        map_images = list(genetic = genetic_file, environment = environment_file), map_dimensions = genetic$dimensions,
+        map_positions = list(genetic = genetic_positions, environment = positions(plot, table, environment$panel_bbox)),
+        defaults = list(gd_percentiles = 100*gd_probs, environment_percentiles = 100*environment_breaks)), fitted)
+      stem <- paste0(prefix, "prediction_agreement_", metric); payload$data_file <- paste0(stem, "_data.tsv")
+      bundle <- list(schema_version = 1L, on_demand = FALSE, fitting_engine = "R", datasets = list(payload), default_dataset_id = payload$id)
+      encoded <- as.character(jsonlite::toJSON(bundle, auto_unbox = TRUE, digits = NA, dataframe = "rows", na = "null", null = "null"))
+      encoded <- ema_replace(encoded, "<", "\\u003c")
+      html <- ema_replace(template, "__PAGE_TITLE__", ema_escape(paste(gene_id, label, "Environmental model agreement", sep = " | ")))
+      html <- ema_replace(html, "__LINKED_PERCENTILE_DATA_JSON__", encoded)
+      writeLines(html, file.path(output_dir, paste0(stem, ".html")), useBytes = TRUE)
+      jsonlite::write_json(bundle, file.path(output_dir, paste0(stem, ".json")), auto_unbox = TRUE, digits = NA, dataframe = "rows", na = "null", null = "null", pretty = TRUE)
+      utils::write.table(rows, file.path(output_dir, payload$data_file), sep = "\t", quote = FALSE, row.names = FALSE, na = "NA")
+      manifest$metrics[[metric]] <- list(label = label, fit_unit = unit, interactive_file = paste0(stem, ".html"),
+        data_file = payload$data_file, json_file = paste0(stem, ".json"), on_demand = FALSE, fitting_engine = "R",
+        background_files = payload$map_images)
+    }
+  }
+  jsonlite::write_json(manifest, manifest_file, auto_unbox = TRUE, digits = 15, pretty = TRUE)
+  invisible(manifest)
+}
+# <<< [environmental-model-agreement-export-functions]
 ```
 
 <!--
@@ -1736,13 +1976,14 @@ if (USE_COPERNICUS_MARINE) {
       "| chlorophyll:", paste(env_years_chl, collapse = "-"), "\n")
   # <<< [env-presets] ---------------------------------------------------------------------------------------
 
-  # Reuses section 1.3's own padded sample-point bounding box (bb_raw/
-  # pad_raw_x/pad_raw_y) rather than recomputing it - one bounding box, one
-  # place it's derived, same reasoning as MAX_INTERP_DIST being computed
-  # once in section 1.4 rather than independently wherever it's needed.
+  # Cover the later 10%-padded display extent, plus a quarter-degree download
+  # margin for boundary grid cells. This requests full Copernicus fields;
+  # it does not interpolate environmental data from empirical sample means.
   # cms_download_subset()'s `region` is documented as xmin, ymin, xmax, ymax.
-  env_region        <- c(bb_raw[["xmin"]] - pad_raw_x, bb_raw[["ymin"]] - pad_raw_y,
-                          bb_raw[["xmax"]] + pad_raw_x, bb_raw[["ymax"]] + pad_raw_y)
+  env_region <- c(max(-180, bb_raw[["xmin"]] - 2*pad_raw_x - .25),
+                  max(-90, bb_raw[["ymin"]] - 2*pad_raw_y - .25),
+                  min(180, bb_raw[["xmax"]] + 2*pad_raw_x + .25),
+                  min(90, bb_raw[["ymax"]] + 2*pad_raw_y + .25))
   env_verticalrange <- c(-ENV_DEPTH_M, -ENV_DEPTH_M)  # package docs: values below the surface must be NEGATIVE
 
   # Loads a previously-cached layer if one exists at cache_path, otherwise
@@ -1751,6 +1992,9 @@ if (USE_COPERNICUS_MARINE) {
   # "fetch once" behavior, done as a simple on-disk check rather than a new
   # Snakemake rule, so it doesn't require restructuring the DAG right now.
   cached_env_raster <- function(cache_path, build) {
+    # A previous smaller request must not satisfy a wider study-region request.
+    region_tag <- paste(signif(env_region, 10), collapse = "_")
+    cache_path <- sub("\\.tif$", paste0("_bbox_", region_tag, ".tif"), cache_path)
     if (file.exists(cache_path)) return(terra::rast(cache_path))
     r <- build()
     # Write to a temporary name first and rename when finished: file.rename() is atomic within one folder, so a
@@ -3129,7 +3373,7 @@ if (compute_genetic_diversity_statistics == TRUE) {
   # Audit trail: one row per location (distance cluster) holding exactly the numbers the location-level fits were computed from (column `gd` = the statistic chosen with gd_stat, so the file has the same layout for all genetic diversity metrics). It lets every downstream analysis (partial R2, spatial autocorrelation, weighting by individuals per location, leave-one-out, checking that the environmental columns are identical across genes) run without re-running the window/kriging step.
   # Written next to the plots in the shared per-chromosome folder; the HTML builder only lists .png files and the aggregator only reads *_gene_summary.json, so it cannot interfere with either.
   # Switch off by setting WRITE_PER_LOCATION_TSV: FALSE in config.yaml (wingen_params).
-  if (isTRUE(WRITE_PER_LOCATION_TSV)) {
+  if (isTRUE(WRITE_PER_LOCATION_TSV) || (USE_COPERNICUS_MARINE && LINKED_PERCENTILE_ENABLED)) {
     loc_gene_id <- Sys.getenv("vcf_filter_value")
     loc_rows <- function(ids) match(ids, coords_file_df$`Sample ID`)
     per_location_table <- data.frame(
@@ -3156,11 +3400,47 @@ if (compute_genetic_diversity_statistics == TRUE) {
           unname(vapply(cluster_groups, function(ids) sum(env_raw_na_flags[[v]][ids], na.rm = TRUE), numeric(1)))
       }
     }
-    per_location_path <- file.path(output_dir, paste0(statistics_output_prefix, "_per_location.tsv"))
-    write.table(per_location_table, per_location_path, sep = "\t", quote = FALSE, row.names = FALSE)
-    cat("Per-location table written:", per_location_path, "\n")
+    if (isTRUE(WRITE_PER_LOCATION_TSV)) {
+      per_location_path <- file.path(output_dir, paste0(statistics_output_prefix, "_per_location.tsv"))
+      write.table(per_location_table, per_location_path, sep = "\t", quote = FALSE, row.names = FALSE)
+      cat("Per-location table written:", per_location_path, "\n")
+    }
   }
   # <<< [per-location-tsv] -----------------------------------------------------------------------------------
+
+  # >>> [environmental-model-agreement-export]
+  # environmental_layers was saved BEFORE coastal filling. These are full
+  # derived environmental rasters, not interpolation of cluster/sample means.
+  agreement_manifest <- file.path(output_dir, paste0(statistics_output_prefix, "_linked_percentile_maps.json"))
+  if (USE_COPERNICUS_MARINE && LINKED_PERCENTILE_ENABLED) {
+    agreement_map_theme <- ggplot2::theme(legend.position = "bottom", legend.box = "vertical",
+      plot.title = ggplot2::element_text(size = 13), plot.subtitle = ggplot2::element_text(size = 10))
+    agreement_map_guide <- ggplot2::guides(fill = ggplot2::guide_colourbar(direction = "horizontal",
+      title.position = "top", barwidth = grid::unit(4, "in"), barheight = grid::unit(.16, "in")))
+    agreement_environment_plot <- function(raster, label, unit) plot_with_context(raster, label,
+      paste0(label, if (nzchar(unit)) paste0(" (", unit, ")") else "")) +
+      ggplot2::labs(subtitle = "Copernicus environmental field", caption = NULL) + agreement_map_theme + agreement_map_guide
+    agreement_context <- list(layout = "bottom-colourbar-v2", palette = HEATMAP_COLOR_PALETTE, xlim = display_xlim, ylim = display_ylim,
+      display_resolution = display_res_deg, spherical = SPHERICAL_GRID,
+      display_grid = list(crs = terra::crs(display_template), extent = as.vector(terra::ext(display_template)), resolution = terra::res(display_template)),
+      plot_function = deparse(plot_with_context), theme = ggplot2::theme_get(),
+      land = sf::st_as_binary(sf::st_geometry(world_land_wgs84)), land_crs = sf::st_crs(world_land_wgs84)$wkt,
+      versions = vapply(c("terra", "sf", "ggplot2"), function(package) as.character(utils::packageVersion(package)), character(1)),
+      platform = c(R.version.string, Sys.info()[c("sysname", "machine")]))
+    agreement_prefix <- if (gene_catalog_run) paste0(statistics_output_prefix, "_", gd_key, "_") else output_prefix
+    agreement_aspect <- diff(display_xlim)*cos(mean(display_ylim)*pi/180)/diff(display_ylim)
+    if (!is.finite(agreement_aspect) || agreement_aspect <= 0) agreement_aspect <- 1
+    ema_export(per_location_table, environmental_layers,
+      gd_map + ggplot2::labs(title = gd_stat, subtitle = "Original Wingen surface", caption = NULL) + agreement_map_theme + agreement_map_guide,
+      agreement_environment_plot, output_dir, agreement_prefix, statistics_output_prefix, gd_stat,
+      file.path(github_repository_path, "code", "templates", "prediction_agreement.template.html"),
+      file.path(if (gene_catalog_run) dirname(output_dir) else output_dir, "environment_layers"),
+      agreement_context, CLUSTER_VARIANCE_POINTS_KM, EMA_GD_PROBS, EMA_ENV_BREAKS,
+      height = max(4, min(16, 7/agreement_aspect + .8)),
+      genetic_summary = list(windows = list(min = gd_min_raw_windows, max = gd_max_raw_windows, mean = gd_mean_raw_windows),
+        location = list(min = gd_min_per_location, max = gd_max_per_location, mean = gd_mean_per_location, n = n_locations_used)))
+  } else if (file.exists(agreement_manifest)) unlink(agreement_manifest)
+  # <<< [environmental-model-agreement-export]
 
   # --------------------------------------------------------------------
   # 5. Assemble and write the per-gene manifest
@@ -3329,7 +3609,12 @@ if (compute_genetic_diversity_statistics == TRUE) {
       min_n_samples_per_calc = min_n_samples_per_calc, wdim = wdim_value, fact = fact_value,
       resolution_km = resolution_m / 1e3, cluster_variance_km = CLUSTER_VARIANCE_POINTS_KM,
       cluster_sample_points_km = CLUSTER_SAMPLE_POINTS_KM, spacing_cluster_km = SPACING_CLUSTER_KM,
-      use_weighted_kriging = use_weighted_kriging, nmax_neighbours = nmax_neighbours
+      use_weighted_kriging = use_weighted_kriging, nmax_neighbours = nmax_neighbours,
+      environmental_agreement_export = LINKED_PERCENTILE_ENABLED,
+      environmental_agreement_fit_location = "R_before_export",
+      environmental_agreement_fitting_engine = "R",
+      environmental_agreement_genetic_probs = EMA_GD_PROBS,
+      environmental_agreement_environment_breaks = EMA_ENV_BREAKS
     )
     if (USE_COPERNICUS_MARINE) {
       gene_summary$run_settings <- c(gene_summary$run_settings, list(

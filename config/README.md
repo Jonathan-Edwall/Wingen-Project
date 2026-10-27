@@ -34,7 +34,7 @@ any further columns are ignored currently.
 These parameter settings are environment variables used in `code/2_Herring_Wingen.Rmd` and can optionally be set, otherwise fallback values are used. More information about the wingen function arguments can be found from the official documentation: https://cran.r-project.org/web/packages/wingen/refman/wingen.html
 ### Domain
 `domain_type`: `"ocean"` (default) or `"land"`: intended to switch which side of the coastline is kept (marine vs. terrestrial species).
-**Note**: Not fully implemented into `2_Herring_Wingen.Rmd` yet.
+The selected domain determines which side of the coastline is retained for prediction eligibility and the final domain mask.
 ### Booleans
 `calc_gen_diversity_stats`: decides whether a statistical summary file is created, `{gene}_gene_summary.json` (`TRUE`). Required to be set `TRUE` for creating the HTML gene catalog.
 
@@ -62,7 +62,7 @@ additional support has been added for
 ### Geographical Area Settings
 To subset your dataset into a "boxed" region to restrict which *individuals* are included, the allowed interval of latitude and longitude coordinates can be defined from `lat_min`/`lat_max`/`lon_min`/`lon_max` (WGS84 degrees). All four must be set together for this filter to activate. 
 #### Raster construction
-`RESOLUTION_KM`: cell size of the working raster, in km (pipeline default `2.5`). Tune this against your sample density via the Rmd's own `preview_gd()` step.
+`RESOLUTION_KM`: cell size of the working raster, in km (Rmd fallback `2.5`; supplied global test config `10`). Tune this against your sample density via the Rmd's own `preview_gd()` step.
 
 `CTR_DISAGG`: disaggregation factor applied to the raster at build time (subdivides each cell). Leave unset to disable (default).
 
@@ -94,7 +94,7 @@ diversity from each cluster's pooled genotypes. Environmental values are then av
 
 `NMAX_NEIGHBOURS`(`nmax` in `wkrig_gd()`): decides the maximum number of neighboring observations to use for kriging at each prediction location.
 
-`MAXDIST` (`maxdist` in `wkrig_gd()`): maximum distance to a neighboring point to still consider it. Left unset by default and resolved automatically from the computed `MAX_INTERP_DIST` below (the smallest value that won't exclude a centroid a surviving prediction could need). Set explicitly only to override that.
+`MAXDIST` (`maxdist` in `wkrig_gd()`): maximum distance to a kriging observation. When omitted, the inherited policy uses `MAX_INTERP_DIST + half_window_width`. This is an approximate search policy: square-window corners extend farther and Mollweide planar distances differ from geographic distances. Finite `MAXDIST` or `NMAX_NEIGHBOURS` can change predictions; neither is a guaranteed no-loss speed control.
 
 `MAX_RANGE_FRAC`: equivalent to `max_range_frac` in `wkrig_gd()` — caps how much of the fitted variogram's range parameter is used when searching for neighbors. Default `0.5`. Live, not overridden.
 
@@ -108,7 +108,7 @@ diversity from each cluster's pooled genotypes. Environmental values are then av
 **Note:** separate from sample-count masking above. This masking is purely based on the distance from empirical data, regardless of how many samples are nearby.
 `MAX_INTERP_DIST_MODE`:
 - `"computed"` (default): a window-footprint-based reach, ignoring real sample positions.
-- `"clustered"`: median nearest-neighbor distance between clustered real sampling sites; more conservative.
+- `"clustered"`: median of each spacing-cluster centroid's distance to its nearest other centroid. Exact duplicate sites are removed before the separate `SPACING_CLUSTER_KM` cut (default 2 km). This reach can be smaller or larger than computed mode and does not validate interpolation across unsampled gaps.
 - `"hardcoded"`: use the numerical value computed from `MAX_INTERP_DIST_KM`.
 - `"none"`: no distance cutoff at all.
 
@@ -132,10 +132,10 @@ diversity from each cluster's pooled genotypes. Environmental values are then av
 
 `SPHERICAL_GRID`: draws the graticule with a curved (Lambert Azimuthal Equal-Area) projection instead of plain lat/long, to visually emphasize the map's 2D-projection-of-a-3D-surface nature. Display-only. Default `FALSE`.
 
-`CLUSTER_SAMPLE_POINTS` / `CLUSTER_SAMPLE_POINTS_KM`: groups sample dots within `CLUSTER_SAMPLE_POINTS_KM` of each other into one plotted dot, purely for map readability (default `FALSE` / `2`). A separate computation from the sample-clustering used to derive `MAX_INTERP_DIST`'s `"clustered"` mode above; changing one never silently changes the other.
+`CLUSTER_SAMPLE_POINTS_KM`: display-only cut of the shared complete-linkage site tree. Omitted/null inherits the resolved `CLUSTER_VARIANCE_POINTS_KM` threshold; zero uses exact numeric coordinate pairs; a positive value cuts the same tree at that distance in km. The superseded `CLUSTER_SAMPLE_POINTS` Boolean is not used. This does not change genotype groups, exact empirical mask sites or the separate `SPACING_CLUSTER_KM` grouping.
 
 ## Other
-`CLUSTER_VARIANCE_POINTS_KM`: merge distance (km) for the gene-summary chunk's per-location clustering specifically. A separate "knob" from `CLUSTER_SAMPLE_POINTS_KM` above, which only affects the map plot. Default `10`.
+`CLUSTER_VARIANCE_POINTS_KM`: complete-linkage cluster distance for genotype-based location statistics (default 10 km). Display dots inherit this resolved threshold unless `CLUSTER_SAMPLE_POINTS_KM` overrides it. Dot positions average unique member sites; counts retain all individuals, and dot values average extracted window-raster values rather than the pooled-genotype location statistic. Nonfinite mean window values are omitted from both count and value dot plots.
 
 ## Environmental covariates (CopernicusMarine)
 The following settings are only relevant if `use_copernicus_marine: TRUE`.
@@ -210,3 +210,113 @@ coordinate columns. If no header or multiple possible headers are found, set
 
 Optional:
 A Copernicus Marine Service account, with `COPERNICUSMARINE_SERVICE_USERNAME`/`COPERNICUSMARINE_SERVICE_PASSWORD` set as OS-level environment variables.
+
+
+## Neutral source, simulation pool and optional catalog reference
+
+`run_neutral_sim` controls matched Monte Carlo replicates. Independently,
+`include_all_neutral_markers` adds one pooled catalog reference (default false;
+supplied config true) named by `neutral_reference_id` (supplied
+`neutral_marker_reference`, omitted fallback `All_neutral_markers`). It is an extra
+`neutral_pool` category, not a genomic interval or a matched replicate. Either
+switch requires a valid neutral source; both false permit no neutral inputs.
+
+`NEUTRAL_SOURCE_POOL` is the complete validated source. `neutral_pool_max_markers`
+(omitted/null = all; supplied null) optionally makes a separate DEBUG simulation
+pool by seeded uniform sampling without replacement. This changes the sampling
+population and may change neutral p-values. `neutral_reference_max_markers`
+(omitted/null = the whole effective simulation pool; supplied 100000) independently
+caps only the extra reference. It never caps ordinary simulations. Overlarge caps
+retain all available records; insufficient debug pools are not silently expanded.
+`neutral_pool_seed` and `neutral_reference_seed` independently fall back to `seed`,
+then 42. Source files are unchanged. Caps count markers, not bytes or RAM.
+
+The availability checkpoint precedes neutral preparation. The extra reference
+waits for retained ordinary reports; source preparation/debug limiting remain
+upstream. Provenance records source/effective counts and selection digests even
+with `WRITE_RUN_SETTINGS: FALSE`, and distinguishes all effective markers from all
+original markers. Manifest/VCF count mismatches are errors.
+
+| Resource setting | Behavior |
+|---|---|
+| `neutral_preparation_threads: auto` | Snakemake's declared `workflow.cores` budget; explicit positive integers are supported. |
+| `neutral_preparation_mem_mb: auto` | Smaller declared global `mem_mb` / `SLURM_MEM_PER_NODE` budget minus `neutral_preparation_headroom_mb` (4096); fallback 8000 MB. |
+| `neutral_subset_threads`, `neutral_subset_mem_mb` | Supplied 2 threads / 8000 MB per gene; replicate extraction within a gene remains serial. |
+| `neutral_reference_mem_mb: auto` | Same allocation calculation with `neutral_reference_headroom_mb` (4096); fallback 40000 MB. |
+| `neutral_reference_threads`, `neutral_reference_runtime_minutes` | Supplied one R worker and 720 minutes for the extra reference. |
+
+Explicit preparation/reference memory requests are limited to the available
+budget after headroom. These controls describe local Snakemake inside one Slurm
+allocation, as in the supplied launcher. They reserve scheduler resources rather
+than imposing per-process R memory limits or allocating additional Slurm memory.
+A job-per-rule executor requires a separate resource review.
+
+## Efficient execution, preview and supplied test settings
+
+`GRID_MIN_CELLS` compares the total rectangular aggregated-grid cell count using
+`>=`: zero selects the efficient adapters, `"Inf"` native execution. The adapters
+require audited Wingen 2.2.0 / furrr 0.4.0; other versions retain the guarded native
+fallback. `WINGEN_DIAGNOSTICS` enables profiling; expensive native comparisons also
+require `GRID_VALIDATE`. `PREVIEW_WINDOWS` defaults true independently. The supplied
+config uses efficient execution, diagnostics/validation false and preview true.
+These execution controls preserve the configured grid, estimator, rarefaction and
+kriging inputs. The final geographic distance mask uses nearest unique empirical
+sites, with nearest-neighbor reprojection to the output grid. Mollweide preserves
+area, not distance.
+
+The supplied global herring test uses 125 individuals and the first 12 genes,
+pi, ocean domain, 10 km resolution, WDIM 7, FACT 1, no window rarefaction, distance
+scale 5, global environmental layers, disaggregation factor 3, 15 kriging neighbors,
+100 neutral replicates, minimum valid fraction 0.9, the full simulation pool and a
+100000-marker reference. These are test choices rather than universal defaults.
+
+<!-- BEGIN OLS_MODEL_AGREEMENT_DOCUMENTATION -->
+## Per-gene environmental model gallery
+
+The main Rmd fits the straight OLS and degree-two quadratic models in R and saves
+their omitted-cluster predictions, training-mean baseline, curve points and model
+definitions alongside observed cluster pairs, labelled map PNGs and marker
+coordinates. The opened gene/metric page displays those saved values; changing
+categories or selecting the quadratic comparison does not fit another model.
+Existing pipeline genetic calculations and ordinary correlation statistics are
+unchanged. No server, R installation or internet access is required while viewing
+results. HTML-only refreshes require these saved R outputs; older raw browser-fit
+exports must first be regenerated by the R report.
+
+| Setting under `wingen_params` | Supplied value | Purpose |
+|---|---|---|
+| `LOCATION_SCREENING_ENABLED` | `TRUE` | Enable saved R model, cluster-pair and map exports when genetic statistics and marine environmental data are enabled. |
+| `LINKED_PERCENTILE_ENABLED` | `TRUE` | Export the interactive model-agreement page. The master switch above must also be enabled. |
+| `LOCATION_SCREENING_ENV_WEIGHTING` | `individual` | Retain inherited means over cluster member individuals. This integration accepts only `individual`. |
+| `LINKED_PERCENTILE_GD_PROBS` | `"0.3333333333333333,0.6666666666666667"` | Observed-value thirds used as initial genetic category boundaries. |
+| `LINKED_PERCENTILE_MATRIX_ENV_BREAKS` | `"0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1"` | Initial environmental deciles; strata can be changed in the browser. |
+
+Earlier GAM, geographic-group, pair-ordering and direction flags are not used by
+this exporter. All paired clusters are shown initially. Disabling either
+new export switch omits the added pages; inherited catalog plots/statistics remain.
+The workflow tracks the main Rmd, required efficiency helper, optional diagnostics when present, and the prediction-agreement HTML template when enabled.
+The catalog embeds pinned JavaScript, CSS and licenses for offline use.
+
+The environmental backgrounds use the derived full environmental raster field,
+not a surface interpolated from sampling-cluster values. Identical render inputs
+share a PNG under delivered `results/environment_layers/`. The cache key includes
+raster values/grid/CRS, display extent, palette/style, context and render settings;
+files are checked and published under a lock. Each page retains its own correctly
+transformed marker positions. Genetic backgrounds remain gene-specific.
+
+Neutral simulations are independent of these model fits. With both
+`run_neutral_sim: false` and `include_all_neutral_markers: false`, no neutral-marker
+input is required. Ordinary environmental correlations and model pages remain
+available. If either neutral option is enabled, the existing workflow still
+requires a supplied neutral VCF/markers or configured automatic SnpEff extraction.
+Missing requested neutral inputs produce the existing configuration error.
+
+The metric dropdown groups the smaller available Pearson or Spearman neutral
+p-value into `Neutral p ≤ 0.01`, `Neutral 0.01 < p ≤ 0.05`, `Neutral p > 0.05`, or
+`Neutral p unavailable`. An unavailable neutral comparison never removes an
+otherwise usable environmental analysis. Saved failed-repeat statuses are shown
+as unavailable; their raw values remain in the tooltip/audit metadata. The numeric
+thresholds are applied separately to each gene/metric, without adjusting for the
+number of comparisons across the catalog.
+
+<!-- END OLS_MODEL_AGREEMENT_DOCUMENTATION -->

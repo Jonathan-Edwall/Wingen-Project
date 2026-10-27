@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Gene catalog</title>
-<link rel="stylesheet" href="https://cdn.datatables.net/2.1.8/css/dataTables.dataTables.min.css">
+<style id="catalog-vendor-css">{{ vendor_css | safe }}</style>
 <style>
   :root {
     --text:  #1a1a1a;
@@ -73,13 +73,48 @@
   #lightbox {
     display: none; position: fixed; inset: 0; z-index: 50;
     background: rgba(0, 0, 0, 0.85);
-    align-items: center; justify-content: center; padding: 32px;
+    align-items: center; justify-content: center; padding: 20px; box-sizing: border-box;
   }
   #lightbox.open { display: flex; }
-  #lightbox img { max-width: 100%; max-height: 100%; }
-  #lightbox .caption {
-    position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
-    color: #fff; font-family: var(--mono); font-size: 13px;
+  .gallery-shell { display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; min-height: 0; gap: 10px; background: #252525; border-radius: 4px; }
+  .gallery-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #fff; }
+  #gallery-title { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; margin: 0; }
+  .gallery-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; color: #fff; }
+  .gallery-tabs { display: flex; flex-wrap: wrap; gap: 6px; max-width: 100%; }
+  .gallery-tabs button[aria-selected=true] { font-weight: 600; background: #dceef1; border-color: #5e9ba7; }
+  .gallery-toolbar label { font-size: 13px; }
+  #gallery-metric { font: inherit; font-size: 13px; padding: 4px 6px; max-width: min(55vw, 370px); }
+  #gallery-open-page { color: #fff; font-size: 12px; }
+  #gallery-neutral-badge { font-size: 11px; line-height: 1.5; color: #c5cdd0; max-width: 100%; overflow-wrap: anywhere; }
+  #gallery-neutral-badge.neutral-priority { color: #b9dfd7; }
+  #gallery-neutral-badge[hidden] { display: none; }
+  #gallery-grouping-help { flex-basis: 100%; font-size: 11px; line-height: 1.5; color: #c5cdd0; }
+  #gallery-grouping-help[hidden] { display: none; }
+  #gallery-grouping-help summary { cursor: pointer; width: fit-content; }
+  #gallery-grouping-help p { margin: 4px 0 0; max-width: 1100px; }
+  .gallery-panel { flex: 1; min-height: 0; min-width: 0; }
+  #gallery-plots[hidden], #gallery-analysis[hidden], #gallery-metric-control[hidden], #gallery-open-page[hidden], .gallery-tabs[hidden] { display: none; }
+  #gallery-plots { display: flex; flex-direction: column; gap: 8px; }
+  .gallery-image-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; color: #fff; }
+  .gallery-image-controls a { color: #fff; font-size: 12px; margin-left: 6px; }
+  .gallery-image-controls button:disabled { opacity: 0.5; cursor: default; }
+  #gallery-zoom-level { min-width: 4em; text-align: center; font-size: 12px; font-variant-numeric: tabular-nums; }
+  #gallery-image-stage { position: relative; flex: 1; min-height: 80px; overflow: hidden; width: 100%; touch-action: none; }
+  #gallery-image-stage:focus-visible { outline: 2px solid #dceef1; outline-offset: -2px; }
+  #lightbox-img { position: absolute; max-width: none; max-height: none; transform: translate(-50%, -50%); cursor: zoom-in; user-select: none; -webkit-user-drag: none; }
+  #gallery-image-stage.zoomed, #gallery-image-stage.zoomed #lightbox-img { cursor: grab; }
+  #gallery-image-stage.dragging, #gallery-image-stage.dragging #lightbox-img { cursor: grabbing; }
+  #gallery-image-help { color: #c5cdd0; font-size: 11px; text-align: center; margin: 0; }
+  #lightbox .caption { color: #fff; font-family: var(--mono); font-size: 12px; text-align: center; overflow-wrap: anywhere; }
+  #gallery-analysis { background: #fff; border-radius: 4px; overflow: hidden; }
+  #gallery-analysis iframe { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+  td.thumb button { font: inherit; font-size: 11px; padding: 3px 6px; cursor: pointer; }
+  @media(max-width:700px) {
+    #lightbox { padding: 8px; }
+    .gallery-shell { gap: 7px; }
+    .gallery-toolbar { gap: 6px; }
+    .gallery-tabs .chip { font-size: 11px; padding: 4px 8px; }
+    #gallery-metric { max-width: 68vw; }
   }
 
   /* Neutral rules separate environmental groups without competing with the
@@ -218,8 +253,9 @@
 <body>
 
 <h1>Gene diversity catalog</h1>
+{% if catalog_demo_note %}<p class="meta" role="note"><strong>{{ catalog_demo_note }}</strong></p>{% endif %}
 {% if gd_label %}<p class="meta">Genetic diversity statistic: <strong>{{ gd_label }}</strong>{% if gd_stat %} &middot; <code>window_gd(stat = "{{ gd_stat }}")</code>{% endif %}</p>{% endif %}
-<p class="meta">Generated {{ generated_at }}. Click a thumbnail for the full map — →/← or click the image to browse, Esc to close. Click a group header, or its button below, to hide those columns.</p>
+<p class="meta">Generated {{ generated_at }}. Click a thumbnail to open the gene gallery. Use Previous/Next or →/← to browse plots; click an image to zoom, drag to pan, and Esc to close. Click a group header, or its button below, to hide those columns.</p>
 {% if empty_columns_note %}<p class="meta">{{ empty_columns_note }}</p>{% endif %}
 {% if neutral_thresholds_present %}<p class="meta">Location results are grouped by Pearson and Spearman. Each p neutral compares the observed correlation magnitude with neutral simulations. Neutral |r| and |ρ| show upper percentiles of their corresponding neutral distributions; hover over a header for details. Sim status “ok” means the comparison is available.</p>{% endif %}
 <p id="table-error" class="meta error" role="alert" hidden></p>
@@ -305,13 +341,49 @@
   <thead></thead>
 </table>
 
-<div id="lightbox">
-  <div class="caption"></div>
-  <img id="lightbox-img" src="" alt="">
+<div id="lightbox" role="dialog" aria-modal="true" aria-labelledby="gallery-title" aria-hidden="true">
+  <div class="gallery-shell">
+    <div class="gallery-header">
+      <h2 id="gallery-title">Gene gallery</h2>
+      <button type="button" class="chip" id="gallery-close" aria-label="Close gene gallery">Close ×</button>
+    </div>
+    <div class="gallery-toolbar">
+      <div class="gallery-tabs" role="tablist" aria-label="Gene gallery mode">
+        <button type="button" class="chip" id="gallery-plots-tab" data-gallery-mode="wingen" role="tab" aria-controls="gallery-plots" aria-selected="true">Wingen maps</button>
+        <button type="button" class="chip" id="gallery-environment-tab" data-gallery-mode="environment" role="tab" aria-controls="gallery-plots" aria-selected="false" tabindex="-1">Environmental layers</button>
+        <button type="button" class="chip" id="gallery-analysis-tab" data-gallery-mode="analysis" role="tab" aria-controls="gallery-analysis" aria-selected="false" tabindex="-1">Environmental model agreement</button>
+      </div>
+      <label id="gallery-metric-control" hidden>Environmental metric <select id="gallery-metric"></select></label>
+      <a id="gallery-open-page" target="_blank" rel="noopener" hidden>Open full view ↗</a>
+      <span id="gallery-neutral-badge" hidden></span>
+      <details id="gallery-grouping-help" hidden>
+        <summary>How the groups are chosen</summary>
+        <p>The groups use the smaller available Pearson or Spearman neutral-model p-value: ≤ 0.01; above 0.01 and at most 0.05; or above 0.05. Unavailable means no usable neutral-model p-value was saved, for example because simulations were not run or too few neutral repeats could be calculated. All environmental analyses remain selectable, including those without neutral simulations. These thresholds are applied separately to each gene and metric, without adjusting for the number of comparisons across the catalog.</p>
+      </details>
+    </div>
+    <div id="gallery-plots" class="gallery-panel" role="tabpanel" aria-labelledby="gallery-plots-tab">
+      <div class="gallery-image-controls" role="group" aria-label="Image controls">
+        <button type="button" class="chip" id="gallery-previous" aria-label="Previous image">← Previous</button>
+        <button type="button" class="chip" id="gallery-next" aria-label="Next image">Next →</button>
+        <button type="button" class="chip" id="gallery-zoom-out" aria-label="Zoom out">−</button>
+        <output id="gallery-zoom-level" aria-live="polite" aria-label="Image zoom">100%</output>
+        <button type="button" class="chip" id="gallery-zoom-in" aria-label="Zoom in">+</button>
+        <button type="button" class="chip" id="gallery-reset-view">Reset image view</button>
+        <a id="gallery-open-image" target="_blank" rel="noopener">Open image ↗</a>
+      </div>
+      <div id="gallery-image-stage" tabindex="0" role="region" aria-label="Image viewer" aria-describedby="gallery-image-help">
+        <img id="lightbox-img" alt="" draggable="false" title="Click to zoom into this point. Drag to pan; use Reset image view to fit the image.">
+      </div>
+      <p id="gallery-image-help">Click an image to zoom into that point; drag to pan. Use + / − to zoom, Reset image view to fit, or Previous / Next to change image.</p>
+      <div class="caption" aria-live="polite"></div>
+    </div>
+    <div id="gallery-analysis" class="gallery-panel" role="tabpanel" aria-labelledby="gallery-analysis-tab" hidden></div>
+  </div>
 </div>
 
-<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-<script src="https://cdn.datatables.net/2.1.8/js/dataTables.min.js"></script>
+<script id="catalog-jquery">{{ vendor_jquery | safe }}</script>
+<script id="catalog-datatables">{{ vendor_datatables | safe }}</script>
+<script id="catalog-vendor-licenses" type="application/json">{{ vendor_licenses_json | safe }}</script>
 
 {# Data goes in as inert JSON, not as spliced-in JS source - the script
    below parses it with JSON.parse() instead of trusting it as code.
@@ -579,8 +651,13 @@ function handleImgError(img) {
 }
 
 function renderThumb(plots, type, row) {
-  if (type !== 'display' || !plots || !plots.length) return '';
-  return `<img src="${escapeHtml(plots[0])}" alt="${escapeHtml(row.gene_id)}"`
+  if (type !== 'display') return '';
+  const gene = escapeHtml(row.gene_id);
+  const thumbnail = plots?.[0] || row.gallery_images?.environment?.[0];
+  if (!thumbnail) return row.linked_percentile_maps?.length
+    ? `<button type="button" data-gallery-gene="${gene}" aria-label="Open gallery for ${gene}">View</button>` : '';
+  return `<img src="${escapeHtml(thumbnail)}" alt="${escapeHtml(row.gene_id)}"`
+       + ` role="button" tabindex="0" aria-label="Open gallery for ${gene}" data-gallery-gene="${gene}"`
        + ` data-plots="${escapeHtml(JSON.stringify(plots))}" onerror="handleImgError(this)">`;
 }
 
@@ -1447,42 +1524,302 @@ document.getElementById('decimals-input').addEventListener('input', (e) => {
 const lightbox = document.getElementById('lightbox');
 const lightboxImg = document.getElementById('lightbox-img');
 const caption = lightbox.querySelector('.caption');
-let plotIdx = 0, plotList = [];
+const galleryRows = new Map(rows.map((row) => [String(row.gene_id), row]));
+const galleryTitle = document.getElementById('gallery-title');
+const galleryPlots = document.getElementById('gallery-plots');
+const galleryAnalysis = document.getElementById('gallery-analysis');
+const galleryPlotsTab = document.getElementById('gallery-plots-tab');
+const galleryAnalysisTab = document.getElementById('gallery-analysis-tab');
+const galleryTabs = [...lightbox.querySelectorAll('[data-gallery-mode]')];
+const galleryMetric = document.getElementById('gallery-metric');
+const galleryMetricControl = document.getElementById('gallery-metric-control');
+const galleryOpenPage = document.getElementById('gallery-open-page');
+const galleryNeutralBadge = document.getElementById('gallery-neutral-badge');
+const galleryGroupingHelp = document.getElementById('gallery-grouping-help');
+const galleryClose = document.getElementById('gallery-close');
+const galleryImageStage = document.getElementById('gallery-image-stage');
+const galleryPrevious = document.getElementById('gallery-previous');
+const galleryNext = document.getElementById('gallery-next');
+const galleryZoomIn = document.getElementById('gallery-zoom-in');
+const galleryZoomOut = document.getElementById('gallery-zoom-out');
+const galleryZoomLevel = document.getElementById('gallery-zoom-level');
+const galleryResetView = document.getElementById('gallery-reset-view');
+const galleryOpenImage = document.getElementById('gallery-open-image');
+let plotIdx = 0, plotList = [], galleryViews = [], galleryMode = 'wingen', galleryGroups = {};
+let galleryOpener = null, savedBodyOverflow = '';
+let galleryImageBounds = {}, imageZoom = 1, imagePanX = 0, imagePanY = 0;
+let imageDrag = null, imageDragged = false;
+const MAX_IMAGE_ZOOM = 16;
+
+function currentImageBounds() {
+  const bounds = galleryImageBounds[plotList[plotIdx]];
+  return bounds && ['left', 'top', 'right', 'bottom'].every((key) => Number.isFinite(bounds[key]))
+    && bounds.left >= 0 && bounds.top >= 0 && bounds.right <= 1 && bounds.bottom <= 1
+    && bounds.right > bounds.left && bounds.bottom > bounds.top
+    ? bounds : {left: 0, top: 0, right: 1, bottom: 1};
+}
+
+function positionGalleryImage() {
+  const width = galleryImageStage.clientWidth, height = galleryImageStage.clientHeight;
+  if (!width || !height || !lightboxImg.naturalWidth || !lightboxImg.naturalHeight) return;
+  const bounds = currentImageBounds();
+  const fit = Math.min(width / (lightboxImg.naturalWidth * (bounds.right - bounds.left)),
+    height / (lightboxImg.naturalHeight * (bounds.bottom - bounds.top)));
+  const imageWidth = lightboxImg.naturalWidth * fit * imageZoom;
+  const imageHeight = lightboxImg.naturalHeight * fit * imageZoom;
+  lightboxImg.style.width = imageWidth + 'px';
+  lightboxImg.style.height = imageHeight + 'px';
+  lightboxImg.style.left = (width / 2 + imagePanX + (0.5 - (bounds.left + bounds.right) / 2) * imageWidth) + 'px';
+  lightboxImg.style.top = (height / 2 + imagePanY + (0.5 - (bounds.top + bounds.bottom) / 2) * imageHeight) + 'px';
+  lightboxImg.style.visibility = 'visible';
+  galleryImageStage.classList.toggle('zoomed', imageZoom > 1);
+  galleryZoomLevel.textContent = Math.round(imageZoom * 100) + '%';
+  galleryZoomIn.disabled = imageZoom >= MAX_IMAGE_ZOOM;
+  galleryZoomOut.disabled = imageZoom <= 1;
+}
+
+function resetGalleryImage() {
+  imageZoom = 1; imagePanX = 0; imagePanY = 0;
+  imageDrag = null; imageDragged = false;
+  galleryImageStage.classList.remove('dragging');
+  positionGalleryImage();
+}
+
+function zoomGalleryImage(factor, point = null) {
+  const nextZoom = Math.max(1, Math.min(MAX_IMAGE_ZOOM, imageZoom * factor));
+  const ratio = nextZoom / imageZoom;
+  // A clicked point moves to the centre; toolbar zoom retains the current centre.
+  imagePanX = (imagePanX - (point?.x || 0)) * ratio;
+  imagePanY = (imagePanY - (point?.y || 0)) * ratio;
+  imageZoom = nextZoom;
+  if (imageZoom === 1) { imagePanX = 0; imagePanY = 0; }
+  positionGalleryImage();
+}
+
+function stepGalleryImage(direction) {
+  if (galleryMode === 'analysis' || !plotList.length) return;
+  plotIdx = (plotIdx + direction + plotList.length) % plotList.length;
+  showPlot();
+}
+
+new ResizeObserver(positionGalleryImage).observe(galleryImageStage);
+lightboxImg.addEventListener('load', () => { if (lightboxImg.hasAttribute('src')) positionGalleryImage(); });
+galleryPrevious.addEventListener('click', () => stepGalleryImage(-1));
+galleryNext.addEventListener('click', () => stepGalleryImage(1));
+galleryZoomIn.addEventListener('click', () => zoomGalleryImage(1.5));
+galleryZoomOut.addEventListener('click', () => zoomGalleryImage(1 / 1.5));
+galleryResetView.addEventListener('click', resetGalleryImage);
+galleryImageStage.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0 || !event.isPrimary) return;
+  event.preventDefault();
+  galleryImageStage.focus({preventScroll: true});
+  imageDragged = false;
+  imageDrag = {pointerId: event.pointerId, x: event.clientX, y: event.clientY, panX: imagePanX, panY: imagePanY};
+  galleryImageStage.setPointerCapture(event.pointerId);
+});
+galleryImageStage.addEventListener('pointermove', (event) => {
+  if (!imageDrag || imageDrag.pointerId !== event.pointerId) return;
+  const dx = event.clientX - imageDrag.x, dy = event.clientY - imageDrag.y;
+  if (!imageDragged && Math.hypot(dx, dy) < 4) return;
+  imageDragged = true;
+  imagePanX = imageDrag.panX + dx; imagePanY = imageDrag.panY + dy;
+  galleryImageStage.classList.add('dragging');
+  positionGalleryImage();
+});
+for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) galleryImageStage.addEventListener(type, (event) => {
+  if (!imageDrag || imageDrag.pointerId !== event.pointerId) return;
+  imageDrag = null;
+  galleryImageStage.classList.remove('dragging');
+  if (galleryImageStage.hasPointerCapture(event.pointerId)) galleryImageStage.releasePointerCapture(event.pointerId);
+});
+
+// One active iframe, created only when requested. Catalog rows carry links,
+// not the interactive page's observations, images or running JavaScript.
+function clearGalleryFrame() {
+  galleryAnalysis.replaceChildren();
+  galleryOpenPage.removeAttribute('href');
+}
+
+function closeGallery() {
+  if (!lightbox.classList.contains('open')) return;
+  clearGalleryFrame();
+  resetGalleryImage();
+  lightboxImg.removeAttribute('src');
+  lightbox.classList.remove('open');
+  lightbox.setAttribute('aria-hidden', 'true');
+  document.body.style.overflow = savedBodyOverflow;
+  if (galleryOpener?.isConnected) galleryOpener.focus();
+  galleryOpener = null;
+}
+
+function neutralPText(value) {
+  const text = Number(value).toPrecision(3), displayed = Number(text);
+  return [0.01, 0.05].some((cutoff) => (value <= cutoff) !== (displayed <= cutoff)) ? String(value) : text;
+}
+
+function loadGalleryAnalysis() {
+  clearGalleryFrame();
+  const view = galleryViews.find((item) => item.metric === galleryMetric.value);
+  if (!view) return;
+  galleryOpenPage.href = view.interactive_file;
+  const tests = Array.isArray(view.neutral_tests) ? view.neutral_tests : [];
+  galleryNeutralBadge.textContent = tests.length ? 'Neutral-model p-values: ' + tests.map((test) =>
+    test.available && Number.isFinite(test.p) ? `${test.method} ${neutralPText(test.p)}`
+      : `${test.method} unavailable (${test.status === 'too_few_valid_replicates' ? 'not enough usable neutral repeats' : test.status === 'ok' ? 'no usable p-value saved' : test.status === 'unavailable' ? 'no saved neutral result' : String(test.status).replaceAll('_', ' ')})`).join(' · ')
+    : 'Neutral-model p-values unavailable';
+  galleryNeutralBadge.classList.toggle('neutral-priority', !!view.neutral_priority);
+  galleryNeutralBadge.title = 'Groups use the smaller available Pearson or Spearman neutral-model p-value with cutoffs 0.01 and 0.05. No neutral p-value is required to open an environmental analysis. Thresholds are applied to each comparison without adjusting for the number of comparisons. Saved results: ' + tests.map((test) => `${test.method}: ${test.available ? 'used in dropdown grouping' : 'not usable for dropdown grouping'}, saved p=${test.p ?? 'missing'}, status=${test.status}`).join('; ');
+  const frame = document.createElement('iframe');
+  frame.title = `${galleryTitle.textContent}: ${view.label} — environmental model agreement`;
+  frame.src = view.interactive_file + (view.interactive_file.includes('?') ? '&' : '?') + 'embed=gallery';
+  frame.addEventListener('load', () => {
+    // HTTP previews share an origin; portable file:// pages can be isolated.
+    // Generated analysis pages also post the Escape message handled below.
+    try { frame.contentDocument?.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); closeGallery(); }
+    }); } catch (_) { /* The visible Close control remains available. */ }
+  });
+  galleryAnalysis.appendChild(frame);
+}
+
+function setGalleryMode(mode) {
+  if (mode === 'plots') mode = 'wingen'; // Compatibility with the original image-gallery API.
+  const available = galleryTabs.filter((tab) => !tab.hidden).map((tab) => tab.dataset.galleryMode);
+  galleryMode = available.includes(mode) ? mode : available[0];
+  const analysis = galleryMode === 'analysis';
+  galleryPlots.hidden = analysis;
+  galleryAnalysis.hidden = !analysis;
+  galleryMetricControl.hidden = !analysis;
+  galleryOpenPage.hidden = !analysis;
+  galleryNeutralBadge.hidden = !analysis;
+  galleryGroupingHelp.hidden = !analysis;
+  for (const tab of galleryTabs) {
+    const selected = tab.dataset.galleryMode === galleryMode;
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    if (selected && !analysis) galleryPlots.setAttribute('aria-labelledby', tab.id);
+  }
+  if (analysis) {
+    lightboxImg.removeAttribute('src');
+    loadGalleryAnalysis();
+  } else {
+    clearGalleryFrame();
+    plotList = galleryGroups[galleryMode] || [];
+    plotIdx = 0;
+    showPlot();
+  }
+}
+
+function openGallery(opener) {
+  const row = galleryRows.get(opener.dataset.galleryGene);
+  if (!row) return;
+  if (!lightbox.classList.contains('open')) savedBodyOverflow = document.body.style.overflow;
+  clearGalleryFrame();
+  galleryOpener = opener;
+  galleryGroups = row.gallery_images || {wingen: Array.isArray(row.plots) ? row.plots : []};
+  galleryImageBounds = row.gallery_image_bounds || {};
+  plotList = galleryGroups.wingen || [];
+  plotIdx = 0;
+  galleryViews = Array.isArray(row.linked_percentile_maps) ? row.linked_percentile_maps : [];
+  galleryTitle.textContent = String(row.gene_name || row.gene_id);
+  galleryMetric.replaceChildren();
+  for (const [key, label] of [
+    ['p_le_001', 'Neutral p ≤ 0.01'],
+    ['p_001_005', 'Neutral 0.01 < p ≤ 0.05'],
+    ['p_gt_005', 'Neutral p > 0.05'],
+    ['unavailable', 'Neutral p unavailable'],
+  ]) {
+    const members = galleryViews.filter((view) => (view.neutral_group || 'unavailable') === key);
+    if (!members.length) continue;
+    const group = document.createElement('optgroup');
+    group.label = label;
+    for (const view of members) {
+      const option = document.createElement('option');
+      option.value = view.metric;
+      const r = view.location_correlation?.pearson_r;
+      option.textContent = view.label + ' · Pearson r = ' + (typeof r === 'number' && Number.isFinite(r) ? r.toFixed(3) : 'unavailable');
+      group.appendChild(option);
+    }
+    galleryMetric.appendChild(group);
+  }
+  for (const tab of galleryTabs) tab.hidden = tab.dataset.galleryMode === 'analysis'
+    ? !galleryViews.length : !(galleryGroups[tab.dataset.galleryMode]?.length);
+  lightbox.querySelector('.gallery-tabs').hidden = galleryTabs.every((tab) => tab.hidden);
+  lightbox.classList.add('open');
+  lightbox.setAttribute('aria-hidden', 'false');
+  document.body.style.overflow = 'hidden';
+  setGalleryMode('wingen');
+  galleryClose.focus();
+}
 
 lightboxImg.addEventListener('error', () => {
+  if (!plotList.length || !lightboxImg.hasAttribute('src')) return;
   const failedSrc = plotList[plotIdx];
   caption.textContent = `${plotIdx + 1} / ${plotList.length} — failed to load: ${failedSrc.split('/').pop()}`;
+  if (lightboxImg.src === BROKEN_IMG_PLACEHOLDER) return;
   lightboxImg.src = BROKEN_IMG_PLACEHOLDER;
 });
 
 function showPlot() {
+  if (!plotList.length) return;
+  resetGalleryImage();
+  lightboxImg.style.visibility = 'hidden';
   lightboxImg.src = plotList[plotIdx];
   lightboxImg.alt = plotList[plotIdx].split('/').pop();
+  galleryOpenImage.href = plotList[plotIdx];
+  galleryPrevious.disabled = galleryNext.disabled = plotList.length < 2;
   caption.textContent = `${plotIdx + 1} / ${plotList.length} — ${plotList[plotIdx].split('/').pop()}`;
 }
 
-lightboxImg.addEventListener('click', (e) => {
+galleryImageStage.addEventListener('click', (e) => {
   e.stopPropagation();
-  plotIdx = (plotIdx + 1) % plotList.length;
-  showPlot();
+  if (galleryMode === 'analysis' || !plotList.length) return;
+  if (imageDragged) { imageDragged = false; return; }
+  const imageRect = lightboxImg.getBoundingClientRect();
+  if (e.clientX < imageRect.left || e.clientX > imageRect.right || e.clientY < imageRect.top || e.clientY > imageRect.bottom) return;
+  const rect = galleryImageStage.getBoundingClientRect();
+  zoomGalleryImage(1.75, {x: e.clientX - rect.left - rect.width / 2, y: e.clientY - rect.top - rect.height / 2});
 });
 
 document.addEventListener('click', (e) => {
-  const img = e.target.closest('td.thumb img');
-  if (img) {
-    plotList = JSON.parse(img.dataset.plots);
-    plotIdx = 0;
-    showPlot();
-    lightbox.classList.add('open');
-  } else if (e.target === lightbox) {
-    lightbox.classList.remove('open');
-  }
+  const opener = e.target.closest('td.thumb [data-gallery-gene]');
+  if (opener) openGallery(opener);
+  else if (e.target === lightbox) closeGallery();
+});
+galleryClose.addEventListener('click', closeGallery);
+for (const tab of galleryTabs) tab.addEventListener('click', () => setGalleryMode(tab.dataset.galleryMode));
+galleryMetric.addEventListener('change', loadGalleryAnalysis);
+window.addEventListener('message', (event) => {
+  const frame = galleryAnalysis.querySelector('iframe');
+  if (frame && event.source === frame.contentWindow && event.data?.type === 'wingen-gallery-close') closeGallery();
+});
+for (const tab of galleryTabs) tab.addEventListener('keydown', (event) => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const tabs = galleryTabs.filter((item) => !item.hidden);
+  const next = event.key === 'Home' ? tabs[0] : event.key === 'End' ? tabs[tabs.length - 1]
+    : tabs[(tabs.indexOf(tab) + (event.key === 'ArrowLeft' ? -1 : 1) + tabs.length) % tabs.length];
+  next.click(); next.focus();
 });
 document.addEventListener('keydown', (e) => {
+  const opener = e.target.closest('td.thumb img[data-gallery-gene]');
+  if (opener && ['Enter', ' '].includes(e.key)) { e.preventDefault(); openGallery(opener); return; }
   if (!lightbox.classList.contains('open')) return;
-  if (e.key === 'Escape') lightbox.classList.remove('open');
-  if (e.key === 'ArrowRight') { plotIdx = (plotIdx + 1) % plotList.length; showPlot(); }
-  if (e.key === 'ArrowLeft') { plotIdx = (plotIdx - 1 + plotList.length) % plotList.length; showPlot(); }
+  if (e.key === 'Escape') { e.preventDefault(); closeGallery(); return; }
+  if (e.key === 'Tab') {
+    const controls = [...lightbox.querySelectorAll('button, select, a[href], iframe, [tabindex]')]
+      .filter((el) => el.getClientRects().length && !el.disabled && el.tabIndex >= 0);
+    const first = controls[0], last = controls[controls.length - 1];
+    if (e.shiftKey && e.target === first) { e.preventDefault(); last?.focus(); }
+    else if (!e.shiftKey && e.target === last) { e.preventDefault(); first?.focus(); }
+    return;
+  }
+  if (galleryMode === 'analysis' || !plotList.length || e.target.closest('select, input, textarea, [contenteditable="true"]')) return;
+  if (e.key === 'ArrowRight') { e.preventDefault(); stepGalleryImage(1); }
+  if (e.key === 'ArrowLeft') { e.preventDefault(); stepGalleryImage(-1); }
+  if (['+', '='].includes(e.key)) { e.preventDefault(); zoomGalleryImage(1.5); }
+  if (e.key === '-') { e.preventDefault(); zoomGalleryImage(1 / 1.5); }
 });
 </script>
 </body>

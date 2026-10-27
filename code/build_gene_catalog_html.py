@@ -30,6 +30,8 @@ Run once, at the end of the DAG, on purpose (see the rule's own comment in
 the Snakefile) - re-run any time via `snakemake --forcerun build_gene_catalog_html`.
 """
 import argparse
+import hashlib
+from pathlib import Path
 import csv
 import io
 import json
@@ -542,28 +544,179 @@ def read_skipped_genes(path):
     return records
 
 
-def gene_plot_paths(gene_id, gene_dir, html_output_path):
-    """PNGs for this specific gene, as paths relative to wherever the HTML
-    file itself ends up (so the page keeps working if results/ is zipped
-    up and shared or moved as a whole).
+def resolve_gene_directory(gene_id, stored_directory, html_output_path):
+    """Prefer this catalog's own chromosome folder when refreshing a moved run."""
+    if isinstance(gene_id, str) and gene_id and not any(char in gene_id for char in "/\\") and stored_directory:
+        leaf = str(stored_directory).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        if leaf not in ("", ".", ".."):
+            candidate = Path(html_output_path).resolve().parent / leaf
+            if any((candidate / (gene_id + suffix)).is_file() for suffix in ("_gene_summary.json", "_linked_percentile_maps.json")):
+                return str(candidate)
+    return stored_directory
 
-    gene_dir is the SHARED per-chromosome folder ({results_dir}/results/
-    {chrom}/), not a private per-gene one - every gene on that chromosome
-    has its plots sitting there together, distinguished only by filename
-    (the Rmd's Sys.Date()-stamped, settings-encoded names already embed
-    the gene ID). So this can't just list the folder; it has to keep only
-    the filenames that mention this particular gene_id. Ensembl-style IDs
-    here are fixed-length and zero-padded, so one gene's ID can't be a
-    proper substring of another's - a plain substring check is safe.
+
+def gene_gallery_images(gene_id, gene_dir, html_output_path):
+    """Curated static outputs; unknown/support files stay on disk, out of galleries."""
+    from urllib.parse import quote
+    groups = dict(wingen=[], environment=[])
+    if not isinstance(gene_id, str) or not gene_id or not gene_dir or not os.path.isdir(gene_dir):
+        return groups
+    gene_pattern = re.compile(r"(?<![A-Za-z0-9])" + re.escape(gene_id) + r"(?![A-Za-z0-9])")
+    rel_dir = os.path.relpath(gene_dir, start=os.path.dirname(os.path.abspath(html_output_path)))
+    for filename in sorted(os.listdir(gene_dir)):
+        lower = filename.lower()
+        if not lower.endswith(".png") or not gene_pattern.search(filename):
+            continue
+        # Includes older diagnostic alternatives and combined export panels.
+        if re.search(r"_background_(?:genetic|environment|context)(?:_|\.png$)", lower) or re.search(
+                r"(?:^|_)(?:legend|combined|debug|screenshot|raw_map|raw_sample_map|count_map|sample_count|map_unmasked|window_preview|dist_to_sample|support)(?:_|\.png$)", lower):
+            continue
+        group = None
+        if re.search(r"_env_bivariate_|_screening_view_|_departure_", lower):
+            continue
+        if re.search(r"_(?:environment_layer|env_layer)_[a-z0-9_]+\.png$", lower):
+            group = "environment"
+        elif re.search(r"_map\.png$", lower) or re.search(r"_points(?:_by_(?:value|count))?\.png$", lower):
+            group = "wingen"
+        if group:
+            groups[group].append(quote((rel_dir + "/" + filename).replace(os.sep, "/"), safe="/"))
+    return groups
+
+
+def gene_plot_paths(gene_id, gene_dir, html_output_path):
+    """Compatibility entry point: the primary gallery now contains Wingen maps."""
+    return gene_gallery_images(gene_id, gene_dir, html_output_path)["wingen"]
+
+
+def attach_neutral_comparisons(views, record, alpha=0.05):
+    """Sort valid neutral-tail results first; retain every environmental metric."""
+    aliases = {"temp_winter": "water_temp_winter", "temp_summer": "water_temp_summer", "chl_log": "chlorophyll_a_log"}
+    for view in views:
+        metric = view["metric"]
+        candidates = [record.get(aliases.get(metric, metric))]
+        candidates.extend(value for value in record.values() if isinstance(value, dict))
+        group = next((value for value in candidates if isinstance(value, dict)
+                      and any(f"location_{metric}_{suffix}" in value for suffix in ("r", "rho", "n", "n_locations", "p_neutral", "p_neutral_rho", "neutral_status", "neutral_rho_status"))), {})
+        def coefficient(suffix):
+            value = group.get(f"location_{metric}_{suffix}")
+            return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and -1 <= value <= 1 else None
+        n = group.get(f"location_{metric}_n", group.get(f"location_{metric}_n_locations"))
+        view["location_correlation"] = dict(pearson_r=coefficient("r"), spearman_rho=coefficient("rho"),
+            n=int(n) if isinstance(n, (int, float)) and not isinstance(n, bool) and math.isfinite(n) and n >= 0 and n == int(n) else None)
+        tests = []
+        for method, p_suffix, status_suffix in (("Pearson", "p_neutral", "neutral_status"), ("Spearman", "p_neutral_rho", "neutral_rho_status")):
+            p = group.get(f"location_{metric}_{p_suffix}")
+            p = float(p) if isinstance(p, (int, float)) and not isinstance(p, bool) and math.isfinite(p) and 0 <= p <= 1 else None
+            status = group.get(f"location_{metric}_{status_suffix}")
+            status = status if isinstance(status, str) and status else "unavailable"
+            available = status.lower() == "ok" and p is not None
+            tests.append(dict(method=method, p=p, status=status, available=available,
+                              below_alpha=available and p <= alpha))
+        view["neutral_tests"] = tests
+        view["neutral_alpha"] = alpha
+        valid_p = [test["p"] for test in tests if test["available"]]
+        view["neutral_min_p"] = min(valid_p) if valid_p else None
+        view["neutral_priority"] = bool(valid_p) and min(valid_p) <= alpha
+        view["neutral_group"] = ("p_le_001" if min(valid_p) <= 0.01 else
+                                 "p_001_005" if min(valid_p) <= 0.05 else
+                                 "p_gt_005") if valid_p else "unavailable"
+    group_order = {"p_le_001": 0, "p_001_005": 1, "p_gt_005": 2, "unavailable": 3}
+    views.sort(key=lambda view: (group_order[view["neutral_group"]],
+        view["neutral_min_p"] if view["neutral_min_p"] is not None else math.inf,
+        view["label"].casefold()))
+    return views
+
+
+def gene_linked_percentile_maps(gene_id, gene_dir, html_output_path, gd_stat):
+    """Read optional gene/statistic-specific screening views from their sidecar.
+
+    Missing/incomplete manifests leave the existing image gallery intact.
+    A prediction-agreement signature prevents older sign-rule percentile
+    pages from appearing under the model-agreement tab. Advertised pages must
+    be nonempty relative HTML files within this gene's directory, with its ID.
     """
-    if not gene_dir or not os.path.isdir(gene_dir):
+    from urllib.parse import quote
+
+    if not isinstance(gene_id, str) or not gene_id or not gene_dir or not os.path.isdir(gene_dir):
         return []
-    rel_dir = os.path.relpath(gene_dir, start=os.path.dirname(html_output_path))
-    return [
-        f"{rel_dir}/{fn}"
-        for fn in sorted(os.listdir(gene_dir))
-        if fn.lower().endswith(".png") and gene_id in fn
-    ]
+    if any(char in gene_id for char in ("/", "\\", "\x00")) or gene_id in (".", ".."):
+        return []
+    manifest_path = os.path.join(gene_dir, gene_id + "_linked_percentile_maps.json")
+    try:
+        with open(manifest_path, encoding="utf-8") as stream:
+            manifest = json.load(stream)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(manifest, dict) or type(manifest.get("schema_version")) is not int or manifest["schema_version"] != 1:
+        return []
+    if manifest.get("gene_id") != gene_id or str(manifest.get("gd_stat", "")).lower() != str(gd_stat).lower():
+        return []
+    metrics = manifest.get("metrics")
+    if not isinstance(metrics, dict):
+        return []
+
+    resolved_gene_dir = os.path.realpath(gene_dir)
+    gene_pattern = re.compile(r"(?<![A-Za-z0-9])" + re.escape(gene_id) + r"(?![A-Za-z0-9])")
+    screening = []
+    for metric, item in sorted(metrics.items()):
+        if not isinstance(metric, str) or not isinstance(item, dict):
+            continue
+        value = item.get("interactive_file")
+        if not isinstance(value, str) or not value or "\x00" in value:
+            continue
+        saved_r = item.get("fitting_engine") == "R" and item.get("on_demand") is False
+        if not (item.get("on_demand") is True or saved_r
+                or any(key in item for key in ("agreement_available", "agreement_status", "agreement_data_file"))
+                or "_prediction_agreement_" in value.replace("\\", "/").rsplit("/", 1)[-1]):
+            continue
+        if value.startswith(("/", "\\")) or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", value):
+            continue
+        portable_value = value.replace("\\", "/")
+        if not gene_pattern.search(portable_value.rsplit("/", 1)[-1]):
+            continue
+        path = os.path.realpath(os.path.join(gene_dir, portable_value.replace("/", os.sep)))
+        try:
+            if os.path.commonpath([resolved_gene_dir, path]) != resolved_gene_dir:
+                continue
+            if not path.lower().endswith(".html") or not os.path.isfile(path) or os.path.getsize(path) == 0:
+                continue
+        except (OSError, ValueError):
+            continue
+        relative = os.path.relpath(path, start=os.path.dirname(os.path.abspath(html_output_path)))
+        label = item.get("label")
+        unit = item.get("fit_unit")
+        entry = {
+            "metric": metric,
+            "label": label if isinstance(label, str) and label else metric.replace("_", " "),
+            "fit_unit": unit if isinstance(unit, str) else "",
+            "interactive_file": quote(relative.replace(os.sep, "/"), safe="/"),
+            "on_demand": item.get("on_demand") is True,
+            "fitting_engine": item.get("fitting_engine"),
+        }
+        # The manifest identifies the complete labelled environmental map.
+        # Genetic/context helper images are never advertised as extra plots.
+        backgrounds = item.get("background_files")
+        environment = backgrounds.get("environment") if isinstance(backgrounds, dict) else None
+        if isinstance(environment, str) and environment and "\x00" not in environment:
+            portable_environment = environment.replace("\\", "/")
+            if not portable_environment.startswith("/") and not re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", portable_environment):
+                asset = os.path.realpath(os.path.join(gene_dir, portable_environment.replace("/", os.sep)))
+                try:
+                    result_root = os.path.realpath(os.path.dirname(os.path.abspath(html_output_path)))
+                    shared_root = os.path.realpath(os.path.join(result_root, "environment_layers"))
+                    own_asset = (os.path.commonpath([resolved_gene_dir, asset]) == resolved_gene_dir
+                                 and gene_pattern.search(os.path.basename(asset)))
+                    shared_asset = ((item.get("on_demand") is True or saved_r)
+                                    and os.path.commonpath([result_root, asset]) == result_root
+                                    and os.path.dirname(asset) == shared_root
+                                    and re.fullmatch(re.escape(metric) + r"_[a-fA-F0-9]{32}\.png", os.path.basename(asset)))
+                    if ((own_asset or shared_asset) and asset.lower().endswith(".png")
+                            and os.path.isfile(asset) and os.path.getsize(asset) > 0):
+                        entry["environment_file"] = quote(os.path.relpath(asset, start=os.path.dirname(os.path.abspath(html_output_path))).replace(os.sep, "/"), safe="/")
+                except (OSError, ValueError):
+                    pass
+        screening.append(entry)
+    return screening
 
 # What the Rmd falls back to for gd_stat = "pi". Also what a catalog built BEFORE gd_stat existed
 # gets, since every such catalog is nucleotide diversity.
@@ -633,12 +786,38 @@ column_layout, dropped_empty, strip_keys = available_columns(con, "genes", COLUM
                                                              computed_counts=window_counts)
 con.close()
 
+image_bounds_file = Path(html_path).resolve().parent / "catalog_image_bounds.json"
+image_bounds = json.loads(image_bounds_file.read_text(encoding="utf-8")) if image_bounds_file.is_file() else {}
 for rec in records:
-    rec["plots"] = gene_plot_paths(
-        rec["gene_id"],
-        rec.get("gene_dir"),
-        html_path,
-    )
+    gene_directory = resolve_gene_directory(rec["gene_id"], rec.get("gene_dir"), html_path)
+    rec["gallery_images"] = gene_gallery_images(rec["gene_id"], gene_directory, html_path)
+    rec["plots"] = rec["gallery_images"]["wingen"]
+    settings = rec.get("run_settings")
+    agreement_disabled = isinstance(settings, dict) and any(
+        settings.get(flag) is False
+        for flag in ("location_screening_enabled", "linked_percentile_enabled"))
+    rec["linked_percentile_maps"] = [] if agreement_disabled else gene_linked_percentile_maps(
+        rec["gene_id"], gene_directory, html_path, gd_stat)
+    attach_neutral_comparisons(rec["linked_percentile_maps"], rec)
+    environments = rec["gallery_images"]["environment"]
+    for view in rec["linked_percentile_maps"]:
+        if view.get("environment_file") and view["environment_file"] not in environments:
+            environments.append(view["environment_file"])
+    # Prefer the full shared environmental field; keep static exports for metrics
+    # without a compatible agreement manifest instead of showing duplicates.
+    shared = {view["metric"]: view["environment_file"] for view in rec["linked_percentile_maps"] if view.get("environment_file")}
+    if shared:
+        environments[:] = list(dict.fromkeys(shared.values())) + [image for image in environments
+            if image not in shared.values() and not any(re.search(r"_(?:environment_layer|env_layer)_"+re.escape(metric)+r"\.png$",image) for metric in shared)]
+    from urllib.parse import unquote
+    rec["gallery_image_bounds"] = {}
+    for image in [*rec["gallery_images"]["wingen"], *environments]:
+        name = unquote(image)
+        asset = (Path(html_path).resolve().parent / name).resolve()
+        bounds = image_bounds.get("bounds", {}).get(name)
+        expected = image_bounds.get("images", {}).get(name)
+        if bounds and expected and asset.is_file() and hashlib.sha256(asset.read_bytes()).hexdigest() == expected:
+            rec["gallery_image_bounds"][image] = bounds
     # rec["plots"] = gene_plot_paths(rec["gene_id"], rec.get("gene_dir"), snakemake.output.html)
     for key in strip_keys + ["gd_stat", "gd_label", "gd_label_short"]:
         rec.pop(key, None)
@@ -660,8 +839,29 @@ generated_at = duckdb.execute("SELECT current_localtimestamp()").fetchone()[0]
 # nobody reading the page needs sub-second precision on a build timestamp.
 generated_at_display = generated_at.strftime("%Y-%m-%d %H:%M")
 
+def load_catalog_vendor_assets():
+    """Build-time only: inline pinned assets so results need no vendor directory."""
+    folder = Path(__file__).resolve().parent / "vendor"
+    manifest = json.loads((folder / "vendor_manifest.json").read_text(encoding="utf-8"))
+    assets = {}
+    for filename in ("jquery-3.7.1.min.js", "dataTables-2.1.8.min.js", "dataTables-2.1.8.min.css", "jquery-LICENSE.txt", "dataTables-LICENSE.txt"):
+        raw = (folder / filename).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != manifest["assets"][filename]["sha256"]:
+            raise ValueError("Pinned catalog vendor asset has changed: " + filename)
+        assets[filename] = raw.decode("utf-8")
+    def inline(value, tag):
+        return re.sub("</" + tag, lambda match: "<\\/" + match.group(0)[2:], value, flags=re.I)
+    return dict(vendor_jquery=inline(assets["jquery-3.7.1.min.js"], "script"),
+                vendor_datatables=inline(assets["dataTables-2.1.8.min.js"], "script"),
+                vendor_css=inline(assets["dataTables-2.1.8.min.css"], "style"),
+                vendor_licenses_json=embeddable_json({"jQuery 3.7.1":assets["jquery-LICENSE.txt"], "DataTables 2.1.8":assets["dataTables-LICENSE.txt"]}))
+
+
+
+vendor_assets = load_catalog_vendor_assets()
 env = Environment(loader=FileSystemLoader(TEMPLATE_DIR), autoescape=True)
 html = env.get_template("gene_catalog_template.html").render(
+    **vendor_assets,
     generated_at=generated_at_display,
     gd_stat=gd_stat,
     gd_label=gd_label,

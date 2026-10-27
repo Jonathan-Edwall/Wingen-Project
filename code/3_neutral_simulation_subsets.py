@@ -18,6 +18,7 @@ import csv
 from contextlib import nullcontext
 import gzip
 import hashlib
+from itertools import zip_longest
 import json
 import random
 import re
@@ -403,6 +404,67 @@ def finish_subsets(args):
     write_json(args.output, manifest)
 
 
+def reference_positions(args):
+    """Select a bounded, seeded neutral subset without retaining genotypes."""
+    if args.max_markers < 1 or args.seed < 0:
+        raise ValueError("Reference max-markers must be positive and seed nonnegative")
+    guard_paths(argparse.Namespace(input=[args.pool],
+        output=[args.positions, args.selection, args.metadata]))
+    rng = random.Random(args.seed)
+    chosen = []
+    count = 0
+    source = Path(args.pool).resolve()
+    before = source.stat()
+    for count, site in enumerate(vcf_sites(source), 1):
+        if not is_biallelic_snp(site[2], site[3]):
+            raise ValueError("Reference source must be a validated biallelic SNP pool")
+        item = (count, *site)
+        if count <= args.max_markers:
+            chosen.append(item)
+        else:
+            index = rng.randrange(count)
+            if index < args.max_markers:
+                chosen[index] = item
+    if not count:
+        raise ValueError("Neutral reference source has no records")
+    after = source.stat()
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise ValueError("Neutral pool changed during reference selection")
+    chosen.sort(key=lambda item: item[0])
+    with open(args.positions, "w", encoding="utf-8", newline="\n") as positions, \
+            open(args.selection, "w", encoding="utf-8", newline="\n") as selection:
+        for index, chrom, pos, ref, alt in chosen:
+            positions.write(f"{chrom}\t{pos}\n")
+            selection.write(f"{index}\t{chrom}\t{pos}\t{ref}\t{alt}\n")
+    write_json(args.metadata, dict(schema_version=1, pool_n_records=count,
+        selected_n_records=len(chosen), max_markers=args.max_markers, seed=args.seed,
+        all_markers=len(chosen) == count, sampling="uniform_without_replacement_reservoir",
+        source_pool=str(source), source_size_bytes=before.st_size,
+        source_mtime_ns=before.st_mtime_ns, selected_sites_sha256=fingerprint(args.selection)))
+    print(f"Neutral marker subset selected {len(chosen)}/{count} markers; seed={args.seed}", flush=True)
+
+
+def check_reference(args):
+    """Check selected identities, source order and individual order before publication."""
+    metadata = json.loads(Path(args.metadata).read_text(encoding="utf-8"))
+    source = Path(args.pool).stat()
+    if fingerprint(args.selection) != metadata["selected_sites_sha256"]:
+        raise ValueError("Reference selection differs from its saved digest")
+    if (source.st_size, source.st_mtime_ns) != (metadata["source_size_bytes"], metadata["source_mtime_ns"]):
+        raise ValueError("Neutral pool changed after reference selection")
+    if vcf_sample_header(args.pool) != vcf_sample_header(args.vcf):
+        raise ValueError("Reference extraction altered the sample order")
+    count = 0
+    with open(args.selection, encoding="utf-8") as stream:
+        expected = ((row[1], int(row[2]), row[3], row[4])
+                    for row in csv.reader(stream, delimiter="\t"))
+        for count, (want, actual) in enumerate(zip_longest(expected, vcf_sites(args.vcf)), 1):
+            if want != actual:
+                raise ValueError("Reference extraction changed selected records, count or order")
+    if count != metadata["selected_n_records"]:
+        raise ValueError("Reference extraction record count differs from the selection")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -432,6 +494,10 @@ def main():
     sub.add_argument("--pool-index", default="")
     command("check-subset", check_subset, "vcf manifest filename")
     command("finish-subsets", finish_subsets, "manifest output bcftools-version")
+    sub = command("reference-positions", reference_positions, "pool positions selection metadata")
+    sub.add_argument("--max-markers", type=int, required=True)
+    sub.add_argument("--seed", type=int, required=True)
+    command("check-reference", check_reference, "pool vcf selection metadata")
     args = parser.parse_args()
     return args.func(args)
 

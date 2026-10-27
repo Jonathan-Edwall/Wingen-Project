@@ -43,9 +43,14 @@ Per-gene statistics are passed through without multiple-testing adjustment.
 import argparse
 import json
 import os
-import re
 
 import duckdb
+
+
+def quote_identifier(name):
+    """Quote one actual field name, including any embedded double quotes."""
+    return '"' + name.replace('"', '""') + '"'
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--duckdb", required=True)
@@ -67,9 +72,9 @@ tsv_path = args.tsv
 gene_catalog_dir = os.path.dirname(duckdb_path) or "."
 SUMMARY_GLOB = os.path.join(gene_catalog_dir, "*", "*_gene_summary.json")
 
-# Restrict a workflow run to its retained genes, ignoring stale summaries for
-# skipped genes or genes removed from the list. Validate before opening DuckDB
-# so an all-skipped run cannot create an empty catalog database or TSV.
+# Restrict a workflow run to its retained genes and explicitly enabled pooled
+# reference. Stale skipped/removed/disabled summaries are not loaded. Validate
+# before opening DuckDB so an all-skipped run cannot create catalog outputs.
 summary_source = SUMMARY_GLOB
 if args.availability_manifest:
     with open(args.availability_manifest, encoding="utf-8") as handle:
@@ -77,10 +82,20 @@ if args.availability_manifest:
     retained = manifest.get("retained")
     if manifest.get("schema_version") != 1 or not isinstance(retained, list):
         raise RuntimeError("Invalid gene availability manifest: expected schema_version 1 and retained list.")
-    if not retained:
+    reference = manifest.get("neutral_reference")
+    if reference is not None:
+        if (not isinstance(reference, dict) or reference.get("target_type") != "neutral_pool"
+                or not isinstance(reference.get("gene_id"), str) or not reference["gene_id"].strip()
+                or not isinstance(reference.get("summary_path"), str) or not reference["summary_path"].strip()):
+            raise RuntimeError("Invalid neutral reference record in gene availability manifest.")
+        if any(record.get("gene_id") == reference["gene_id"] for record in retained):
+            raise RuntimeError("Neutral reference gene_id collides with a retained gene.")
+    # A reference-only run is explicit (gene_list_limit=0 / requested_count=0).
+    # Enabling the reference must not hide an all-skipped real-gene run.
+    if not retained and not (reference is not None and manifest.get("requested_count") == 0):
         raise RuntimeError("No genes have retained VCF records; see skipped_genes.tsv. No catalog was created.")
     summary_source = []
-    for record in retained:
+    for record in retained + ([reference] if reference is not None else []):
         path = record["summary_path"]
         if not os.path.isfile(path):
             raise RuntimeError(f"Missing summary for retained gene {record['gene_id']!r}: {path}")
@@ -175,7 +190,10 @@ else:
 # knowing about a bad batch.
 cols = [r[0] for r in con.execute("DESCRIBE genes").fetchall() if r[0] != "gene_dir"]
 null_counts = con.execute(
-    "SELECT " + ", ".join(f"count(*) - count({c}) AS {c}" for c in cols) + " FROM genes"
+    "SELECT " + ", ".join(
+        f"count(*) - count({quote_identifier(c)}) AS {quote_identifier(c)}"
+        for c in cols
+    ) + " FROM genes"
 ).fetchone()
 print(f"aggregated {n_genes} gene summaries into {duckdb_path}")
 # print(f"aggregated {n_genes} gene summaries into {snakemake.output.duckdb}")
@@ -192,16 +210,23 @@ for col, n_null in zip(cols, null_counts):
 # not structs nested inside structs or inside lists.
 select_parts = []
 for name, col_type, *_ in con.execute("DESCRIBE genes").fetchall():
-    struct_fields = re.match(r"STRUCT\((.*)\)$", col_type)
-    if struct_fields:
-        field_names = [f.strip().split(" ")[0] for f in struct_fields.group(1).split(",")]
-        select_parts += [f'"{name}"."{f}" AS "{name}_{f}"' for f in field_names]
+    quoted_name = quote_identifier(name)
+    if col_type.startswith("STRUCT("):
+        # Bind the struct to get actual field names. Parsing its type string
+        # double-quotes reserved names such as "scope" and splits comma types.
+        fields = con.execute(f"SELECT {quoted_name}.* FROM genes LIMIT 0").description
+        select_parts += [
+            f"{quoted_name}.{quote_identifier(field[0])} "
+            f"AS {quote_identifier(name + '_' + field[0])}"
+            for field in fields
+        ]
     else:
-        select_parts.append(f'"{name}"')
+        select_parts.append(quoted_name)
 
 con.execute(
     f"COPY (SELECT {', '.join(select_parts)} FROM genes) "
-    f"TO '{tsv_path}' (HEADER, DELIMITER '\\t')"
+    "TO ? (HEADER, DELIMITER '\\t')",
+    [tsv_path],
 )
 # con.execute(
 #     f"COPY (SELECT {', '.join(select_parts)} FROM genes) "

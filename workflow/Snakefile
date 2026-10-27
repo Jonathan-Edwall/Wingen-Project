@@ -17,12 +17,13 @@ Maps onto 2_wingen_create_gene_catalog.sh + filter_vcf_by_chr_or_gene.sh:
 
     create_gene_vcf_file()  ->  rule filter_vcf_for_gene
     extraction results     ->  checkpoint select_nonempty_genes
-    create_gene_catalog()   ->  rule run_wingen_report (retained genes only)
+    create_gene_catalog()   ->  rule run_wingen_report (retained genes + optional pool)
 
 The bash script's manual `wait -n` / max_parallel_jobs_gene_catalog_creation
 loop is gone entirely. Snakemake filters genes in parallel, then waits for
 all extraction/scope counts and publishes the skip report. Only after this
-checkpoint does it schedule neutral preparation and retained genes' reports,
+checkpoint does it schedule neutral preparation, retained genes' reports and
+the optional All_neutral_markers report,
 up to the --cores (local) or --jobs (cluster) limit.
 
 Lives at workflow/Snakefile, the standard Snakemake project layout - run
@@ -116,18 +117,122 @@ NE_CACHE_DIR_ABS = abspath_pwd(f"{RESULTS_DIR}/temp/ne_cache")
 RUN_NEUTRAL_SIM = config.get("run_neutral_sim", False)
 if not isinstance(RUN_NEUTRAL_SIM, bool):
     raise ValueError("run_neutral_sim must be a YAML boolean")
+INCLUDE_ALL_NEUTRAL_MARKERS = config.get("include_all_neutral_markers", False)
+if not isinstance(INCLUDE_ALL_NEUTRAL_MARKERS, bool):
+    raise ValueError("include_all_neutral_markers must be a YAML boolean")
+NEUTRAL_REFERENCE_ID = config.get("neutral_reference_id", "All_neutral_markers")
+if (not isinstance(NEUTRAL_REFERENCE_ID, str)
+        or not re.fullmatch(r"[\w][\w.:-]*", NEUTRAL_REFERENCE_ID)):
+    raise ValueError("neutral_reference_id must be a safe gene ID without spaces or path separators")
+# This is an output category, not a chromosome or a genomic interval.
+NEUTRAL_REFERENCE_LOCUS = ("neutral_pool", NEUTRAL_REFERENCE_ID)
+NEED_NEUTRAL_POOL = RUN_NEUTRAL_SIM or INCLUDE_ALL_NEUTRAL_MARKERS
+
+
+def positive_integer_setting(name, default):
+    value = config.get(name, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{name} must be a positive YAML integer")
+    return value
+
+
+NEUTRAL_REFERENCE_MEM_MB = config.get("neutral_reference_mem_mb", "auto")
+if NEUTRAL_REFERENCE_MEM_MB != "auto":
+    NEUTRAL_REFERENCE_MEM_MB = positive_integer_setting("neutral_reference_mem_mb", 40000)
+NEUTRAL_REFERENCE_HEADROOM_MB = positive_integer_setting("neutral_reference_headroom_mb", 4096)
+NEUTRAL_REFERENCE_RUNTIME = positive_integer_setting("neutral_reference_runtime_minutes", 720)
+NEUTRAL_REFERENCE_THREADS = positive_integer_setting("neutral_reference_threads", 1)
+NEUTRAL_REFERENCE_MAX_MARKERS = config.get("neutral_reference_max_markers")
+if NEUTRAL_REFERENCE_MAX_MARKERS is not None:
+    NEUTRAL_REFERENCE_MAX_MARKERS = positive_integer_setting("neutral_reference_max_markers", 100000)
+NEUTRAL_REFERENCE_SEED = config.get("neutral_reference_seed", config.get("seed", 42))
+if type(NEUTRAL_REFERENCE_SEED) is not int or NEUTRAL_REFERENCE_SEED < 0:
+    raise ValueError("neutral_reference_seed must be a nonnegative YAML integer")
+# Debug-only sampling-population limit; absent/null preserves all markers.
+NEUTRAL_POOL_MAX_MARKERS = config.get("neutral_pool_max_markers")
+if NEUTRAL_POOL_MAX_MARKERS is not None:
+    NEUTRAL_POOL_MAX_MARKERS = positive_integer_setting("neutral_pool_max_markers", 100000)
+NEUTRAL_POOL_SEED = config.get("neutral_pool_seed", config.get("seed", 42))
+if type(NEUTRAL_POOL_SEED) is not int or NEUTRAL_POOL_SEED < 0:
+    raise ValueError("neutral_pool_seed must be a nonnegative YAML integer")
+NEUTRAL_PREPARATION_MEM_MB = config.get("neutral_preparation_mem_mb", "auto")
+if NEUTRAL_PREPARATION_MEM_MB != "auto":
+    NEUTRAL_PREPARATION_MEM_MB = positive_integer_setting("neutral_preparation_mem_mb", 8000)
+NEUTRAL_PREPARATION_HEADROOM_MB = positive_integer_setting("neutral_preparation_headroom_mb", 4096)
+# auto follows Snakemake's --cores budget via workflow.cores.
+NEUTRAL_PREPARATION_THREADS = config.get("neutral_preparation_threads", "auto")
+NEUTRAL_PREPARATION_THREADS = (workflow.cores if NEUTRAL_PREPARATION_THREADS == "auto" else
+                              positive_integer_setting("neutral_preparation_threads", 8))
+NEUTRAL_SUBSET_THREADS = positive_integer_setting("neutral_subset_threads", 2)
+NEUTRAL_SUBSET_MEM_MB = positive_integer_setting("neutral_subset_mem_mb", 8000)
+ORDINARY_REPORTS_COMPLETE = f"{RESULTS_DIR}/temp/ordinary_reports.complete"
+
+
+def allocation_memory_mb(headroom_mb):
+    """Available declared budget, leaving headroom for the local scheduler."""
+    limits = []
+    configured = getattr(globals().get("workflow"), "global_resources", {}).get("mem_mb")
+    configured = getattr(configured, "value", configured)
+    if type(configured) is int and configured > 0:
+        limits.append(configured)
+    allocated = os.environ.get("SLURM_MEM_PER_NODE", "")
+    if allocated.isdigit() and int(allocated) > 0:
+        limits.append(int(allocated))
+    if not limits:
+        return None
+    available = min(limits) - headroom_mb
+    if available < 1:
+        raise WorkflowError("Neutral memory headroom must be smaller than the allocation budget")
+    return available
+
+
+def neutral_reference_memory_mb():
+    available = allocation_memory_mb(NEUTRAL_REFERENCE_HEADROOM_MB)
+    requested = (available or 40000) if NEUTRAL_REFERENCE_MEM_MB == "auto" else NEUTRAL_REFERENCE_MEM_MB
+    return min(requested, available) if available else requested
+
+
+def neutral_preparation_memory_mb():
+    available = allocation_memory_mb(NEUTRAL_PREPARATION_HEADROOM_MB)
+    requested = (available or 8000) if NEUTRAL_PREPARATION_MEM_MB == "auto" else NEUTRAL_PREPARATION_MEM_MB
+    return min(requested, available) if available else requested
+
+
+
+def is_neutral_reference(wildcards):
+    return (INCLUDE_ALL_NEUTRAL_MARKERS
+            and (wildcards.chrom, wildcards.gene) == NEUTRAL_REFERENCE_LOCUS)
+
+
+def run_neutral_for_locus(wildcards):
+    # The full pool gets one report, not matched-size simulations of itself.
+    return RUN_NEUTRAL_SIM and not is_neutral_reference(wildcards)
+
+
 NEUTRAL_DIR = f"{RESULTS_DIR}/temp/neutral_model"
 NEUTRAL_SUPPLIED_POOL = config.get("neutral_vcf") or None
-NEUTRAL_POOL = NEUTRAL_SUPPLIED_POOL or f"{NEUTRAL_DIR}/neutral_pool.vcf.gz"
-NEUTRAL_POOL_INDEX = (f"{NEUTRAL_DIR}/supplied_pool.csi" if NEUTRAL_SUPPLIED_POOL
-                      else f"{NEUTRAL_POOL}.csi")
+# Preserve the complete source. Consumers use a separate effective pool.
+NEUTRAL_SOURCE_POOL = NEUTRAL_SUPPLIED_POOL or f"{NEUTRAL_DIR}/neutral_pool.vcf.gz"
+NEUTRAL_SOURCE_POOL_INDEX = (f"{NEUTRAL_DIR}/supplied_pool.csi" if NEUTRAL_SUPPLIED_POOL
+                            else f"{NEUTRAL_SOURCE_POOL}.csi")
+NEUTRAL_POOL = (f"{NEUTRAL_DIR}/debug_pool.vcf.gz" if NEUTRAL_POOL_MAX_MARKERS is not None
+                else NEUTRAL_SOURCE_POOL)
+NEUTRAL_POOL_INDEX = (f"{NEUTRAL_POOL}.csi" if NEUTRAL_POOL_MAX_MARKERS is not None
+                      else NEUTRAL_SOURCE_POOL_INDEX)
+NEUTRAL_POOL_MANIFEST = f"{NEUTRAL_DIR}/debug_pool.json"
+# Independent reference cap: starts from the configured sampling pool.
+NEUTRAL_REFERENCE_VCF = (f"{NEUTRAL_DIR}/reference/{NEUTRAL_REFERENCE_ID}.vcf.gz"
+                         if NEUTRAL_REFERENCE_MAX_MARKERS is not None else NEUTRAL_POOL)
+NEUTRAL_REFERENCE_INDEX = (f"{NEUTRAL_REFERENCE_VCF}.csi"
+                           if NEUTRAL_REFERENCE_MAX_MARKERS is not None else NEUTRAL_POOL_INDEX)
+NEUTRAL_REFERENCE_MANIFEST = f"{NEUTRAL_DIR}/reference/{NEUTRAL_REFERENCE_ID}.json"
 NEUTRAL_MARKER_SOURCE = config.get("markers_file") or ""
 # Snpeff alternative:
 NEUTRAL_EXTRACT_SNPEFF = (not NEUTRAL_SUPPLIED_POOL and not NEUTRAL_MARKER_SOURCE
                          and config.get("vcf_annotation_format") == "snpeff")
 
 NEUTRAL_INPUT_FORMAT = str(config.get("input_format") or "auto").strip().lower()
-if (RUN_NEUTRAL_SIM and not NEUTRAL_SUPPLIED_POOL and not NEUTRAL_EXTRACT_SNPEFF
+if (NEED_NEUTRAL_POOL and not NEUTRAL_SUPPLIED_POOL and not NEUTRAL_EXTRACT_SNPEFF
         and NEUTRAL_INPUT_FORMAT not in ("auto", "table", "positions", "bed")):
     raise ValueError("input_format must be auto, table, positions or bed")
 if NEUTRAL_INPUT_FORMAT == "auto":
@@ -143,12 +248,13 @@ NEUTRAL_MARKERS = (f"{NEUTRAL_DIR}/markers.tsv" if NEUTRAL_READ_MARKER_TABLE or 
 NEUTRAL_MARKERS_FORMAT = ("normalized" if NEUTRAL_READ_MARKER_TABLE or NEUTRAL_EXTRACT_SNPEFF
                           else NEUTRAL_INPUT_FORMAT)
 NEUTRAL_EXTREME_VALUE_PERCENTILES = ""
-if RUN_NEUTRAL_SIM:
+if NEED_NEUTRAL_POOL:
     if not config.get("calc_gen_diversity_stats"):
-        raise ValueError("run_neutral_sim requires calc_gen_diversity_stats: TRUE")
+        raise ValueError("run_neutral_sim/include_all_neutral_markers requires calc_gen_diversity_stats: TRUE")
     if not NEUTRAL_SUPPLIED_POOL and not NEUTRAL_MARKER_SOURCE and not NEUTRAL_EXTRACT_SNPEFF:
-        raise ValueError("Set markers_file or neutral_vcf before running neutral simulations, "
+        raise ValueError("Set markers_file or neutral_vcf before using the neutral pool, "
                          "or use vcf_annotation_format: snpeff for automatic intergenic extraction")
+if RUN_NEUTRAL_SIM:
     if int(config.get("technical_replicates", 100)) < 1:
         raise ValueError("technical_replicates must be positive")
     if not 0 < float(config.get("min_valid_fraction", 0.9)) <= 1:
@@ -373,6 +479,8 @@ else:
 
 if any(not isinstance(gene, str) or not re.fullmatch(r"[\w][\w.:-]*", gene) for gene in GENES):
     raise ValueError("Gene IDs must use letters, digits, underscores, dots, colons or hyphens, without spaces or path separators")
+if INCLUDE_ALL_NEUTRAL_MARKERS and NEUTRAL_REFERENCE_ID in GENES:
+    raise ValueError(f"neutral_reference_id {NEUTRAL_REFERENCE_ID!r} already occurs in the gene list")
 
 # Chromosome folders use normalized names; filtering retains the original VCF name.
 GENE_CHROM = {}  # gene_id -> normalized chromosomes
@@ -419,7 +527,7 @@ if gene_list_limit is not None:
     else:
         GENES = GENES[:gene_list_limit]
 
-if not GENES:
+if not GENES and not (INCLUDE_ALL_NEUTRAL_MARKERS and gene_list_limit == 0):
     raise ValueError("No genes to process - check config['genes'] or config['gene_list_file']")
 missing_chrom = [g for g in GENES if g not in GENE_CHROM]
 if missing_chrom:
@@ -490,7 +598,7 @@ if _existing_gd_stat not in (None, GD_STAT):
 #     # benchmark:
 #     #     f"results/gene_catalog/{chrom}/{gene}_benchmark.tsv" # Placeholder until i fix chr/gene* structure.
 
-def done_marker_paths(wildcards):
+def selected_gene_availability(wildcards):
     """Schedule reports, including per-gene neutral jobs, only for nonempty VCFs.
 
     Checkpoint evaluation pauses DAG expansion until every requested gene has
@@ -501,11 +609,28 @@ def done_marker_paths(wildcards):
     with open(manifest) as handle:
         selected = json.load(handle)
     require_retained_genes(selected, f"{RESULTS_DIR}/skipped_genes.tsv")
-    return [gene["done_path"] for gene in selected["retained"]]
+    return selected
+
+
+def ordinary_done_marker_paths(wildcards):
+    # Only retained ordinary genes: including the reference would form a cycle.
+    return [gene["done_path"] for gene in selected_gene_availability(wildcards)["retained"]]
+
+
+def done_marker_paths(wildcards):
+    selected = selected_gene_availability(wildcards)
+    targets = list(selected["retained"])
+    if selected.get("neutral_reference"):
+        targets.append(selected["neutral_reference"])
+    return [gene["done_path"] for gene in targets]
 
 
 def require_retained_genes(selected, report):
-    if not selected["retained"]:
+    # An explicit gene_list_limit: 0 can request the reference on its own.
+    # It must not hide an all-skipped real gene list.
+    reference_only = (selected["requested_count"] == 0
+                      and selected.get("neutral_reference") is not None)
+    if not selected["retained"] and not reference_only:
         raise WorkflowError(
             f"All {selected['requested_count']} requested gene(s) were skipped. "
             f"Run stopped before neutral preparation and catalog generation. "
@@ -558,6 +683,8 @@ def filter_mode(wildcards):
     region resolved from a BED file, gene mode hands the gene ID straight
     to filter_vcf_by_chr_or_gene.sh, which does its own SnpEff-ANN vs.
     fallback detection from the VCF header - not from this flag."""
+    if is_neutral_reference(wildcards):
+        return "neutral_pool"
     return "chr" if VCF_ANNOTATION_FORMAT == "bed" else "gene"
 
 def filter_value(wildcards):
@@ -604,6 +731,8 @@ def wingen_env_prefix(wildcards):
 
 rule filter_vcf_for_gene:
     """create_gene_vcf_file(): subset the cohort VCF to one gene's variants."""
+    wildcard_constraints:
+        chrom=r"chr[^/]+",
     input:
         vcf=config["input_vcf"],
         script="code/filter_vcf_by_chr_or_gene.sh",
@@ -652,6 +781,8 @@ rule narrow_vcf_by_scope:
     decides whether run_wingen_report depends on this rule's output or
     skips straight to filter_vcf_for_gene's.
     """
+    wildcard_constraints:
+        chrom=r"chr[^/]+",
     input:
         vcf=rules.filter_vcf_for_gene.output.vcf,
         script="code/filter_vcf_by_scope.sh",
@@ -687,6 +818,9 @@ def wingen_vcf_input(wildcards):
     set, otherwise the plain gene-filtered VCF - mirrors filtered_vcf_file
     only getting reassigned to scope_vcf_file in create_gene_catalog()
     when gene_scope != "all"."""
+    if is_neutral_reference(wildcards):
+        neutral_availability_manifest(wildcards)
+        return NEUTRAL_REFERENCE_VCF
     if GENE_SCOPE != "all":
         return f"{RESULTS_DIR}/temp/filtered_vcf/{wildcards.chrom}/{wildcards.gene}_{GENE_SCOPE}.vcf.gz"
     return f"{RESULTS_DIR}/temp/filtered_vcf/{wildcards.chrom}/{wildcards.gene}_filtered.vcf.gz"
@@ -712,6 +846,19 @@ for chrom, gene in LOCI:
     else:
         record["reason"] = "missing_gene_chromosome_mapping"
     GENE_REQUESTS.append(record)
+
+# Keep this out of GENE_REQUESTS: the full pool has no gene interval or
+# chromosome, and must not pass through extraction/scope availability checks.
+NEUTRAL_REFERENCE_REQUEST = None
+if INCLUDE_ALL_NEUTRAL_MARKERS:
+    folder, gene = NEUTRAL_REFERENCE_LOCUS
+    NEUTRAL_REFERENCE_REQUEST = {
+        "gene_id": gene,
+        "target_type": "neutral_pool",
+        "final_vcf": NEUTRAL_REFERENCE_VCF,
+        "summary_path": f"{RESULTS_DIR}/results/{folder}/{gene}_gene_summary.json",
+        "done_path": f"{RESULTS_DIR}/.snakemake_gene_catalog/{folder}/{gene}.done",
+    }
 
 # ---- Merge extraction results; the checkpoint never reopens the VCFs. ----
 REPORT_COLUMNS = (
@@ -743,7 +890,7 @@ def read_gene_record_count(path):
     return int(value)
 
 
-def publish_gene_selection(requests, scope, manifest_path, report_path):
+def publish_gene_selection(requests, scope, manifest_path, report_path, neutral_reference=None):
     manifest_path, report_path = Path(manifest_path), Path(report_path)
     retained, skipped = [], []
     for requested in requests:
@@ -769,6 +916,8 @@ def publish_gene_selection(requests, scope, manifest_path, report_path):
                 "retained": retained, "skipped": skipped,
                 "requested_count": len(requests),
                 "retained_count": len(retained), "skipped_count": len(skipped)}
+    if neutral_reference is not None:
+        manifest["neutral_reference"] = neutral_reference
 
     # Finish reading every status before publishing a report or removing the
     # previous one. Parallel filter jobs never append to the same report.
@@ -811,20 +960,35 @@ checkpoint select_nonempty_genes:
         manifest=f"{RESULTS_DIR}/temp/gene_availability.json",
     params:
         payload=json.dumps(GENE_REQUESTS, sort_keys=True),
+        neutral_reference=json.dumps(NEUTRAL_REFERENCE_REQUEST, sort_keys=True),
         scope=GENE_SCOPE,
         report=f"{RESULTS_DIR}/skipped_genes.tsv",
     resources:
         mem_mb=1000,
     run:
         manifest = publish_gene_selection(json.loads(params.payload), params.scope,
-                                          output.manifest, params.report)
+                                          output.manifest, params.report,
+                                          json.loads(params.neutral_reference))
         print(f"Gene availability: {manifest['retained_count']} retained; "
               f"{manifest['skipped_count']} skipped", flush=True)
         if manifest["skipped"]:
             print(f"Skipped-gene details (before neutral preparation): {params.report}", flush=True)
         require_retained_genes(manifest, params.report)
 
-if RUN_NEUTRAL_SIM and NEUTRAL_EXTRACT_SNPEFF:
+if INCLUDE_ALL_NEUTRAL_MARKERS:
+    rule ordinary_reports_complete:
+        input:
+            markers=ordinary_done_marker_paths,
+            availability=availability_manifest,
+        output:
+            done=ORDINARY_REPORTS_COMPLETE,
+        resources:
+            mem_mb=100,
+        run:
+            Path(output.done).parent.mkdir(parents=True, exist_ok=True)
+            Path(output.done).write_text("All retained ordinary reports completed.\n", encoding="utf-8")
+
+if NEED_NEUTRAL_POOL and NEUTRAL_EXTRACT_SNPEFF:
     rule extract_neutral_markers_snpeff:
         input:
             availability=neutral_availability_manifest,
@@ -835,11 +999,11 @@ if RUN_NEUTRAL_SIM and NEUTRAL_EXTRACT_SNPEFF:
         container:
             CONTAINER
         resources:
-            mem_mb=1000,
+            mem_mb=lambda wc: neutral_preparation_memory_mb(),
         shell:
             "bash {input.script:q} {input.vcf:q} {output.markers:q}"
 
-if RUN_NEUTRAL_SIM and NEUTRAL_READ_MARKER_TABLE:
+if NEED_NEUTRAL_POOL and NEUTRAL_READ_MARKER_TABLE:
     rule normalize_neutral_markers:
         input:
             availability=neutral_availability_manifest,
@@ -851,10 +1015,12 @@ if RUN_NEUTRAL_SIM and NEUTRAL_READ_MARKER_TABLE:
             options=neutral_normalization_options(),
         container:
             CONTAINER
+        resources:
+            mem_mb=lambda wc: neutral_preparation_memory_mb(),
         shell:
             "python {input.script:q} --source {input.markers:q} --output {output.markers:q} {params.options:q}"
 
-if RUN_NEUTRAL_SIM and not NEUTRAL_SUPPLIED_POOL:
+if NEED_NEUTRAL_POOL and not NEUTRAL_SUPPLIED_POOL:
     rule extract_neutral_pool:
         input:
             availability=neutral_availability_manifest,
@@ -863,7 +1029,7 @@ if RUN_NEUTRAL_SIM and not NEUTRAL_SUPPLIED_POOL:
             script="code/2_neutral_simulation_vcfs.sh",
             helper="code/3_neutral_simulation_subsets.py",
         output:
-            pool=NEUTRAL_POOL,
+            pool=NEUTRAL_SOURCE_POOL,
             target_markers=f"{NEUTRAL_DIR}/target_markers.tsv",
         params:
             markers_format=NEUTRAL_MARKERS_FORMAT,
@@ -871,9 +1037,9 @@ if RUN_NEUTRAL_SIM and not NEUTRAL_SUPPLIED_POOL:
             CONTAINER
         benchmark:
             f"{RESULTS_DIR}/benchmarks/neutral_pool.tsv"
-        threads: 8
+        threads: NEUTRAL_PREPARATION_THREADS
         resources:
-            mem_mb=8000,
+            mem_mb=lambda wc: neutral_preparation_memory_mb(),
         shell:
             """
             bash {input.script:q} extract-pool --vcf {input.vcf:q} --markers {input.markers:q} \
@@ -884,46 +1050,79 @@ if RUN_NEUTRAL_SIM and not NEUTRAL_SUPPLIED_POOL:
     rule validate_neutral_pool:
         input:
             availability=neutral_availability_manifest,
-            pool=neutral_source_after_selection(NEUTRAL_POOL),
+            pool=neutral_source_after_selection(NEUTRAL_SOURCE_POOL),
             markers=f"{NEUTRAL_DIR}/target_markers.tsv",
             script="code/2_neutral_simulation_vcfs.sh",
             helper="code/3_neutral_simulation_subsets.py",
         output:
-            index=NEUTRAL_POOL_INDEX,
+            index=NEUTRAL_SOURCE_POOL_INDEX,
         container:
             CONTAINER
         benchmark:
             f"{RESULTS_DIR}/benchmarks/neutral_pool_validation.tsv"
-        threads: 2
+        threads: NEUTRAL_PREPARATION_THREADS
         resources:
-            mem_mb=8000,
+            mem_mb=lambda wc: neutral_preparation_memory_mb(),
         shell:
             """
             bash {input.script:q} validate-pool --vcf {input.pool:q} --markers {input.markers:q} \
                 --index-output {output.index:q} --threads {threads}
             """
 
-if RUN_NEUTRAL_SIM and NEUTRAL_SUPPLIED_POOL:
+if NEED_NEUTRAL_POOL and NEUTRAL_SUPPLIED_POOL:
     rule prepare_existing_neutral_pool:
         input:
             availability=neutral_availability_manifest,
-            pool=neutral_source_after_selection(NEUTRAL_POOL),
+            pool=neutral_source_after_selection(NEUTRAL_SOURCE_POOL),
             script="code/2_neutral_simulation_vcfs.sh",
             helper="code/3_neutral_simulation_subsets.py",
         output:
-            index=NEUTRAL_POOL_INDEX,
+            index=NEUTRAL_SOURCE_POOL_INDEX,
         container:
             CONTAINER
         resources:
-            mem_mb=1000,
+            mem_mb=lambda wc: neutral_preparation_memory_mb(),
+        threads: NEUTRAL_PREPARATION_THREADS
         shell:
             """
             bash {input.script:q} existing-pool --vcf {input.pool:q} \
-                --index-output {output.index:q}
+                --index-output {output.index:q} --threads {threads}
+            """
+
+
+if NEED_NEUTRAL_POOL and NEUTRAL_POOL_MAX_MARKERS is not None:
+    rule limit_neutral_pool:
+        input:
+            availability=neutral_availability_manifest,
+            pool=neutral_source_after_selection(NEUTRAL_SOURCE_POOL),
+            index=NEUTRAL_SOURCE_POOL_INDEX,
+            script="code/2_neutral_simulation_vcfs.sh",
+            helper="code/3_neutral_simulation_subsets.py",
+        output:
+            vcf=NEUTRAL_POOL,
+            index=NEUTRAL_POOL_INDEX,
+            metadata=NEUTRAL_POOL_MANIFEST,
+        params:
+            max_markers=NEUTRAL_POOL_MAX_MARKERS,
+            seed=NEUTRAL_POOL_SEED,
+        container:
+            CONTAINER
+        benchmark:
+            f"{RESULTS_DIR}/benchmarks/neutral_pool_limit.tsv"
+        threads: NEUTRAL_PREPARATION_THREADS
+        resources:
+            mem_mb=lambda wc: neutral_preparation_memory_mb(),
+        shell:
+            """
+            bash {input.script:q} limit-pool --pool {input.pool:q} --pool-index {input.index:q} \
+                --output {output.vcf:q} --metadata {output.metadata:q} \
+                --max-markers {params.max_markers} --seed {params.seed} --threads {threads}
             """
 
 if RUN_NEUTRAL_SIM:
     rule plan_neutral_subsets:
+        wildcard_constraints:
+            chrom=r"chr[^/]+",
         input:
             availability=neutral_availability_manifest,
             pool=neutral_source_after_selection(NEUTRAL_POOL),
@@ -941,7 +1140,7 @@ if RUN_NEUTRAL_SIM:
         container:
             CONTAINER
         resources:
-            mem_mb=1000,
+            mem_mb=NEUTRAL_SUBSET_MEM_MB,
         shell:
             """
             python {input.script:q} plan --pool {input.pool:q} --gene-vcf {input.gene_vcf:q} \
@@ -952,6 +1151,8 @@ if RUN_NEUTRAL_SIM:
     rule materialize_neutral_vcfs:
         # Prepare every replicate for this chromosome/gene only. Its R report
         # waits here; other genes can prepare or analyse their own VCFs in parallel.
+        wildcard_constraints:
+            chrom=r"chr[^/]+",
         input:
             availability=neutral_availability_manifest,
             pool=neutral_source_after_selection(NEUTRAL_POOL),
@@ -967,9 +1168,9 @@ if RUN_NEUTRAL_SIM:
             prepared=directory(f"{NEUTRAL_DIR}/{{chrom}}/{{gene}}/prepared_vcfs"),
         container:
             CONTAINER
-        threads: 2
+        threads: NEUTRAL_SUBSET_THREADS
         resources:
-            mem_mb=1000,
+            mem_mb=NEUTRAL_SUBSET_MEM_MB,
         shell:
             """
             bash {input.script:q} materialize --pool {input.pool:q} --gene-vcf {input.gene_vcf:q} \
@@ -978,23 +1179,46 @@ if RUN_NEUTRAL_SIM:
             """
 
 
+if INCLUDE_ALL_NEUTRAL_MARKERS and NEUTRAL_REFERENCE_MAX_MARKERS is not None:
+    rule prepare_neutral_reference:
+        input:
+            availability=neutral_availability_manifest,
+            ordinary_reports=ancient(ORDINARY_REPORTS_COMPLETE),
+            pool=neutral_source_after_selection(NEUTRAL_POOL),
+            index=NEUTRAL_POOL_INDEX,
+            script="code/2_neutral_simulation_vcfs.sh",
+            helper="code/3_neutral_simulation_subsets.py",
+        output:
+            vcf=NEUTRAL_REFERENCE_VCF,
+            index=NEUTRAL_REFERENCE_INDEX,
+            metadata=NEUTRAL_REFERENCE_MANIFEST,
+        params:
+            max_markers=NEUTRAL_REFERENCE_MAX_MARKERS,
+            seed=NEUTRAL_REFERENCE_SEED,
+        container:
+            CONTAINER
+        benchmark:
+            f"{RESULTS_DIR}/benchmarks/neutral_reference_preparation.tsv"
+        threads: NEUTRAL_PREPARATION_THREADS
+        resources:
+            mem_mb=lambda wc: neutral_preparation_memory_mb(),
+        shell:
+            """
+            bash {input.script:q} reference --pool {input.pool:q} --pool-index {input.index:q} \
+                --output {output.vcf:q} --metadata {output.metadata:q} \
+                --max-markers {params.max_markers} --seed {params.seed} --threads {threads}
+            """
+
+
 rule run_wingen_report:
     """
     create_gene_catalog()'s Rscript call: render the Wingen Rmd against
     one gene's filtered VCF.
 
-    Output is a per-gene `.done` marker ({RESULTS_DIR}/.snakemake_gene_catalog/
-    {chrom}/{gene}.done), not the gene's real outputs directly - those
-    (the pngs, {gene}_gene_summary.json) land in {RESULTS_DIR}/results/
-    {chrom}/, a folder SHARED by every gene on that chromosome, which
-    Snakemake can't cleanly track as any one gene's own output (nothing
-    in that path distinguishes which gene it belongs to). The marker
-    exists purely so Snakemake still has a real, gene-and-chromosome-
-    specific file to hang the DAG on; the actual filenames living in the
-    shared folder disambiguate by filename instead of by folder - the
-    Rmd writes "{gene}_gene_summary.json" (not a shared "gene_summary.json")
-    for exactly this reason, and the plots already carried the gene ID in
-    their own Sys.Date()-stamped, settings-encoded filenames regardless.
+    Output is a per-gene `.done` marker. The uniquely named summary JSON
+    and PNGs remain side effects in the shared chromosome folder (or the
+    reserved neutral_pool output category). The availability manifest
+    lists the active summaries explicitly for aggregation.
 
     intermediates_dir is gene-specific (.render_{gene}, not a shared
     .render) for the same reason: multiple genes now render into the SAME
@@ -1003,21 +1227,30 @@ rule run_wingen_report:
     this was true before too (per-run rather than per-chromosome), just
     more exposed now that the folder itself is shared.
     """
+    wildcard_constraints:
+        chrom=r"chr[^/]+",
     input:
         vcf=wingen_vcf_input,
+        pool_metadata=lambda wc: [NEUTRAL_POOL_MANIFEST] if NEUTRAL_POOL_MAX_MARKERS is not None and (is_neutral_reference(wc) or run_neutral_for_locus(wc)) else [],
         coords=config["sample_coordinates_file"],
         rmd="code/2_Herring_Wingen.Rmd",
-        neutral_pool=lambda wc: [NEUTRAL_POOL] if RUN_NEUTRAL_SIM else [],
-        neutral_plan=lambda wc: [f"{NEUTRAL_DIR}/{wc.chrom}/{wc.gene}/subsets.tsv"] if RUN_NEUTRAL_SIM else [],
-        neutral_metadata=lambda wc: [f"{NEUTRAL_DIR}/{wc.chrom}/{wc.gene}/plan_metadata.json"] if RUN_NEUTRAL_SIM else [],
-        neutral_prepared=lambda wc: [f"{NEUTRAL_DIR}/{wc.chrom}/{wc.gene}/prepared_vcfs"] if RUN_NEUTRAL_SIM else [],
+        # One stable order-only dependency preserves reference reuse when the
+        # ordinary gene limit/input list expands. Pool preparation stays earlier.
+        ordinary_reports=lambda wc: [ancient(ORDINARY_REPORTS_COMPLETE)] if is_neutral_reference(wc) else [],
+        neutral_pool=lambda wc: [NEUTRAL_POOL] if run_neutral_for_locus(wc) else [],
+        neutral_pool_index=lambda wc: ([NEUTRAL_REFERENCE_INDEX] if is_neutral_reference(wc) else
+                                        [NEUTRAL_POOL_INDEX] if run_neutral_for_locus(wc) else []),
+        reference_metadata=lambda wc: [NEUTRAL_REFERENCE_MANIFEST] if is_neutral_reference(wc) and NEUTRAL_REFERENCE_MAX_MARKERS is not None else [],
+        neutral_plan=lambda wc: [f"{NEUTRAL_DIR}/{wc.chrom}/{wc.gene}/subsets.tsv"] if run_neutral_for_locus(wc) else [],
+        neutral_metadata=lambda wc: [f"{NEUTRAL_DIR}/{wc.chrom}/{wc.gene}/plan_metadata.json"] if run_neutral_for_locus(wc) else [],
+        neutral_prepared=lambda wc: [f"{NEUTRAL_DIR}/{wc.chrom}/{wc.gene}/prepared_vcfs"] if run_neutral_for_locus(wc) else [],
         # Not read by the shell command - listed so that editing the environmental-dataset presets (ENV_PRESET in
         # config.yaml picks one) re-runs the genes, like editing the Rmd does. Remove if you do not use presets.
         presets="config/env_presets.yaml",
     output:
         # outdir=directory("results/gene_catalog/{chrom}/{gene}"),
         # outdir=directory(f"results/gene_catalog/{chrom}"), # Placeholder until i fix chr/gene* structure.
-        done=f"{RESULTS_DIR}/.snakemake_gene_catalog/{{chrom}}/{{gene}}.done" # GPT test for chr/gene* structure.
+        done=f"{RESULTS_DIR}/.snakemake_gene_catalog/{{chrom}}/{{gene}}.done",
     benchmark:
         #     # native equivalent of the /usr/bin/time -v wrapping just added to
         #     # create_gene_catalog() - wall time, max RSS, CPU time, per gene,
@@ -1078,18 +1311,23 @@ rule run_wingen_report:
         # rmd_abs=lambda wc, input: os.path.abspath(input.rmd),
 
         outdir_abs=lambda wc: abspath_pwd(f"{RESULTS_DIR}/results/{wc.chrom}"),
+        root_abs=abspath_pwd("."),
         vcf_abs=lambda wc, input: abspath_pwd(input.vcf),
         rmd_abs=lambda wc, input: abspath_pwd(input.rmd),
         env_cache_dir_abs=ENV_CACHE_DIR_ABS,
         ne_cache_dir_abs=NE_CACHE_DIR_ABS,
-        run_neutral_sim=RUN_NEUTRAL_SIM,
-        neutral_plan_abs=lambda wc: abspath_pwd(f"{NEUTRAL_DIR}/{wc.chrom}/{wc.gene}/subsets.tsv") if RUN_NEUTRAL_SIM else "",
+        run_neutral_sim=run_neutral_for_locus,
+        neutral_reference=is_neutral_reference,
+        pool_metadata_abs=lambda wc: abspath_pwd(NEUTRAL_POOL_MANIFEST) if NEUTRAL_POOL_MAX_MARKERS is not None and (is_neutral_reference(wc) or run_neutral_for_locus(wc)) else "",
+        reference_metadata_abs=lambda wc: abspath_pwd(NEUTRAL_REFERENCE_MANIFEST) if is_neutral_reference(wc) and NEUTRAL_REFERENCE_MAX_MARKERS is not None else "",
+        future_options=lambda wc: "options(future.globals.maxSize = Inf)" if is_neutral_reference(wc) else "",
+        neutral_plan_abs=lambda wc: abspath_pwd(f"{NEUTRAL_DIR}/{wc.chrom}/{wc.gene}/subsets.tsv") if run_neutral_for_locus(wc) else "",
         # Absolute paths keep these per-gene files readable from R's render directory.
-        neutral_metadata_abs=lambda wc: abspath_pwd(f"{NEUTRAL_DIR}/{wc.chrom}/{wc.gene}/plan_metadata.json") if RUN_NEUTRAL_SIM else "",
-        neutral_min_valid_fraction=config.get("min_valid_fraction", 0.9) if RUN_NEUTRAL_SIM else 0.9,
-        neutral_prepared_manifest_abs=lambda wc: abspath_pwd(f"{NEUTRAL_DIR}/{wc.chrom}/{wc.gene}/prepared_vcfs/manifest.json") if RUN_NEUTRAL_SIM else "",
-        neutral_extreme_value_percentiles=NEUTRAL_EXTREME_VALUE_PERCENTILES,
-    threads: 2
+        neutral_metadata_abs=lambda wc: abspath_pwd(f"{NEUTRAL_DIR}/{wc.chrom}/{wc.gene}/plan_metadata.json") if run_neutral_for_locus(wc) else "",
+        neutral_min_valid_fraction=lambda wc: config.get("min_valid_fraction", 0.9) if run_neutral_for_locus(wc) else 0.9,
+        neutral_prepared_manifest_abs=lambda wc: abspath_pwd(f"{NEUTRAL_DIR}/{wc.chrom}/{wc.gene}/prepared_vcfs/manifest.json") if run_neutral_for_locus(wc) else "",
+        neutral_extreme_value_percentiles=lambda wc: NEUTRAL_EXTREME_VALUE_PERCENTILES if run_neutral_for_locus(wc) else "",
+    threads: lambda wc: NEUTRAL_REFERENCE_THREADS if is_neutral_reference(wc) else 2
     resources:
         # from real sacct data (job 6675358, batch_job_gene_catalog.sh):
         # TotalCPU/Elapsed ~= 0.96 -> effectively single-threaded, hence
@@ -1105,8 +1343,8 @@ rule run_wingen_report:
         # field from that same sacct command would settle it directly.
         # mem_mb=40000,
         # runtime=45,
-        mem_mb=lambda wildcards, attempt: 40000 * attempt,
-        runtime=lambda wildcards, attempt: 45 * attempt,
+        mem_mb=lambda wildcards, attempt: neutral_reference_memory_mb() if is_neutral_reference(wildcards) else 40000 * attempt,
+        runtime=lambda wildcards, attempt: NEUTRAL_REFERENCE_RUNTIME if is_neutral_reference(wildcards) else 45 * attempt,
     retries: 2
     # shell:
     #     """
@@ -1137,7 +1375,6 @@ rule run_wingen_report:
         DOMAIN_TYPE={params.domain_type} \
         calc_gen_diversity_stats={params.calc_gen_diversity_stats} \
         USE_COPERNICUS_MARINE={params.use_copernicus_marine} \
-        RUN_NEUTRAL_SIM={params.run_neutral_sim} \
         GENE_CATALOG_RUN=TRUE \
         GD_STAT={params.gd_stat:q} \
         GD_DOSAGE_MISSING_POLICY={params.gd_dosage_missing_policy:q} \
@@ -1156,7 +1393,13 @@ rule run_wingen_report:
         NEUTRAL_PREPARED_MANIFEST={params.neutral_prepared_manifest_abs:q} \
         NEUTRAL_EXTREME_VALUE_PERCENTILES={params.neutral_extreme_value_percentiles:q} \
         {params.wingen_env} \
+        ROOT={params.root_abs:q} \
+        RUN_NEUTRAL_SIM={params.run_neutral_sim} \
+        NEUTRAL_REFERENCE={params.neutral_reference} \
+        NEUTRAL_REFERENCE_MANIFEST={params.reference_metadata_abs:q} \
+        NEUTRAL_POOL_MANIFEST={params.pool_metadata_abs:q} \
         Rscript -e "
+        {params.future_options}
         future::plan(future::multisession, workers = {threads})
         message('[wingen] future workers: ', future::nbrOfWorkers())
         rmarkdown::render('{params.rmd_abs}', run_pandoc=FALSE, intermediates_dir='{params.outdir_abs}/.render_{wildcards.gene}')
@@ -1167,6 +1410,15 @@ rule run_wingen_report:
         mkdir -p "$(dirname {output.done})"
         touch {output.done}
         """
+
+if INCLUDE_ALL_NEUTRAL_MARKERS:
+    # Inherit the identical Rmd/render command; only target category and retries
+    # differ. A failed reference report never silently reduces the configured markers.
+    use rule run_wingen_report as run_neutral_reference_report with:
+        wildcard_constraints:
+            chrom="neutral_pool",
+            gene=re.escape(NEUTRAL_REFERENCE_ID),
+        retries: 0
 
 
 # rule aggregate_gene_summaries:

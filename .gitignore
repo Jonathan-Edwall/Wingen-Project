@@ -44,3 +44,11 @@ debug/
 # Ignore gzipped files and associated index files in gene_catalog
 /gene_catalog/**/*.gz
 /gene_catalog/**/*.gz.*
+
+# Temporary ignores
+/data/raw/herring_2026_Swedish_East_Coast/ALL_SNP_Gene_Annotations.R
+/data/raw/herring_2026_Swedish_East_Coast/ALL_SNP_Gene_Annotations.txt
+
+/gene_catalog/herring_secd_at_td_v2/
+/gene_catalog/herring_secd_at_theta/
+/gene_catalog/herring_sentieon_125ind_pi_eff_test

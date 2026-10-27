@@ -1,0 +1,3 @@
+gene_id	chromosome	requested_region	gene_scope	reason	raw_vcf_records	retained_vcf_records
+ENSCHAG00000010026	1	1:2674807-2688867	all	no_matching_input_records	0	0
+ENSCHAG00000017221	1	1:5431540-5444674	all	no_matching_input_records	0	0

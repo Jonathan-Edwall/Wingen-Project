@@ -1,0 +1,1 @@
+herring_SECD_All_neutral_markers_palet_turbo_1_scale_2.5km_reswdim7_fact3_minn2_rarify_n10_it5_disagg_grd3_wkriging_nmax15_minval0_tajimas_d_: script runtime: 65.4	read.vcfR runtime=0.4, wkrig_gd runtime=9.1, window_gd_runtime=13.0, distance_masking_runtime=5.8, plotting_runtime=22.4, grid_engine=optimized, grid_cells=6384, grid_min_cells=5000

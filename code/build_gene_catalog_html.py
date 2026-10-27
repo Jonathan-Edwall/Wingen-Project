@@ -243,7 +243,7 @@ def _covariate_group(display_name, key_prefix, suffix, gd_key, gd_short, extreme
     }
 
 
-def build_column_layout(gd_key, gd_short, extreme_value_percentiles=LEGACY_EXTREME_VALUE_PERCENTILES):
+def build_column_layout(gd_key, gd_short, extreme_value_percentiles=LEGACY_EXTREME_VALUE_PERCENTILES, records=None):
     """The catalog's column layout for one genetic diversity statistic.
 
     Only two things depend on the statistic, both taken from the catalog's own
@@ -255,7 +255,7 @@ def build_column_layout(gd_key, gd_short, extreme_value_percentiles=LEGACY_EXTRE
     Everything else (windows.*, location.*, n_individuals_vcf.*, ...) is
     statistic-neutral in the JSON already and identical for every statistic.
     """
-    return [
+    layout = [
         {"key": "gene_id", "label": "Gene", "numeric": False},
         {"key": "chr", "label": "Chr", "numeric": False},
         {"key": "n_variants", "label": "Variants", "numeric": True},
@@ -275,8 +275,9 @@ def build_column_layout(gd_key, gd_short, extreme_value_percentiles=LEGACY_EXTRE
             "columns": [
                 {"key": "windows.variance", "label": "Var", "numeric": True},
                 {"key": "windows.mean", "label": "Mean", "numeric": True},
-                {"key": "windows.abs_mean", "label": "|Mean|", "numeric": True,
-                 "tooltip": "Absolute value of the mean across eligible raw windows, abs(mean). Stored only when this gene's observed window min < 0 and max > 0; otherwise unavailable."},
+                {"key": "windows.abs_mean", "source_key": "windows.mean", "transform": "abs",
+                 "label": "|Mean|", "numeric": True,
+                 "tooltip": "Absolute value of the mean across eligible raw windows, abs(mean). Shown when any gene in this catalog has a negative window minimum; includes every defined mean."},
                 {"key": "windows.median", "label": "Median", "numeric": True},
                 {"key": "windows.min", "label": "Min", "numeric": True},
                 {"key": "windows.max", "label": "Max", "numeric": True},
@@ -288,8 +289,9 @@ def build_column_layout(gd_key, gd_short, extreme_value_percentiles=LEGACY_EXTRE
             "columns": [
                 {"key": "location.variance", "label": "Var", "numeric": True},
                 {"key": "location.mean", "label": "Mean", "numeric": True},
-                {"key": "location.abs_mean", "label": "|Mean|", "numeric": True,
-                 "tooltip": "Absolute value of the mean across defined locations, abs(mean). Stored only when this gene's observed location min < 0 and max > 0; otherwise unavailable."},
+                {"key": "location.abs_mean", "source_key": "location.mean", "transform": "abs",
+                 "label": "|Mean|", "numeric": True,
+                 "tooltip": "Absolute value of the mean across defined locations, abs(mean). Shown when any gene in this catalog has a negative location minimum; includes every defined mean."},
                 {"key": "location.median", "label": "Median", "numeric": True},
                 {"key": "location.min", "label": "Min", "numeric": True},
                 {"key": "location.max", "label": "Max", "numeric": True},
@@ -330,6 +332,17 @@ def build_column_layout(gd_key, gd_short, extreme_value_percentiles=LEGACY_EXTRE
                          "Horizontal current speed in m/s: sqrt(uo² + vo²) is calculated for each monthly field, then averaged over the physics baseline."),
 
     ]
+    # Column visibility is a catalog-wide choice; row values use abs(mean).
+    if records is not None:
+        for group in layout:
+            block = {"Windows": "windows", "Location": "location"}.get(group.get("group"))
+            if block:
+                minima = [(record.get(block) or {}).get("min") for record in records]
+                if not any(type(value) in (int, float) and math.isfinite(value) and value < 0
+                           for value in minima):
+                    group["columns"] = [column for column in group["columns"]
+                                        if column["key"] != f"{block}.abs_mean"]
+    return layout
 
 
 def _leaf_keys(node):
@@ -613,8 +626,8 @@ rows = con.execute("SELECT * FROM genes ORDER BY gene_id").fetchall()
 gd_stat, gd_label, gd_label_short = read_gd_metric(con, "genes", cols)
 # gd_key has to match how the Rmd builds the Window fields' names: tolower(gd_stat).
 extreme_value_percentiles = read_extreme_value_percentiles(rows, cols)
-COLUMN_LAYOUT = build_column_layout(gd_stat.lower(), gd_label_short, extreme_value_percentiles)
 records = [dict(zip(cols, row)) for row in rows]
+COLUMN_LAYOUT = build_column_layout(gd_stat.lower(), gd_label_short, extreme_value_percentiles, records=records)
 window_counts = add_window_correlations(records, gd_stat.lower())
 column_layout, dropped_empty, strip_keys = available_columns(con, "genes", COLUMN_LAYOUT, cols,
                                                              computed_counts=window_counts)

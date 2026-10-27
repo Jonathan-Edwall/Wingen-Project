@@ -31,6 +31,42 @@
 # results_dir: "results/gene_catalog_herring_secd_complete_link"
 # results_dir: "results/gene_catalog_herring_secd_compl_no_strat_AR"
 
+# Herring SECD
+# markers_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/pnas.2526500123.sd03.xlsx" # Herring SECD
+# dataset_wingen_params: &dataset_wingen_params
+  # USE_RARIFY: TRUE # TRUE/FALSE # Herring SECD
+  # RARIFY_N: 10 # Herring SECD
+  # ENV_PRESET: baltic # Herring SECD
+
+
+
+
+# Herring 125 Ind Global Dataset
+results_dir: "gene_catalog/herring_sentieon_125ind_pi_eff_test" # Herring 125 Ind Global Dataset
+input_vcf: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/herring_sentieon_125ind_231031.newID.filter.setGT.noIndels.minDP3.0maxDP3.0avg.snpEff.biallelic.vcf.gz" # Herring 125 Ind Global Dataset
+sample_coordinates_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/125_individual_info_list_shared_with_media_coordinates.xlsx" # Herring 125 Ind Global Dataset
+study_species: herring_sentieon_125ind # Herring 125 Ind Global Dataset
+gene_chrom_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/gene_chrom.tsv"  # Herring 125 Ind Global Dataset required if the gene list comes from a txt file or or array; built by code/build_gene_chrom_map.py.
+gene_list_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/unique_genes.txt"
+gene_scope: all
+vcf_annotation_format: snpeff # Herring 125 Ind Global Dataset
+gd_stat: "pi" # or "watterson_theta"
+gd_label: ""
+gd_label_short: ""
+neutral_vcf: null  # already-neutral BGZF VCF; when provided, markers_file and its table settings are ignored
+# Optional convenience: dataset-only settings merged into wingen_params below.
+# To use the original flat layout, move these active entries into the single
+# wingen_params mapping, then comment this whole block AND its << merge line.
+# Top-level settings such as input_vcf can appear anywhere, once per key.
+dataset_wingen_params: &dataset_wingen_params
+  RESOLUTION_KM: 10 # Good for Herring 125 Ind Global Dataset
+  WDIM: 7 # Good for Herring 125 Ind Global Dataset
+  FACT: 1 # Good for Herring 125 Ind Global Dataset
+  USE_RARIFY: FALSE # TRUE/FALSE  # Herring 125 Ind Global Dataset
+  MAX_INTERP_DIST_SCALE: 5 # Herring 125 Ind Global Dataset
+  ENV_PRESET: global # Herring 125 Ind Global Dataset
+
+
 # New folder for the run with the Baltic environmental layers / wider baseline / seed / location rarefaction "auto", so that run is not overwritten:
 # results_dir: "gene_catalog/herring_secd_pi_balt"
 # results_dir: "gene_catalog/herring_secd_pi_rar_10"
@@ -39,14 +75,15 @@
 # results_dir: "gene_catalog/herring_secd_ar_balt"
 # results_dir: "gene_catalog/herring_secd_td"
 # results_dir: "gene_catalog/herring_sentieon_125ind_piii" # Herring 125 Ind Global Dataset
+# results_dir: "gene_catalog/herring_sentieon_125ind_pi_eff_test" # Herring 125 Ind Global Dataset
 
 
 # Paths - mirrors the old raw_data_dir-based paths directly
 # input_vcf: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/herring_sentieon_125ind_231031.newID.filter.setGT.noIndels.minDP3.0maxDP3.0avg.snpEff.biallelic.vcf.gz" # Herring 125 Ind Global Dataset
-input_vcf: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/Goodall2025_Swedish_East_Coast_Dataset_BalticSea_Herring.vcf.gz" # Herring SECD
+# input_vcf: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/Goodall2025_Swedish_East_Coast_Dataset_BalticSea_Herring.vcf.gz" # Herring SECD
 
 # sample_coordinates_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/125_individual_info_list_shared_with_media_coordinates.xlsx" # Herring 125 Ind Global Dataset
-sample_coordinates_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/individuals_w_mapped_geographical_coordinates_Goodall2025_Swedish_East_Coast_Dataset_BalticSea_Herring.xlsx" # Herring SECD
+# sample_coordinates_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/individuals_w_mapped_geographical_coordinates_Goodall2025_Swedish_East_Coast_Dataset_BalticSea_Herring.xlsx" # Herring SECD
 
 # domain_type
 #   "ocean" (default) - marine/aquatic species: keep sea cells, mask out land
@@ -54,19 +91,19 @@ sample_coordinates_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Projec
 domain_type: "ocean"
 
 # study_species: herring_sentieon_125ind # Herring 125 Ind Global Dataset
-study_species: herring_SECD # Herring SECD
+# study_species: herring_SECD # Herring SECD
 # gene_list_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/unique_genes.txt"  
 # gene_list_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/herring_SECD_candidate_genes.bed"  # Herring SECD
 
 # Create the BED from the annotation table if gene_list_file does not exist.
-gene_annotation_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/ALL_SNP_Gene_Annotations.txt"
+# gene_annotation_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/ALL_SNP_Gene_Annotations.txt"
 # gene_list_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/herring_SECD_gene_list.bed"
-gene_list_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/herring_SECD_annotated_table_genes.bed"
+# gene_list_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/herring_SECD_annotated_table_genes.bed" # AT=Annotated Table, 6k
 
 gene_annotation_include_biotypes: []  # all; or [protein_coding], [protein_coding, lncRNA, rRNA]
 
 # gene_chrom_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/gene_chrom.tsv"  # Herring 125 Ind Global Dataset required if the gene list comes from a txt file or or array; built by code/build_gene_chrom_map.py.
-gene_chrom_file: null  # not required in BED mode; chromosome comes from column 1
+# gene_chrom_file: null  # not required in BED mode; chromosome comes from column 1  # SECD
 
 # genes:
 #   - ENSCHAG00000000003
@@ -74,7 +111,7 @@ gene_chrom_file: null  # not required in BED mode; chromosome comes from column 
 
 # optional - caps the resolved gene list to its first N genes, for a
 # quick test run without needing a separate small gene_list_file
-gene_list_limit: 20
+gene_list_limit: 12
 # gene_list_limit: 1
 # Keep the latest config's 12-gene test cap; set null for the full generated list.
 
@@ -84,7 +121,7 @@ gene_list_limit: 20
 # Rmd, via filter_vcf_by_scope.sh. Requires vcf_annotation_format: snpeff
 # (the "bed" pathway has no ANN to check scope against). See
 # filter_vcf_by_scope.sh's own header comment for what each scope means.
-gene_scope: all
+# gene_scope is set once in the active dataset block above.
 
 # "snpeff": hand the gene ID and chromosome to filter_vcf_by_chr_or_gene.sh in
 #           gene mode - that script does its own SnpEff-ANN-vs-fallback
@@ -93,7 +130,7 @@ gene_scope: all
 # "bed":    a .bed gene_list_file maps each gene to a chr:start-end region, script
 #           is called in chr mode with that region instead
 # vcf_annotation_format: snpeff # Herring 125 Ind Global Dataset
-vcf_annotation_format: bed # Herring SECD
+# vcf_annotation_format: bed # Herring SECD
 
 
 # Genetic diversity statistic to map, carried through window/location statistics, plots, filenames and the catalog.
@@ -133,11 +170,12 @@ gd_dosage_missing_policy: "hierfstat"
 # gd_label_short: "AR"
 
 
-gd_stat: "tajimas_d" # or "watterson_theta"
-gd_label: ""
-gd_label_short: ""
+# gd_stat: "tajimas_d" # or "watterson_theta"
+# gd_label: ""
+# gd_label_short: ""
 # gd_dosage_missing_policy: "complete_sites"
-results_dir: "gene_catalog/herring_secd_at_td"
+# results_dir: "gene_catalog/herring_secd_at_td_v2"
+# results_dir: "gene_catalog/herring_secd_at_td_v3_eff"
 # gd_stat: "watterson_theta" # or "watterson_theta"
 # gd_label: ""
 # gd_label_short: ""
@@ -150,13 +188,53 @@ use_copernicus_marine: TRUE
 # Neutral simulations; The neutral markers are either supplied/created through the neutral inputs or a neutral marker file is created using SnpEff intergenic SNPs.
 # Scripts: 1 reads optional marker tables (or snpeff_vcf_create_neutral_marker_file.sh extracts intergenic SNP positions), 2 prepares VCFs with bcftools, 3 samples reproducible subsets; 2 then extracts the planned subset VCFs.
 run_neutral_sim: true  # single toggle for neutral Snakemake rules and RUN_NEUTRAL_SIM in the Rmd
+# DEBUG only: limit the shared pool used by ALL neutral simulations/reference.
+# Omitted/null (default) keeps every eligible marker; positive N samples up to N.
+# This changes the null sampling population and can change p-values/thresholds.
+# The complete source is still prepared/validated once; downstream work is capped.
+neutral_pool_max_markers: null
+neutral_pool_seed: 42
+
+# Optional catalog reference row: this is what was formerly All_neutral_markers.
+# It is a fake gene for a pooled reference, not a Monte Carlo replicate.
+# false skips the extra analysis; true adds the configured reference to the catalog.
+# Reuses neutral_vcf when supplied, otherwise the existing neutral-pool inputs.
+include_all_neutral_markers: true
+neutral_reference_id: "neutral_marker_reference"
+# Only cap that extra reference row; does not further limit the simulation pool.
+# Omitted/null = all pool markers; a positive integer = random subset up to N.
+# 100000 below is an explicit first-test setting, not the omitted-key default.
+neutral_reference_max_markers: 100000
+neutral_reference_seed: 42
+# Run the reference after retained ordinary reports. "auto" reserves the
+# allocation's available memory minus headroom; it does not impose an R limit.
+# Without a Snakemake/Slurm memory budget, auto falls back to 40000 MB.
+neutral_reference_mem_mb: "auto"
+neutral_reference_headroom_mb: 4096
+# Scheduling metadata only; the enclosing Slurm allocation sets the time limit.
+neutral_reference_runtime_minutes: 720
+# One R worker avoids extra copies of large genotype objects.
+neutral_reference_threads: 1
+
+# auto (also the omitted-key default) uses workflow.cores for preparation CPUs.
+# This is Snakemake's --cores budget, not every physical CPU on the machine.
+# Memory auto separately uses the declared Snakemake/Slurm memory budget.
+# Resource requests control scheduling; they do not make a process use RAM.
+neutral_preparation_threads: "auto"
+neutral_preparation_mem_mb: "auto"
+neutral_preparation_headroom_mb: 4096
+# Per-gene plans/extraction can run concurrently; the 100 replicate files are
+# still extracted serially within each gene. Threads aid compression/indexing.
+neutral_subset_threads: 2
+neutral_subset_mem_mb: 8000
+
 # For automatic extraction from input_vcf, set vcf_annotation_format: snpeff and leave BOTH markers_file and neutral_vcf null/unset.
 # All ANN effects at a retained SNP must be intergenic_region; upstream/downstream are excluded.
 # SnpEff's flanking gene IDs on intergenic annotations are allowed. Missing or invalid ANN is excluded.
 # The rule logs candidate/exclusion counts and writes a CHROM/POS TSV (1-based positions, no intervals) for extract_neutral_pool.
 # markers_file is required for bed mode when neutral_vcf is unset.
 # Accepts an annotated table, a table already containing only neutral markers, a headerless 1-based CHROM/POS list, or single-base BED intervals.
-markers_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/pnas.2526500123.sd03.xlsx" # Herring SECD
+# markers_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/pnas.2526500123.sd03.xlsx" # Herring SECD
 # neutral_vcf: null  # already-neutral BGZF VCF; when provided, markers_file and its table settings are ignored
 input_format: "auto"  # auto: .bed[.gz] -> bed, otherwise table; use positions for a headerless CHROM/POS list
 sheet: "Sheet1"
@@ -194,9 +272,17 @@ extreme_value_percentiles: [95, 99]  # percentile levels for neutral |r| and |rh
 # via Sys.getenv(). Anything left commented out here falls back to
 # whatever default is hardcoded in the Rmd itself - exactly like leaving
 # the matching export commented out in 2_wingen_create_gene_catalog.sh
-# does today. Only these two are currently active there, so only these
-# two are set here - uncomment more as you actually start tuning them.
+# does today. Dataset settings above are merged with the shared settings below.
 wingen_params:
+  # Optional: comment this merge line if the dataset block above is commented.
+  # In flat mode, put all desired tuning entries directly in this mapping.
+  <<: *dataset_wingen_params
+  # Performance test: 0 forces efficient windows/kriging; "Inf" selects native.
+  # Compare runs with the same scientific settings and separate results_dir values.
+  GRID_MIN_CELLS: 0
+  WINGEN_DIAGNOSTICS: FALSE
+  GRID_VALIDATE: FALSE
+  PREVIEW_WINDOWS: TRUE # window-setting preview, independent of diagnostic checks
   GRD_DISAGG_FACTOR: 3
   # RESOLUTION_KM: 10 # Good for Herring 125 Ind Global Dataset
 
@@ -204,10 +290,9 @@ wingen_params:
   # WDIM: 7 # Good for Herring 125 Ind Global Dataset
   # FACT: 1 # Good for Herring 125 Ind Global Dataset
   # MIN_N_SAMPLES_PER_CALC:
-  USE_RARIFY: TRUE # TRUE/FALSE # Herring SECD
+  # USE_RARIFY: TRUE # TRUE/FALSE # Herring SECD
   # USE_RARIFY: FALSE # TRUE/FALSE  # Herring 125 Ind Global Dataset
   # RARIFY_N: 10 # Herring SECD
-  RARIFY_N: 10
   # RARIFY_N_ITERATIONS:
   USE_WEIGHTED_KRIGING: TRUE # TRUE/FALSE
   NMAX_NEIGHBOURS: 15
@@ -223,8 +308,10 @@ wingen_params:
   # SAMPLE_POINT_SIZE_BY:
   # SPHERICAL_GRID:
   HEATMAP_COLOR_PALETTE: "turbo" # "inferno" (default), "mako", "rocket", "turbo", "cividis", "plasma", "viridis" "magma".
-  # CLUSTER_SAMPLE_POINTS:
-  # CLUSTER_SAMPLE_POINTS_KM:
+  CLUSTER_VARIANCE_POINTS_KM: 10 # complete-linkage location clusters for genotype statistics
+  # Display only: omitted/null inherits the value above; 0 = exact sites; positive = km cutoff.
+  CLUSTER_SAMPLE_POINTS_KM: null
+  SPACING_CLUSTER_KM: 2 # only for the optional clustered-spacing interpolation cutoff
 
   # LOCATION_RARIFY decides whether the per-LOCATION values (the "Location" columns, and every location-level R2/r/p) are
   # rarefied to RARIFY_N individuals like the window values are. auto retains all eligible individuals for every metric except
@@ -242,7 +329,7 @@ wingen_params:
   # ---- Environmental data from Copernicus Marine -------------------------------------------------------------
   # ENV_PRESET picks the datasets: "global" (what the prototype used) or "baltic" - see config/env_presets.yaml for exactly
   # which products each uses, what they cover, and how to add your own.
-  ENV_PRESET: baltic # Herring SECD
+  # ENV_PRESET: baltic # Herring SECD
   # ENV_PRESET: global # Herring 125 Ind Global Dataset
   # Baseline = the years the environmental values are averaged over. Trimmed automatically to what each dataset covers
   # (the trimming is announced in the log and the years used are written to the gene's JSON). 1998 is the first full year

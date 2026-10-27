@@ -40,6 +40,14 @@ materialize: extract and index the SNP subsets selected by step 3.
   [--pool-index CACHE.csi]
   Writes one VCF per technical replicate.
 
+reference: create a bounded reference VCF without changing the simulation pool.
+  --pool POOL.vcf.gz --pool-index CACHE.csi --output REFERENCE.vcf.gz
+  --max-markers INTEGER --seed INTEGER --metadata REFERENCE.json
+  Selects uniformly without replacement, preserving source record/sample order.
+
+limit-pool: DEBUG-only cap for the shared simulation pool, using the same options.
+  Changes the sampling population for simulations and the extra reference.
+
 All modes accept:
   --threads INTEGER      Total CPU budget, including the main thread. Default: 1
                          Uses remaining threads for bcftools compression/indexing.
@@ -73,7 +81,7 @@ run_timed() {
 mode="${1:---help}"
 case "$mode" in
     --help|-h) usage; exit 0 ;;
-    pool|extract-pool|validate-pool|existing-pool|materialize) shift ;;
+    pool|extract-pool|validate-pool|existing-pool|materialize|reference|limit-pool) shift ;;
     *) die "Unknown mode '$mode'; use --help" ;;
 esac
 case "$mode" in
@@ -81,6 +89,8 @@ case "$mode" in
     validate-pool) rule_name="validate_neutral_pool" ;;
     existing-pool) rule_name="prepare_existing_neutral_pool" ;;
     materialize) rule_name="materialize_neutral_vcfs" ;;
+    reference) rule_name="prepare_neutral_reference" ;;
+    limit-pool) rule_name="limit_neutral_pool" ;;
 esac
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -92,6 +102,7 @@ vcf=""; markers=""; output=""; metadata=""
 target_markers_output=""; index_output=""
 markers_format="normalized"
 pool=""; gene_vcf=""; plan=""; output_dir=""; pool_index=""
+max_markers=""; seed=""
 
 while (($#)); do
     option="$1"
@@ -125,6 +136,12 @@ while (($#)); do
         materialize:--plan) plan="$value" ;;
         materialize:--output-dir) output_dir="$value" ;;
         materialize:--pool-index) pool_index="$value" ;;
+        reference:--pool|limit-pool:--pool) pool="$value" ;;
+        reference:--pool-index|limit-pool:--pool-index) pool_index="$value" ;;
+        reference:--output|limit-pool:--output) output="$value" ;;
+        reference:--metadata|limit-pool:--metadata) metadata="$value" ;;
+        reference:--max-markers|limit-pool:--max-markers) max_markers="$value" ;;
+        reference:--seed|limit-pool:--seed) seed="$value" ;;
         *) die "Unknown option '$option' for mode '$mode'" ;;
     esac
 done
@@ -160,6 +177,12 @@ case "$mode" in
         [[ -n "$pool" && -n "$gene_vcf" && -n "$plan" && -n "$metadata" && -n "$output_dir" ]] ||
             die "materialize requires --pool, --gene-vcf, --plan, --metadata and --output-dir"
         work_parent="$output_dir"
+        ;;
+    reference|limit-pool)
+        [[ -n "$pool" && -n "$pool_index" && -n "$output" && -n "$metadata" && -n "$max_markers" && -n "$seed" ]] ||
+            die "$mode requires --pool, --pool-index, --output, --max-markers, --seed and --metadata"
+        [[ -f "$pool_index" ]] || die "Neutral source pool index is missing: $pool_index"
+        work_parent="$(dirname -- "$output")"
         ;;
 esac
 [[ -f "$helper" ]] || die "Neutral subset helper not found: $helper"
@@ -277,5 +300,23 @@ case "$mode" in
         done < "$work_dir/groups.tsv"
         mv -f -- "$work_dir/final_manifest.json" "$output_dir/manifest.json"
         log "DONE published $prepared_count technical-replicate VCFs and manifest"
+        ;;
+    reference|limit-pool)
+        "$python" "$helper" guard-paths --input "$pool" --input "$pool_index" \
+            --output "$output" --output "$output.csi" --output "$metadata"
+        run_timed "select reference marker positions" "$python" "$helper" reference-positions \
+            --pool "$pool" --positions "$work_dir/reference.positions.tsv" \
+            --selection "$work_dir/reference.selection.tsv" --metadata "$work_dir/reference.json" \
+            --max-markers "$max_markers" --seed "$seed"
+        run_timed "extract bounded reference VCF" "$bcftools" view --no-version \
+            -R "$work_dir/reference.positions.tsv" --regions-overlap pos \
+            --threads "$bcftools_threads" -Oz -o "$work_dir/reference.vcf.gz" "${pool}##idx##${pool_index}"
+        "$python" "$helper" check-reference --pool "$pool" --vcf "$work_dir/reference.vcf.gz" \
+            --selection "$work_dir/reference.selection.tsv" --metadata "$work_dir/reference.json"
+        "$bcftools" index --force --csi --threads "$bcftools_threads" "$work_dir/reference.vcf.gz"
+        mkdir -p -- "$(dirname -- "$metadata")"
+        mv -f -- "$work_dir/reference.vcf.gz" "$output"
+        mv -f -- "$work_dir/reference.vcf.gz.csi" "$output.csi"
+        mv -f -- "$work_dir/reference.json" "$metadata"
         ;;
 esac

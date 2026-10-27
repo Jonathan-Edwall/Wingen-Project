@@ -1,7 +1,7 @@
 ---
 title: "Wingen Genetic Diversity Map"
 output: html_document
-date: "2026-10-09"
+date: "2026-10-26"
 ---
 # Preparation
 ```{r setup, echo = FALSE, results = 'hide', warning = FALSE}
@@ -53,6 +53,10 @@ vcf_filter_value <- Sys.getenv("vcf_filter_value", unset = "") # contains gene n
 # Direct Rmd runs instead use the full, metric-specific output prefix for summaries.
 gene_catalog_run <- isTRUE(as.logical(Sys.getenv("GENE_CATALOG_RUN", unset = "FALSE")))
 
+# The pooled reference uses the same Wingen calculations as every gene.
+# This flag identifies the target for labels, provenance and simulations.
+neutral_reference <- isTRUE(as.logical(Sys.getenv("NEUTRAL_REFERENCE", unset = "FALSE")))
+
 if (Sys.getenv("wingen_output_dir") != "") {
   output_dir <- Sys.getenv("wingen_output_dir")
 } else {
@@ -64,7 +68,32 @@ dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 # Input Parameters:
 ######################################
 
+# Execution controls: 0 = efficient; Inf = native, using the same grid.
+grid_min_cells <- 5000
+grid_min_cells <- as.numeric(Sys.getenv("GRID_MIN_CELLS", unset = grid_min_cells))
+kriging_chunk_cells <- as.numeric(Sys.getenv("KRIGING_CHUNK_CELLS", unset = 50000))
+diagnostic_run <- isTRUE(as.logical(Sys.getenv("WINGEN_DIAGNOSTICS", unset = "FALSE")))
+# Inspect sample coverage when choosing wdim/fact, independently of debugging.
+preview_windows <- isTRUE(as.logical(Sys.getenv("PREVIEW_WINDOWS", unset = "TRUE")))
+
+# Complete-linkage threshold for genotype-based sample-location clusters.
+# Plot groups inherit this threshold unless separately overridden.
+CLUSTER_VARIANCE_POINTS_KM <- as.numeric(Sys.getenv("CLUSTER_VARIANCE_POINTS_KM", unset = 10))
+# Display-only override: inherit the location-statistic threshold when omitted;
+# zero shows exact empirical sites. This never changes genotype groups or masks.
+CLUSTER_SAMPLE_POINTS_KM <- as.numeric(Sys.getenv("CLUSTER_SAMPLE_POINTS_KM",
+  unset = as.character(CLUSTER_VARIANCE_POINTS_KM)))
+# Separate scientific option: only the alternative 'clustered' distance cutoff
+# uses this legacy spacing threshold. It does not define the location groups.
+SPACING_CLUSTER_KM <- as.numeric(Sys.getenv("SPACING_CLUSTER_KM", unset = 2))
+if (any(!is.finite(c(CLUSTER_VARIANCE_POINTS_KM, CLUSTER_SAMPLE_POINTS_KM, SPACING_CLUSTER_KM))) ||
+    any(c(CLUSTER_VARIANCE_POINTS_KM, CLUSTER_SAMPLE_POINTS_KM, SPACING_CLUSTER_KM) < 0))
+  stop("Sample-location, display-cluster and spacing thresholds must be finite, nonnegative kilometres")
+
 compute_genetic_diversity_statistics <- as.logical(Sys.getenv("calc_gen_diversity_stats", unset = FALSE)) # [Default: FALSE] 
+if (neutral_reference && !isTRUE(compute_genetic_diversity_statistics)) {
+  stop("The neutral reference requires calc_gen_diversity_stats=TRUE")
+}
 
 
 # --- Region of interest (optional) ---
@@ -126,7 +155,7 @@ GD_STAT_DEFAULTS <- list(
 # to statistic names or affect the estimator.
 getenv_utf8 <- function(name) { x <- Sys.getenv(name, unset = ""); Encoding(x) <- "UTF-8"; x }
 
-gd_stat_requested <- Sys.getenv("GD_STAT", unset = "tajimas_d") # Edit unset for a standalone run; GD_STAT takes precedence.
+gd_stat_requested <- Sys.getenv("GD_STAT", unset = "pi") # Edit unset for a standalone run; GD_STAT takes precedence.
 if (!nzchar(gd_stat_requested)) gd_stat_requested <- "pi"
 # Accept the previous spelling, but always name new outputs theta.
 if (tolower(gd_stat_requested) == "watterson_theta") gd_stat_requested <- "theta"
@@ -221,7 +250,7 @@ nmax_neighbours <- as.numeric(Sys.getenv("NMAX_NEIGHBOURS", unset = Inf))
 # MAX_INTERP_DIST_MODE picks how the interpolation distance-from-sample cutoff  (section 5's final mask_gd(..., dist_to_sample, maxval = MAX_INTERP_DIST)) gets set:
 #   "computed"  - window-footprint reach (default) - see window_based_reach_km below
 #   "clustered" - median nearest-neighbor distance between clustered sample locations (clustered_reach_km below).
-              # computed on cluster CENTROIDS (see CLUSTER_THRESHOLD_KM / centroids_v above), specifically so near-duplicate points at the same site don't deflate the median.
+              # computed on cluster CENTROIDS (see SPACING_CLUSTER_KM / spacing-centroid distances in section 1.4), specifically so near-duplicate points at the same site don't deflate the median.
               # Representing the "typical real spacing between sampling sites" 
 #   "hardcoded" - predefined MAX_INTERP_DIST_KM value you choose
 #   "none"      - unlimited distance value (No distance based pruning) -> mask_gd's maxval=Inf
@@ -234,21 +263,13 @@ MAX_INTERP_DIST_OVERRIDE_KM <- as.numeric(Sys.getenv("MAX_INTERP_DIST_KM", unset
 # MAX_INTERP_DIST_SCALE is here used as a linear factor, so for sqrt(1 + X) (e.g. 1.2247 would roughly increase the area by a nominal +50%) 
 MAX_INTERP_DIST_SCALE <- as.numeric(Sys.getenv("MAX_INTERP_DIST_SCALE", unset = 1))
 
-# maxdist here is a SEPARATE knob from MAX_INTERP_DIST (not a duplicate, easy to conflate since both are "how far is too far"). maxdist only reaches gstat's neighbor search inside
-# wkrig_gd() (r_pts there is built from wgd_confident[[gd_layer_name]]'s CELL
-# CENTROIDS, via terra::as.data.frame(r, xy = TRUE) - confirmed from
-# wkrig_gd.R source), i.e. "how far from a surviving WINDOW CELL is this
-# prediction". MAX_INTERP_DIST's final mask instead measures distance to
-# the nearest actual raw sample coordinate (dist_to_sample, from
-# coords_wgs84). A window cell's centroid can sit up to roughly half a
-# window-width from the real samples that fed it, so these are not the
-# same test and one is not redundant with the other.
-# see the note by the final mask in section 5. Defaults to a computed
-# value derived once MAX_INTERP_DIST is known (section 1.4, right after
-# MAX_INTERP_DIST_SCALE is applied) - not resolved here, since that
-# depends on values not computed yet at this point in the script. Set
-# MAXDIST explicitly (including to Inf, wingen's own raw default) to
-# skip that and use your own value instead.
+# maxdist and MAX_INTERP_DIST control different distances. Kriging uses
+# planar Mollweide distances to window-cell centroids; the final mask uses
+# geographic distances to unique empirical coordinates. Mollweide preserves
+# area, not distance, so their numeric radii are not globally interchangeable.
+# Section 1.4 resolves the existing approximate search policy once the final
+# display cutoff is known. Set MAXDIST explicitly to override it, including
+# Inf to remove the radius restriction. NMAX_NEIGHBOURS still applies.
 
 maxdist <- as.numeric(Sys.getenv("MAXDIST", unset = NA)) # Maximum distance to consider for neighboring observations. Left NA here (resolved in section 1.4) unless explicitly set. If set together with nmax, both parameters limit the number of neighbors. [Default when explicitly set to Inf: Inf]
 max_range_frac <- as.numeric(Sys.getenv("MAX_RANGE_FRAC", unset = 0.5)) # Numeric. Maximum fraction of the range parameter to consider for neighboring observations (default: 0.5). This can help to limit the influence of distant points. [Default: 0.5]
@@ -329,25 +350,15 @@ SAMPLE_POINT_SIZE_BY <- Sys.getenv("SAMPLE_POINT_SIZE_BY", unset = "All") # "All
 SPHERICAL_GRID <- as.logical(Sys.getenv("SPHERICAL_GRID", unset = FALSE))
 
 # Color scale of the heatmaps (This setting won't however affect the sample-count layer map, since it keeps its own separate "viridis" choice regardless)
-# Values: Any scale_fill_viridis_c() option works: "inferno" (default), "mako", "rocket", "turbo", "cividis", "plasma", "viridis" "magma".
+# Values: Any scale_fill_viridis_c() option works: "inferno" (Wingens default), "mako", "rocket", "turbo", "cividis", "plasma", "viridis" "magma".
 # mako/rocket are good options for avoiding the default inferno's tendency to have the highest intensity of bright-yellow to blend into the light background.
-HEATMAP_COLOR_PALETTE <- Sys.getenv("HEATMAP_COLOR_PALETTE", unset = "inferno") # "inferno"/"mako"/"rocket"/"turbo"/"cividis"/"plasma"/"viridis"/"magma".
+HEATMAP_COLOR_PALETTE <- Sys.getenv("HEATMAP_COLOR_PALETTE", unset = "turbo") # "inferno"/"mako"/"rocket"/"turbo"/"cividis"/"plasma"/"viridis"/"magma".
 # HEATMAP_COLOR_PALETTE <- "turbo"
 # HEATMAP_COLOR_PALETTE <- "mako"
 # HEATMAP_COLOR_PALETTE <- "rocket"
 
-# Optional: instead of one dot per raw distinct coordinate, group sites
-# within CLUSTER_SAMPLE_POINTS_KM of each other into a single dot
-# (centroid position, summed count) before plotting - repeat visits to
-# the same ground can sit just metres to a couple km apart (see section
-# 1.4's clustering note) and would otherwise draw as overlapping or
-# misleading dots at map scale. A fully separate computation from section
-# 1.4's own clustering (CLUSTER_THRESHOLD_KM) - independent on purpose,
-# so changing one never silently changes the other. Off by default: shows
-# every raw distinct coordinate as its own dot. TRUE/FALSE only, same as
-# SHOW_SAMPLE_POINTS.
-CLUSTER_SAMPLE_POINTS <- as.logical(Sys.getenv("CLUSTER_SAMPLE_POINTS", unset = FALSE))
-CLUSTER_SAMPLE_POINTS_KM <- as.numeric(Sys.getenv("CLUSTER_SAMPLE_POINTS_KM", unset = 2))
+# Point overlays default to the sample-location clusters from section 1.2.1;
+# CLUSTER_SAMPLE_POINTS_KM can independently override their display grouping.
 
 
 # # Naming prefix for every output file - encodes region (full vs subpop)
@@ -399,6 +410,31 @@ region_tag <- if (ROI_ACTIVE) "_subpop_" else "_"
 # LON_MAX <- 60 # Ural mountains in Russia roughly
 # ROI_ACTIVE <- !any(is.na(c(LAT_MIN, LAT_MAX, LON_MIN, LON_MAX)))
 # region_tag <- if (ROI_ACTIVE) "_subpop_" else "_"
+
+# # Herring 125 Ind Global Dataset
+# if (!gene_catalog_run) {
+#   output_dir <- file.path(github_repository_path, "results/temp")
+#   dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+#   grid_min_cells <- 5000
+#   study_species <- paste0("herring_125_ind_global")
+#   study_species <- paste0("herring_125_ind_gene_global")
+#   input_vcf_file <- file.path(github_repository_path, "data/raw/genetic_variation_herring/head_chr1_1-1e6_herring_sentieon_125ind_231031.newID.filter.setGT.noIndels.minDP3.0maxDP3.0avg.snpEff.biallelic.vcf.gz")
+  # input_vcf_file <- file.path(github_repository_path, "data/raw/genetic_variation_herring/ENSCHAG00000000011_filtered.vcf.gz")
+
+#   input_coordinate_file_path <- file.path(github_repository_path,"data/raw/genetic_variation_herring/125_individual_info_list_shared_with_media_coordinates.xlsx")
+#   # SPHERICAL_GRID <- TRUE
+#   MIN_SAMPLE_COUNT_MODE <- "none"
+#   minval_sample_count <- 0
+#   wdim_value <- 7
+#   fact_value <- 1
+#   resolution_m <- 10000
+#   compute_genetic_diversity_statistics <- TRUE
+#   MAX_INTERP_DIST_SCALE <- 5
+#   use_rarify <- FALSE
+
+
+# }
+
 #####################################################################
 ######### Temporary code to easily run zostera marina dataset #########
 if (!gene_catalog_run) {
@@ -457,7 +493,7 @@ if (!gene_catalog_run) {
 # Shared filter settings for filenames and plot titles. Empty gene_scope means all.
 filter_active <- Sys.getenv("vcf_filter_mode") != "" && Sys.getenv("vcf_filter_value") != ""
 gene_scope_value <- Sys.getenv("gene_scope", unset = "all")
-if (gene_scope_value == "") gene_scope_value <- "all"
+if (neutral_reference || gene_scope_value == "") gene_scope_value <- "all"
 
 # Preserve the original, readable filename labels and all encoded setting values.
 # Keep species and filter IDs intact, including their internal underscores.
@@ -513,7 +549,7 @@ filter_active <- Sys.getenv("vcf_filter_mode") != "" && Sys.getenv("vcf_filter_v
 
 # Unset and empty gene_scope both mean "no narrowing", same as "all".
 gene_scope_value <- Sys.getenv("gene_scope", unset = "all")
-if (gene_scope_value == "") gene_scope_value <- "all"
+if (neutral_reference || gene_scope_value == "") gene_scope_value <- "all"
 gene_scope_labels <- c(body = "gene body", exonic = "exonic", cds = "CDS")  # how each scope reads in a title
 
 filter_label <- ""
@@ -543,6 +579,8 @@ make_gd_title <- function(default_title, suffix = "") {
 
 knitr::opts_chunk$set(echo = TRUE)
 start_time <- Sys.time()
+
+
 ```
 
 <!--
@@ -568,6 +606,22 @@ library(ggplot2)
 library(CopernicusMarine)  # environmental layers - section 2.6
 library(lubridate)         # month() extraction for the winter/summer split - section 2.6
 ```
+```{r load-wingen-helpers, include=FALSE}
+# Load the production efficiency functions, plus optional diagnostics.
+# Sourcing defines functions; it does not launch the diagnostic runner.
+# Resolve help_functions beside this Rmd; interactive runs also support
+# the working folder and the existing project code/ layout.
+rmd_file <- knitr::current_input(dir = TRUE)
+rmd_dir <- if (length(rmd_file)) dirname(rmd_file) else getwd()
+if (!length(rmd_file) && !file.exists(file.path(rmd_dir, "help_functions", "wingen_efficiency.R")))
+  rmd_dir <- file.path(github_repository_path, "code")
+helper_dir <- file.path(rmd_dir, "help_functions")
+wingen_helpers <- new.env(parent = baseenv())
+sys.source(file.path(helper_dir, "wingen_efficiency.R"), envir = wingen_helpers)
+if (diagnostic_run)
+  sys.source(file.path(helper_dir, "wingen_diagnostics.R"), envir = wingen_helpers)
+```
+
 # 1. Data Preparation
 
 ```{r location_statistics_functions, include=FALSE}
@@ -883,6 +937,35 @@ if (ROI_ACTIVE) {
   cat("No region-of-interest set - using the full,", length(sample_order), "-sample dataset.\n")
 }
 ```
+## 1.2.1 Unique empirical sampling sites and sample-location clusters
+An empirical site is an exact latitude/longitude pair. A sample-location cluster
+can contain several nearby sites, grouped by complete linkage at the configured
+distance threshold. Every individual remains available for genotype calculations;
+the empirical coordinates are neither moved nor rounded.
+```{r shared-sampling-locations}
+# Deduplicate coordinates, not named populations: those labels can differ
+# between datasets or describe several sites. Repeated individuals remain.
+coords_wgs84 <- terra::vect(coords_file_df, geom = c("Longitude", "Latitude"), crs = "EPSG:4326")
+site_coords <- coords_file_df[!duplicated(coords_file_df[, c("Latitude", "Longitude")]), ]
+sample_sites_wgs84 <- terra::vect(site_coords, geom = c("Longitude", "Latitude"), crs = "EPSG:4326")
+sample_site_index <- wingen_helpers$exact_site_index(coords_file_df, site_coords)
+site_distance_m <- as.matrix(terra::distance(sample_sites_wgs84))
+# Build the full complete-linkage hierarchy WITHOUT a distance cutoff.
+# cutree() then creates clusters at CLUSTER_VARIANCE_POINTS_KM (default 10):
+# all pairs of sites within a cluster are at most that many km apart.
+# site_distance_m/tree can be reused at other cutoffs without reclustering.
+site_tree <- if (nrow(site_coords) > 1L)
+  hclust(as.dist(site_distance_m / 1e3), method = "complete") else NULL
+site_cluster_id <- if (nrow(site_coords) > 1L)
+  cutree(site_tree, h = CLUSTER_VARIANCE_POINTS_KM) else 1L
+sample_location_id <- unname(site_cluster_id[sample_site_index])
+cluster_groups <- split(coords_file_df$`Sample ID`, sample_location_id)
+# sample_sites_wgs84: unique empirical coordinates for the distance mask.
+# sample_site_index: individual -> exact site; sample_location_id: -> cluster.
+# cluster_groups: member individuals for location genotype/environment
+# summaries and output metadata. Plot groups share these IDs by default.
+```
+
 ### Spot-check: are there really samples near a given location?
 A reusable template, not a one-off - point this at whatever location a
 map makes you suspicious about, and check directly rather than reading
@@ -1043,89 +1126,25 @@ Computed here, before the raster gets built, so both the raster's own
 extent (section 2) and the final distance mask (section 5.2.2) tie back to
 the same real number, rather than each being picked independently.
 ```{r 1.4 Computing sample distances (MAX_INTERP_DIST)}
-coords_wgs84 <- vect(coords_file_df, geom = c("Longitude", "Latitude"), crs = "EPSG:4326")
-nn_dist <- apply(as.matrix(distance(coords_wgs84)), 1, function(d) min(d[d > 0]))
-summary(nn_dist / 1e3)  # km, per individual - kept for reference only
-
-# Per-individual nearest-neighbor distance is the wrong basis for a spacing
-# figure here: up to 50 individuals share one Capture_Population's
-# coordinates, and many Capture_Population codes are repeat visits to the
-# same ground on a different week/year rather than genuinely distinct
-# locations - e.g. BLE09 and BLE19 are both "Dynan", 11 days apart.
-# Confirmed: the 150 sites collapse to just ~82 distinct location-clusters at
-# a 2 km merge distance, some clusters absorbing up to 12 separate
-# Capture_Population codes. The naive median comes out ~1.5-1.8 km regardless
-# of individual- or site-level weighting, so almost nothing survived a mask
-# built on that number - this was tuned assuming a few far-away OUTLIERS
-# inflate a mean (median chosen to resist that), when the actual problem here
-# is many near-DUPLICATE points deflating the median instead - the opposite
-# failure mode.
-#
-# Fix: cluster sites within CLUSTER_THRESHOLD_KM of each other (single-
-# linkage) before computing spacing, so repeat visits to the same ground
-# count once, not once per visit. Deduplicating by (Latitude, Longitude)
-# directly, not by a named grouping column like Capture_Population - a
-# named column varies by dataset (this project alone has had
-# Capture_Population, and separately "Location" as a coarser text
-# descriptor covering multiple distinct coordinates - 16 Location values
-# for 36 actual distinct coordinates in the 125-individual dataset) or may
-# not exist at all, and coords_file_df is only guaranteed to have
-# Latitude/Longitude, standardized above regardless of source file.
-# Confirmed this generalizes safely: on the 125-individual global dataset
-# (no Capture_Population column at all - hardcoding that reference is what
-# actually broke there), the 125 individuals collapse to 36 distinct
-# coordinates, already all more than 2 km apart from each other, so
-# clustering is a no-op there and the median comes out 157.6 km - within
-# 0.4 km of the uncontaminated original per-individual figure for that
-# dataset. CLUSTER_THRESHOLD_KM is a real judgment call, not a computed
-# fact - 2 km is chosen to roughly match resolution_m
-
-CLUSTER_THRESHOLD_KM <- 2
-
-site_coords   <- coords_file_df[!duplicated(coords_file_df[, c("Latitude", "Longitude")]), ]
-site_v        <- vect(site_coords, geom = c("Longitude", "Latitude"), crs = "EPSG:4326")
-site_dist_km  <- as.dist(as.matrix(distance(site_v)) / 1e3)
-# site_clusters <- cutree(hclust(site_dist_km, method = "single"), h = CLUSTER_THRESHOLD_KM)
-site_clusters <- cutree(hclust(site_dist_km, method = "complete"), h = CLUSTER_THRESHOLD_KM)
-
-cluster_centroid <- function(i) {
-  rows <- site_clusters == i
-  c(lon = mean(site_coords$Longitude[rows]), lat = mean(site_coords$Latitude[rows]))
-}
-centroids       <- as.data.frame(t(sapply(sort(unique(site_clusters)), cluster_centroid)))
-centroids_v     <- vect(centroids, geom = c("lon", "lat"), crs = "EPSG:4326")
-cluster_nn_dist <- apply(as.matrix(distance(centroids_v)), 1, function(d) min(d[d > 0]))
-
-cat(nrow(coords_file_df), "individuals share", nrow(site_coords), "distinct coordinates, collapsing into",
-    length(unique(site_clusters)), "location-clusters at a",
-    CLUSTER_THRESHOLD_KM, "km merge threshold\n")
-cat("median nn-distance, per-individual (naive):     ", round(median(nn_dist) / 1e3, 2), "km\n")
-cat("median nn-distance, clustered locations:        ", round(median(cluster_nn_dist) / 1e3, 2), "km\n")
-
-# --- Deciding MAX_INTERP_DIST here, not in section 5 ---
-# buffer_m (section 2.3, raster extent margin) and the final display cutoff
-# (section 5) both need to tie back to the SAME number - that was always the
-# point of computing this here rather than in two places. MAX_INTERP_DIST IS
-# that number now, decided once, immediately below.
-#
-# Two candidates, answering different questions:
-#   window-based: how far window_gd() itself looks (wdim aggregated cells,
-#     each fact_value*resolution_m wide; radius = half the window's width) -
-#     ignores where real samples actually are. More permissive.
-#   clustered:    real median spacing between the ~82 distinct sampling
-#     locations above. More conservative/protective, since it's grounded in
-#     actual data density rather than the window's own mechanics.
-# These come out roughly 5x apart here (~26 km vs ~4.6 km) - that gap is
-# expected, not a red flag, since the two numbers are answering genuinely
-# different questions. Default below is window-based; set
-# MAX_INTERP_DIST_MODE = "clustered" to switch to the other one directly,
-# or "hardcoded" + MAX_INTERP_DIST_KM to override with any other value.
-
+# Window geometry and observed sampling density answer different questions.
+# The default uses half the window width, independent of location grouping.
+# The alternative groups nearby sites, then takes the median of each
+# centroid's nearest-other-centroid distance (not all pairwise distances).
+# Exact repeated coordinates are already deduplicated. Slightly different
+# coordinates from repeat visits can still be each other's nearest site,
+# pushing the median toward within-ground spacing rather than between grounds.
+# SPACING_CLUSTER_KM retains the separate legacy 2 km complete-linkage cut.
+# Neither reach is universally smaller or validates an unsampled gap;
+# a global median can poorly represent density in individual regions.
 window_based_reach_km <- (wdim_value / 2) * fact_value * resolution_m / 1e3
-clustered_reach_km    <- median(cluster_nn_dist) / 1e3
-
-cat("window-footprint-based reach:  ", round(window_based_reach_km, 2), "km\n")
-cat("clustered-location-based reach:", round(clustered_reach_km, 2), "km\n")
+clustered_reach_km <- NA_real_
+if (MAX_INTERP_DIST_MODE == "clustered" || diagnostic_run) {
+  spacing <- wingen_helpers$sample_spacing(site_coords, site_tree, SPACING_CLUSTER_KM)
+  clustered_reach_km <- spacing$reach_km
+  if (diagnostic_run)
+    wingen_helpers$report_sampling_geometry(site_coords, sample_site_index,
+      site_distance_m, spacing, SPACING_CLUSTER_KM)
+}
 
 MAX_INTERP_DIST <- switch(MAX_INTERP_DIST_MODE,
   "none" = {
@@ -1138,7 +1157,7 @@ MAX_INTERP_DIST <- switch(MAX_INTERP_DIST_MODE,
     MAX_INTERP_DIST_OVERRIDE_KM * 1e3
   },
   "computed" = {
-    cat("Using window-footprint reach (set MAX_INTERP_DIST_MODE = 'clustered' for the more conservative clustered figure,",
+    cat("Using window-footprint reach (set MAX_INTERP_DIST_MODE = 'clustered' for the sampling-spacing alternative,",
         "'hardcoded' + MAX_INTERP_DIST_KM for any other value, or 'none' for no cutoff)\n")
     window_based_reach_km * 1e3
   },
@@ -1151,13 +1170,15 @@ MAX_INTERP_DIST <- switch(MAX_INTERP_DIST_MODE,
 MAX_INTERP_DIST <- MAX_INTERP_DIST * MAX_INTERP_DIST_SCALE
 if (MAX_INTERP_DIST_SCALE != 1) cat("MAX_INTERP_DIST_SCALE =", MAX_INTERP_DIST_SCALE, "applied - final MAX_INTERP_DIST:", round(MAX_INTERP_DIST / 1e3, 2), "km\n")
 
-# maxdist speed default, resolved here rather than in the settings block
-# because it needs MAX_INTERP_DIST and window_based_reach_km, both only known once real data is loaded.
-# This controls how many cell centroids wkrig_gd() bothers considering per prediction, purely for computational efficiency of the kriging.
-#
-# wkrig_gd()'s maxdist measures distance from a prediction location to the nearest surviving CELL CENTROID. A real sample that ends up within MAX_INTERP_DIST of that prediction location (i.e. close enough to survive section 5's mask) can itself sit up to window_based_reach_km from ITS OWN cell's centroid, since window_gd() pools samples from anywhere in the full window, not just the centroid cell.
-# By the triangle inequality, the prediction location can then be up to MAX_INTERP_DIST + window_based_reach_km from that centroid and still be relevant
-# -> So that sum is the smallest maxdist guaranteed to never exclude a centroid a surviving prediction might actually need. Any centroid farther than that literally cannot matter, however this run's specific data happens to be arranged.
+# Resolve the existing kriging search policy after MAX_INTERP_DIST is known.
+# MAX_INTERP_DIST is the geographic distance cutoff to an empirical site;
+# maxdist instead limits which window-cell centroids inform each prediction.
+# Changing maxdist can change predictions as well as runtime.
+# This inherited sum is an approximate search policy, not a guaranteed
+# no-loss bound: square-window corners extend beyond half-width, and
+# Mollweide planar distances differ from geographic distances. Equal area
+# does not mean equal distance. Both native and efficient modes keep the
+# same policy; MAXDIST=Inf removes this radius limit (nmax still applies).
 if (is.na(maxdist)) {
   maxdist <- if (is.finite(MAX_INTERP_DIST)) MAX_INTERP_DIST + (window_based_reach_km * 1e3) else Inf
   cat("maxdist not set - defaulting to MAX_INTERP_DIST + window_based_reach_km =", round(maxdist / 1e3, 2), "km (set MAXDIST to override, e.g. to Inf for wingen's own raw default)\n")
@@ -1176,6 +1197,8 @@ if (!RUN_NEUTRAL_SIM %in% c("TRUE", "FALSE")) {
   stop("RUN_NEUTRAL_SIM must be TRUE or FALSE")
 }
 RUN_NEUTRAL_SIM <- as.logical(RUN_NEUTRAL_SIM)
+# The full pool is a reference, not a target for matched-size subsets of itself.
+if (neutral_reference) RUN_NEUTRAL_SIM <- FALSE
 
 if (RUN_NEUTRAL_SIM) {
   neutral_plan_path <- Sys.getenv("NEUTRAL_PLAN", unset = "")
@@ -1464,7 +1487,9 @@ coords_sf_mollweide <- st_as_sf(coords_v_mollweide)  # wingen wants sf/data.fram
 ## 2.2 Ocean Layer
 ```{r 2.2 Ocean Layer}
 ocean_map_scale <- 10 # ne_download(scale): The scale of map to return, one of '110', '50', '10' or 'small', 'medium', 'large'.
-map_type <- "ocean" # ne_download(type): type of natural earth file to download one of 'countries', 'map_units', 'map_subunits', 'sovereignty', 'states' OR the portion of any natural earth vector url after the scale and before the . e.g. for 'ne_50m_urban_areas.zip' this would be 'urban_areas'. See Details. OR the raster filename e.g. for 'MSR_50M.zip' this would be 'MSR_50M'
+domain_type <- tolower(Sys.getenv("DOMAIN_TYPE", unset = "ocean"))
+if (!domain_type %in% c("ocean", "land")) stop("DOMAIN_TYPE must be ocean or land")
+map_type <- domain_type # ne_download(type): type of natural earth file to download one of 'countries', 'map_units', 'map_subunits', 'sovereignty', 'states' OR the portion of any natural earth vector url after the scale and before the . e.g. for 'ne_50m_urban_areas.zip' this would be 'urban_areas'. See Details. OR the raster filename e.g. for 'MSR_50M.zip' this would be 'MSR_50M'
 # ocean <- ne_download(type = map_type, category = "physical", scale = ocean_map_scale, returnclass = "sv")
 ocean <- ne_get(type = map_type, category = "physical", scale = ocean_map_scale, returnclass = "sv")  # ne_get(): defined in section 1.3, same cache
 # Same reasoning as world_land above, but terra's CRS getter can come back
@@ -1533,38 +1558,30 @@ lyr <- mask_gd(lyr, ocean)
 ```
 ## 2.5 (preview_gd) Raster preview before trusting wdim/fact
 ```{r 2.5 preview_gd}
-# preview_gd(lyr, coords_sf_mollweide, wdim = wdim_value, fact = fact_value, sample_count = TRUE, min_n = 2)
-
-# preview_gd() prints its own plot directly as a side effect (a genuine
-# ggplot under the hood - the "Ignoring unknown labels" message is a
-# ggplot2 warning firing during that internal print), but RETURNS the
-# underlying sample_count SpatRaster, not the plot object itself -
-# assigning that return value and ggsave()-ing it fails with "no
-# applicable method for 'grid.draw' applied to an object of class
-# SpatRaster". Saving the actual plot as a file instead means calling
-# this twice: once for the normal inline display (unchanged), once
-# wrapped in an explicit PNG device purely to redirect that same drawing
-# to a file. A little redundant computation, but preview_gd() is meant
-# to be fast to iterate with, and this sidesteps needing to know its
-# exact internal plotting mechanism to capture it correctly.
-
-# Note: maxdist is only built for method = "circle"/"resist". 
-# Closest equivalent of neighborhood-size for window_gd() would be wdim/fact
-preview_gd(lyr, coords_sf_mollweide, method = "window", wdim = wdim_value, fact = fact_value, sample_count = TRUE, min_n = min_n_samples_per_calc)
-
-window_preview_output_filename <- paste0(output_prefix,"window_preview","_buffer_",buffer_cells,".png")
-png(file.path(output_dir, window_preview_output_filename), width = 10, height = 6, units = "in", res = 300)
-preview_gd(lyr, coords_sf_mollweide, method = "window", wdim = wdim_value, fact = fact_value, sample_count = TRUE, min_n = min_n_samples_per_calc)
-invisible(dev.off())
-
-# Optional grid search across wdim x fact combinations - useful when
-# retuning for a new region of interest, safe to comment out for a
-# routine rerun once wdim_value/fact_value above are already trusted.
+# Native preview_gd() draws directly and returns a sample-count SpatRaster,
+# not a ggplot for ggsave(). Call twice for inline display and PNG output.
+# Window coverage is controlled by wdim/fact; maxdist is for circle/resist
+# previews. This parameter-choice aid is independent of efficiency checks
+# and can still be expensive on a global raster.
+# Inspect sample coverage to choose suitable wdim/fact settings. This preview
+# is enabled by default and is independent of efficiency diagnostics.
+if (preview_windows) {
+  wingen::preview_gd(lyr, coords_sf_mollweide, method = "window",
+    wdim = wdim_value, fact = fact_value, sample_count = TRUE, min_n = min_n_samples_per_calc)
+  window_preview_output_filename <- paste0(output_prefix, "window_preview_buffer_", buffer_cells, ".png")
+  png(file.path(output_dir, window_preview_output_filename), width = 10, height = 6, units = "in", res = 300)
+  wingen::preview_gd(lyr, coords_sf_mollweide, method = "window",
+    wdim = wdim_value, fact = fact_value, sample_count = TRUE, min_n = min_n_samples_per_calc)
+  invisible(dev.off())
+}
+# Optional grid search when retuning for a new dataset/region:
 # for (w in c(3, 5, 7)) {
 #   for (f in c(3, 5, 7)) {
-#     print(preview_gd(lyr, coords_sf_mollweide, wdim = w, fact = f, sample_count = TRUE, min_n = 2))
+#     wingen::preview_gd(lyr, coords_sf_mollweide, method = "window",
+#       wdim = w, fact = f, sample_count = TRUE, min_n = min_n_samples_per_calc)
 #   }
 # }
+
 ```
 ## 2.6 Environmental layers (salinity, temperature, chlorophyll, oxygen, current speed)
 CopernicusMarine downloads the products selected by `ENV_PRESET` in
@@ -1961,6 +1978,23 @@ start_window_gd_time <- Sys.time()
 # By aggregating with na.rm = TRUE first, then passing fact = 0 so window_gd() doesn't re-aggregate, keeps the same window geometry while fixing which cells are eligible to be evaluated at all.
 
 lyr_agg <- terra::aggregate(lyr, fact = fact_value, fun = mean, na.rm = TRUE)
+# Select native functions or tested efficient adapters using the TOTAL
+# aggregated working-grid cell count (masked cells included): >= threshold
+# selects efficient mode; 0 selects it for any grid, Inf selects native.
+# The raster extent, resolution, origin and empirical coordinates stay the
+# same. Windows evaluate only eligible focal cells, pooling the same member
+# individuals and preserving the native estimator and rarefaction RNG order.
+# Kriging keeps native observations, variogram/model fitting, weights and
+# neighborhood settings, but predicts domain cells in bounded batches.
+# This changes the worklist, not the grd geometry passed to the function.
+# Version/argument compatibility checks can fall back to native execution.
+# These are local bindings; wingen:: functions themselves remain untouched.
+wingen_functions <- wingen_helpers$configure_wingen(lyr_agg, ocean,
+  min_cells = grid_min_cells, chunk_cells = kriging_chunk_cells, diagnostics = diagnostic_run)
+window_gd <- wingen_functions$window_gd
+window_general <- wingen_functions$window_general
+wkrig_gd <- wingen_functions$wkrig_gd
+grid_efficiency <- attr(wingen_functions, "optimized")
 # lyr = lyr_agg with fact = 0 is required together, and must NOT be changed independently, since window_gd(fact = 0) stops window_gd() from redoing the aggregation made in lyr_agg.
 # window_gd(fact) would otherwise rebuild its own working grid internally via terra::aggregate(lyr, fact, fun = mean), WITHOUT na.rm = TRUE.
 # Since lyr is sea = (1 / land) = NA, an aggregated cell would then only survive as non-NA if ALL of its fact_value^2 sub-cells are sea
@@ -2101,8 +2135,8 @@ if (!any(is.finite(terra::values(wgd_confident[[gd_layer_name]])))) {
 
 # nmax caps how many neighboring points can inform a single prediction -
 # unrelated to what gets interpolated (r's job, below) or where (grd's
-# job, below). wingen's own docs suggest ~30 as a speed/accuracy
-# starting point; 15 is more conservative (smoother, cheaper) than that.
+# job, below). Lower limits can reduce computation but can also change
+# predictions; fewer neighbours do not guarantee a smoother surface.
 #
 # r = wgd_confident[[gd_layer_name]], not the whole wgd_confident object: if r
 # has more than one layer, wkrig_gd() silently keeps only the FIRST one
@@ -2240,7 +2274,7 @@ Maximum distance from a cell to the nearest real sample
 ```{r 5.2.2-Distance Mask - automatic-mask}
 start_distance_masking_time <- Sys.time()
 # MAX_INTERP_DIST was already decided in section 1.4 (window-based reach by
-# default, or the CLUSTER_THRESHOLD_KM-based clustered figure, or a direct
+# default, or the SPACING_CLUSTER_KM-based clustered figure, or a direct
 # MAX_INTERP_DIST_KM override) - not redone here, so this and buffer_m
 # (section 2.3) both tie back to the exact same number rather than being
 # picked independently. This is also where planar-vs-geodesic distance
@@ -2315,13 +2349,23 @@ wgs84_grid <- rast(ext(wgs84_bb["xmin"] - WGS84_DIST_PAD_LON, wgs84_bb["xmax"] +
     wgs84_bb["ymin"] - WGS84_DIST_PAD, wgs84_bb["ymax"] + WGS84_DIST_PAD),
 resolution = wgs84_res, crs = "EPSG:4326")
 
-dist_wgs84 <- distance(wgs84_grid, coords_wgs84)
-dist_to_sample <- project(dist_wgs84, mgd_honest, method = "near")
+# Distance to the nearest unique empirical sampling coordinate.
+# Repeated coordinates cannot change the minimum; cluster centroids are
+# never substituted here, even when they set the optional scalar cutoff.
+dist_wgs84 <- distance(wgs84_grid, sample_sites_wgs84)
+# The global geographic AOI guides GDAL transformation selection, avoiding
+# invalid outer corners of a wide rectangular Mollweide template. It is
+# not a crop or a new projection: mgd_honest still defines the output grid.
+# The same WGS84/Mollweide operation works for regional/southern datasets;
+# this option does not fix separate antimeridian or polar-extent issues.
+dist_to_sample <- project(dist_wgs84, mgd_honest, method = "near",
+  transOpts = "AREA_OF_INTEREST=-180,-90,180,90")
 
 # Not redundant with wkrig_gd()'s maxdist (see settings block near the
 # top): this masks by distance to the nearest actual sample coordinate;
 # maxdist there only ever sees wgd_confident[[gd_layer_name]]'s cell centroids.
-# Also the ONLY thing standing between this map and an unconstrained continous heatmap interpolation style when MAX_INTERP_DIST_MODE = "none" (MAX_INTERP_DIST = Inf here makes this a no-op, y > Inf is never TRUE).
+# With MAX_INTERP_DIST_MODE="none", MAX_INTERP_DIST=Inf and this distance
+# mask is disabled. Other domain, count or polygon masks still apply.
 
 mgd_honest <- mask_gd(mgd_honest, dist_to_sample, maxval = MAX_INTERP_DIST)
 
@@ -2519,64 +2563,26 @@ pad_display_y <- 0.10 * (bb_raw[["ymax"]] - bb_raw[["ymin"]])
 display_xlim <- c(bb_raw[["xmin"]] - pad_display_x, bb_raw[["xmax"]] + pad_display_x)
 display_ylim <- c(bb_raw[["ymin"]] - pad_display_y, bb_raw[["ymax"]] + pad_display_y)
 
-# One dot per distinct coordinate (default) or per CLUSTER_SAMPLE_POINTS_KM
-# cluster (if CLUSTER_SAMPLE_POINTS is on) - see that toggle's own comment
-# in the setup chunk for why this is a separate computation from section
-# 1.4's clustering rather than reusing it directly. Both the individual
-# count and the empirical pi value are computed regardless of
-# SAMPLE_POINT_SIZE_BY, so switching modes doesn't need re-deriving sites/
-# clusters - only size_value below actually depends on the toggle.
+# By default, reuse the location-statistic clusters. A display override only
+# changes these dots; genotype groups and the empirical distance mask stay
+# unchanged. Dot positions average unique member sites, counts include all
+# member individuals, and values average the WINDOW surface at individuals.
+# This is not the direct pooled-genotype statistic used in location analysis.
+# Prepare counts and values together before choosing the dot-size mode.
 gd_at_point <- terra::extract(wgd[[gd_layer_name]], coords_v_mollweide)[[gd_layer_name]]
-
-if (CLUSTER_SAMPLE_POINTS) {
-  cluster_sites_by_distance <- function(coords_df, threshold_km, values) {
-    sites   <- coords_df[!duplicated(coords_df[, c("Latitude", "Longitude")]), ]
-    sites_v <- vect(sites, geom = c("Longitude", "Latitude"), crs = "EPSG:4326")
-    dist_km <- as.dist(as.matrix(distance(sites_v)) / 1e3)
-    # cl      <- cutree(hclust(dist_km, method = "single"), h = threshold_km)
-    cl      <- cutree(hclust(dist_km, method = "complete"), h = threshold_km)
-
-    centroid_of <- function(i) {
-      rows <- cl == i
-      c(lon = mean(sites$Longitude[rows]), lat = mean(sites$Latitude[rows]))
-    }
-    centroids <- as.data.frame(t(sapply(sort(unique(cl)), centroid_of)))
-
-    site_idx <- match(paste(coords_df$Latitude, coords_df$Longitude),
-                       paste(sites$Latitude, sites$Longitude))
-    individual_cluster <- cl[site_idx]
-
-    # mean pi across a cluster's merged sites, consistent with its
-    # position also being a mean (centroid) of those same sites
-    data.frame(Longitude = centroids$lon, Latitude = centroids$lat,
-               n     = as.numeric(table(individual_cluster)),
-               value = as.numeric(tapply(values, individual_cluster, mean, na.rm = TRUE)))
-  }
-
-  sample_point_counts <- cluster_sites_by_distance(coords_file_df, CLUSTER_SAMPLE_POINTS_KM, gd_at_point)
-} else {
-  # One row per distinct coordinate, with a count of how many individuals
-  # share it - base R aggregate(), not dplyr (not loaded in this script). By
-  # coordinate rather than any named grouping column, for the same reason as
-  # section 1.4's clustering: Latitude/Longitude are the only thing
-  # guaranteed to exist and mean the same thing across different datasets.
-  sample_point_counts <- aggregate(
-    list(n = coords_file_df$`Sample ID`),
-    by = list(Latitude = coords_file_df$Latitude, Longitude = coords_file_df$Longitude),
-    FUN = length
-  )
-  sample_point_value <- aggregate(
-    list(value = gd_at_point),
-    by = list(Latitude = coords_file_df$Latitude, Longitude = coords_file_df$Longitude),
-    FUN = mean, na.rm = TRUE
-  )
-  # Explicit match() rather than assuming the two aggregate() calls above
-  # return rows in the same order - true in practice (same grouping keys,
-  # same source data) but cheap to not depend on.
-  value_idx <- match(paste(sample_point_counts$Latitude, sample_point_counts$Longitude),
-                      paste(sample_point_value$Latitude, sample_point_value$Longitude))
-  sample_point_counts$value <- sample_point_value$value[value_idx]
-}
+# Reuse the hierarchy; only a different display threshold needs another cut.
+plot_site_cluster_id <- if (CLUSTER_SAMPLE_POINTS_KM == 0) seq_len(nrow(site_coords)) else
+  if (CLUSTER_SAMPLE_POINTS_KM == CLUSTER_VARIANCE_POINTS_KM) site_cluster_id else
+  if (nrow(site_coords) > 1L) cutree(site_tree, h = CLUSTER_SAMPLE_POINTS_KM) else 1L
+plot_location_id <- unname(plot_site_cluster_id[sample_site_index])
+plot_cluster_ids <- as.character(sort(unique(plot_site_cluster_id)))
+sample_point_counts <- data.frame(
+  Longitude = unname(tapply(site_coords$Longitude, plot_site_cluster_id, mean)[plot_cluster_ids]),
+  Latitude = unname(tapply(site_coords$Latitude, plot_site_cluster_id, mean)[plot_cluster_ids]),
+  n = as.numeric(table(plot_location_id)[plot_cluster_ids]),
+  value = unname(tapply(gd_at_point, plot_location_id, mean, na.rm = TRUE)[plot_cluster_ids]))
+# A cluster with no finite plot value gets no point, including count-sized maps.
+sample_point_counts <- sample_point_counts[is.finite(sample_point_counts$value), , drop = FALSE]
 
 # If any finite point value is negative (mixed signs or all negative), then absolute values are used for point sizes; heatmaps and analyses keep their signs.
 point_values_use_abs <- any(is.finite(sample_point_counts$value) & sample_point_counts$value < 0)
@@ -2696,7 +2702,10 @@ log_line <- sprintf(
   "%s: script runtime: %.1f\tread.vcfR runtime=%.1f, wkrig_gd runtime=%.1f, window_gd_runtime=%.1f, distance_masking_runtime=%.1f, plotting_runtime=%.1f",
   output_prefix, as.numeric(runtime), as.numeric(vcf_runtime), as.numeric(wkrig_gd_runtime), as.numeric(window_gd_runtime), as.numeric(distance_masking_runtime), as.numeric(plotting_runtime)
 )
+log_line <- paste0(log_line, ", grid_engine=", if (grid_efficiency) "optimized" else "native",
+                   ", grid_cells=", terra::ncell(lyr_agg), ", grid_min_cells=", grid_min_cells)
 cat(log_line, "\n", file = runtime_log_path, append = TRUE, sep = "")
+if (diagnostic_run) wingen_helpers$write_diagnostic_timings(output_dir, output_prefix)
 ```
 # 7. Gene Summary Statistics
 ```{r 7. Gene Summary Statistics}
@@ -2828,8 +2837,8 @@ if (compute_genetic_diversity_statistics == TRUE) {
   gd_median_raw_windows <- median(gd_values[reliable])
   gd_min_raw_windows <- min(gd_values[reliable])
   gd_max_raw_windows <- max(gd_values[reliable])
-  # Keep Mean and also record |Mean| (the absolute value of the mean) when the summary has both negative and positive values.
-  gd_abs_mean_raw_windows <- if (isTRUE(gd_min_raw_windows < 0 && gd_max_raw_windows > 0)) abs(gd_mean_raw_windows) else NA_real_
+  # Store abs(mean) for every defined mean; the catalog controls column visibility.
+  gd_abs_mean_raw_windows <- abs(gd_mean_raw_windows)
 
   # (A per-sample version of this - the same confident surface read off at
   # each individual's own coordinate instead of per grid cell - was tried
@@ -2902,28 +2911,8 @@ if (compute_genetic_diversity_statistics == TRUE) {
   # The nucleotide diversity computation is here using wingen's own vcf_to_dosage() + hierfstat::pi.dosage(), the
   # same formula wingen uses internally for "pi".
   #
-  # Here, sites are binned by straight-line distance instead, the same approach the nn-distance chunk and the
-  # CLUSTER_SAMPLE_POINTS map-plotting block already use.
-  # These functions are however not reused:
-  # * CLUSTER_THRESHOLD_KM is tuned for resolution-setting diagnostics
-  # * CLUSTER_SAMPLE_POINTS_KM for how the map looks
-  # assign_distance_clusters() below is the same terra::distance() approach but with COMPLETE linkage (every pair of sites in
-  # a location is at most CLUSTER_VARIANCE_POINTS_KM apart - no chaining), returning a per-individual cluster id instead of a per-cluster plotting summary.
-
-  assign_distance_clusters <- function(coords_df, threshold_km) {
-    sites <- coords_df[!duplicated(coords_df[, c("Latitude", "Longitude")]), ]
-    if (nrow(sites) == 1) return(rep(1L, nrow(coords_df)))
-    sites_v <- terra::vect(sites, geom = c("Longitude", "Latitude"), crs = "EPSG:4326")
-    dist_km <- as.dist(as.matrix(terra::distance(sites_v)) / 1e3)
-    # site_cluster <- cutree(hclust(dist_km, method = "single"), h = threshold_km)
-    site_cluster <- cutree(hclust(dist_km, method = "complete"), h = threshold_km)
-    site_idx <- match(paste(coords_df$Latitude, coords_df$Longitude),
-                      paste(sites$Latitude, sites$Longitude))
-    unname(site_cluster[site_idx])
-  }
-
-  CLUSTER_VARIANCE_POINTS_KM <- as.numeric(Sys.getenv("CLUSTER_VARIANCE_POINTS_KM", unset = 10))
-  coords_file_df$variance_cluster_id <- assign_distance_clusters(coords_file_df, CLUSTER_VARIANCE_POINTS_KM)
+  # Reuse the complete-linkage groups prepared once in section 1.2.1.
+  coords_file_df$variance_cluster_id <- sample_location_id
 
   # Per-location values are computed directly from these individuals' genotypes.
   # pi, biallelic_richness, theta and tajimas_d use a DOSAGE matrix: individuals in rows, markers in columns; 0 = ref/ref, 1 = ref/alt, 2 = alt/alt, NA = missing.
@@ -2938,7 +2927,6 @@ if (compute_genetic_diversity_statistics == TRUE) {
   # Row IDs must stay in VCF order: a mismatched genotype/coordinate row could silently assign a statistic to the wrong location. The converter also checks dimensions. Stop on a changed ordering rather than attach incorrect IDs.
   stopifnot(identical(rownames(gd_input), current_samples))
 
-  cluster_groups <- split(coords_file_df$`Sample ID`, coords_file_df$variance_cluster_id)
 
   # Whether the per-location values are rarefied is decided by location_rarify (LOCATION_RARIFY in config.yaml, resolved near the top of this file):
   #   FALSE - each location's value is computed from ALL its individuals: deterministic, nothing random, and the most precise. Right for pi (hierfstat::pi.dosage() uses the per-SNP estimator 2p(1-p) * 2n/(2n-1)) and for Ho (a mean of observed heterozygosity): both have an expected value that does not depend on how many individuals a location has - only their precision does. The price: locations differ in precision (a 5-individual location is noisier than a 150-individual one), which inflates the across-location variance ("Var") somewhat.
@@ -2974,7 +2962,7 @@ if (compute_genetic_diversity_statistics == TRUE) {
   gd_median_per_location <- if (n_locations_used) median(per_location_gd, na.rm = TRUE) else NA_real_
   gd_min_per_location <- if (n_locations_used) min(per_location_gd, na.rm = TRUE) else NA_real_
   gd_max_per_location <- if (n_locations_used) max(per_location_gd, na.rm = TRUE) else NA_real_
-  gd_abs_mean_per_location <- if (isTRUE(gd_min_per_location < 0 && gd_max_per_location > 0)) abs(gd_mean_per_location) else NA_real_
+  gd_abs_mean_per_location <- abs(gd_mean_per_location)
 
   # --------------------------------------------------------------------
   # 4b. Window-surface pi at each population's centroid (pairs with 4:
@@ -3202,6 +3190,7 @@ if (compute_genetic_diversity_statistics == TRUE) {
 
   gene_summary <- list(
     gene_id = gene_id,
+    target_type = if (neutral_reference) "neutral_pool" else "gene",
     # Which statistic every number in this file is a number OF (gd_stat in config.yaml). Written into each gene's own
     # file so it travels with the data: aggregate_gene_summaries.py refuses to put two statistics into one catalog,
     # and build_gene_catalog_html.py takes its column labels from these three fields.
@@ -3296,14 +3285,50 @@ if (compute_genetic_diversity_statistics == TRUE) {
     gene_summary$neutral_model$n_markers_matched <- info$pool_n_matched
   }
 
+  # The optional reference is the catalog row formerly named All_neutral_markers.
+  # A debug pool limit changes the sampling population for ALL neutral comparisons.
+  pool_manifest_path <- Sys.getenv("NEUTRAL_POOL_MANIFEST", unset = "")
+  pool_info <- if (nzchar(pool_manifest_path)) jsonlite::fromJSON(pool_manifest_path) else NULL
+  if (!is.null(pool_info)) gene_summary$neutral_sampling_pool <- list(
+    debug_limit_requested = TRUE, limited = !isTRUE(pool_info$all_markers),
+    source_n_markers = pool_info$pool_n_records, n_markers = pool_info$selected_n_records,
+    max_markers = pool_info$max_markers, seed = pool_info$seed,
+    source_pool = pool_info$source_pool, selected_sites_sha256 = pool_info$selected_sites_sha256)
+
+  if (neutral_reference) {
+    reference_manifest_path <- Sys.getenv("NEUTRAL_REFERENCE_MANIFEST", unset = "")
+    reference_info <- if (nzchar(reference_manifest_path)) jsonlite::fromJSON(reference_manifest_path) else NULL
+    if (!is.null(reference_info) && !identical(as.numeric(reference_info$selected_n_records), as.numeric(n_variants)))
+      stop("Neutral reference VCF marker count differs from its preparation manifest")
+    all_sampling_pool_markers <- is.null(reference_info) || isTRUE(reference_info$all_markers)
+    all_source_markers <- all_sampling_pool_markers && (is.null(pool_info) || isTRUE(pool_info$all_markers))
+    gene_summary$neutral_pool <- list(
+      all_markers = all_source_markers, all_sampling_pool_markers = all_sampling_pool_markers,
+      n_markers = n_variants,
+      source_vcf = normalizePath(input_vcf_file, winslash = "/", mustWork = TRUE),
+      scope = if (all_source_markers) "entire source neutral pool; gene_scope does not apply" else
+        if (all_sampling_pool_markers) "entire debug-limited sampling pool; not all source markers" else
+          "seeded reference subset of the configured sampling pool; gene_scope does not apply",
+      interpretation = "pooled neutral reference; not a marker-count-matched null replicate")
+    if (!is.null(reference_info)) gene_summary$neutral_pool <- c(gene_summary$neutral_pool, list(
+      pool_n_markers = reference_info$pool_n_records, max_markers = reference_info$max_markers,
+      seed = reference_info$seed, source_pool = reference_info$source_pool,
+      sampling = reference_info$sampling, selected_sites_sha256 = reference_info$selected_sites_sha256))
+  }
+
   # (d) The settings that produced this gene's numbers (provenance). Switch off: WRITE_RUN_SETTINGS: FALSE.
   if (isTRUE(WRITE_RUN_SETTINGS)) {
     gene_summary$run_settings <- list(
       gd_stat = gd_stat, seed = seed_value, use_rarify = use_rarify, location_rarify = location_rarify,
+      domain_type = domain_type, grid_efficiency = grid_efficiency,
+      grid_min_cells = as.character(grid_min_cells), kriging_chunk_cells = kriging_chunk_cells,
+      diagnostic_run = diagnostic_run, preview_windows = preview_windows,
+      grid_validate = isTRUE(attr(wingen_functions, "validation")),
       gd_dosage_missing_policy = if (gd_uses_general) gd_dosage_missing_policy else NA_character_,
       rarify_n = rarify_n, rarify_n_iterations = rarify_n_iterations,
       min_n_samples_per_calc = min_n_samples_per_calc, wdim = wdim_value, fact = fact_value,
       resolution_km = resolution_m / 1e3, cluster_variance_km = CLUSTER_VARIANCE_POINTS_KM,
+      cluster_sample_points_km = CLUSTER_SAMPLE_POINTS_KM, spacing_cluster_km = SPACING_CLUSTER_KM,
       use_weighted_kriging = use_weighted_kriging, nmax_neighbours = nmax_neighbours
     )
     if (USE_COPERNICUS_MARINE) {
@@ -3339,4 +3364,5 @@ if (compute_genetic_diversity_statistics == TRUE) {
   print(file.path(output_dir, paste0(statistics_output_prefix, "_gene_summary.json")))
   
 }
+
 ```

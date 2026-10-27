@@ -263,8 +263,8 @@ fi
 # snakemake --cores 4 --resources mem_mb=80000 --rerun-incomplete --notemp \
 #           --sdm apptainer \
 #           --apptainer-args "--bind /proj/uppmax2025-2-125"apptainer exec --bind /proj/uppmax2025-2-125 "$CONTAINER" \
-
-snakemake --unlock
+snakemake --unlock --cores "${SLURM_CPUS_PER_TASK:-4}"
+# snakemake --unlock
 echo "SLURM_CPUS_PER_TASK = ${SLURM_CPUS_PER_TASK:-<unset>}"
 echo "SLURM_MEM_PER_NODE  = ${SLURM_MEM_PER_NODE:-<unset>}"
 snakemake --cores "${SLURM_CPUS_PER_TASK:-4}" \

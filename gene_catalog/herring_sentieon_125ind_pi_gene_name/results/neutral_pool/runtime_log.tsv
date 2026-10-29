@@ -1,0 +1,1 @@
+herring_sentieon_125ind_neutral_marker_reference_palet_turbo_5_scale_10km_reswdim7_fact1_minn2_disagg_grd3_wkriging_nmax15_minval0_pi_: script runtime: 544.1	read.vcfR runtime=0.2, wkrig_gd runtime=62.8, window_gd_runtime=2.3, distance_masking_runtime=22.6, plotting_runtime=179.9, grid_engine=optimized, grid_cells=678623, grid_min_cells=0

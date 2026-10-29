@@ -1,4 +1,5 @@
 import os
+import shlex
 import subprocess
 import glob
 import json
@@ -8,7 +9,8 @@ import csv
 import io
 import tempfile
 from pathlib import Path
-from snakemake.exceptions import WorkflowError
+from snakemake.exceptions import IncompleteCheckpointException, WorkflowError
+from snakemake.logging import logger
 from types import SimpleNamespace
 """
 Snakefile - Wingen gene-catalog pipeline (skeleton)
@@ -24,7 +26,10 @@ loop is gone entirely. Snakemake filters genes in parallel, then waits for
 all extraction/scope counts and publishes the skip report. Only after this
 checkpoint does it schedule neutral preparation, retained genes' reports and
 the optional All_neutral_markers report,
-up to the --cores (local) or --jobs (cluster) limit.
+up to the --cores (local) or --jobs (cluster) limit. With first_gene_warmup (the
+default) the first retained gene is prepared and reported alone first, with the whole
+allocation; a second checkpoint (first_gene_warmup_done) makes Snakemake plan every other
+gene's jobs only after that report is done.
 
 Lives at workflow/Snakefile, the standard Snakemake project layout - run
 from the REPO ROOT (not from inside workflow/), where it's auto-discovered
@@ -117,16 +122,17 @@ NE_CACHE_DIR_ABS = abspath_pwd(f"{RESULTS_DIR}/temp/ne_cache")
 RUN_NEUTRAL_SIM = config.get("run_neutral_sim", False)
 if not isinstance(RUN_NEUTRAL_SIM, bool):
     raise ValueError("run_neutral_sim must be a YAML boolean")
-INCLUDE_ALL_NEUTRAL_MARKERS = config.get("include_all_neutral_markers", False)
-if not isinstance(INCLUDE_ALL_NEUTRAL_MARKERS, bool):
-    raise ValueError("include_all_neutral_markers must be a YAML boolean")
+RUN_NEUTRAL_REFERENCE = config.get("run_neutral_reference", False)
+if not isinstance(RUN_NEUTRAL_REFERENCE, bool):
+    raise ValueError("run_neutral_reference must be a YAML boolean (true/false); "
+                     "the number of markers is set by neutral_reference_max_markers")
 NEUTRAL_REFERENCE_ID = config.get("neutral_reference_id", "All_neutral_markers")
 if (not isinstance(NEUTRAL_REFERENCE_ID, str)
         or not re.fullmatch(r"[\w][\w.:-]*", NEUTRAL_REFERENCE_ID)):
     raise ValueError("neutral_reference_id must be a safe gene ID without spaces or path separators")
 # This is an output category, not a chromosome or a genomic interval.
 NEUTRAL_REFERENCE_LOCUS = ("neutral_pool", NEUTRAL_REFERENCE_ID)
-NEED_NEUTRAL_POOL = RUN_NEUTRAL_SIM or INCLUDE_ALL_NEUTRAL_MARKERS
+NEED_NEUTRAL_POOL = RUN_NEUTRAL_SIM or RUN_NEUTRAL_REFERENCE
 
 
 def positive_integer_setting(name, default):
@@ -165,7 +171,23 @@ NEUTRAL_PREPARATION_THREADS = (workflow.cores if NEUTRAL_PREPARATION_THREADS == 
                               positive_integer_setting("neutral_preparation_threads", 8))
 NEUTRAL_SUBSET_THREADS = positive_integer_setting("neutral_subset_threads", 2)
 NEUTRAL_SUBSET_MEM_MB = positive_integer_setting("neutral_subset_mem_mb", 8000)
+
+# First-gene warm-up. Every report reads and fills the same on-disk caches (environmental layers, Natural Earth maps). Reports that start together on a cold cache all build them at once. With the switch on (the default), the first retained gene is prepared and reported ALONE, with the allocation's threads and memory; the other genes are planned (checkpoint first_gene_warmup_done) only once its report is done. What is awaited is a finished report, not a particular download, so it holds for any domain_type that caches under results_dir/temp (marine now, land later) without touching the Rmd. It only orders the work.
+FIRST_GENE_WARMUP = config.get("first_gene_warmup", True)
+if not isinstance(FIRST_GENE_WARMUP, bool):
+    raise ValueError("first_gene_warmup must be a YAML boolean (true/false); "
+                     "on the command line Snakemake only reads True/False, e.g. --config first_gene_warmup=False")
+FIRST_GENE_THREADS = config.get("first_gene_threads", "auto")
+# auto follows Snakemake's --cores budget via workflow.cores, like neutral_preparation_threads.
+FIRST_GENE_THREADS = (workflow.cores if FIRST_GENE_THREADS == "auto" else
+                      positive_integer_setting("first_gene_threads", 8))
+FIRST_GENE_MEM_MB = config.get("first_gene_mem_mb", "auto")
+if FIRST_GENE_MEM_MB != "auto":
+    FIRST_GENE_MEM_MB = positive_integer_setting("first_gene_mem_mb", 40000)
+FIRST_GENE_HEADROOM_MB = positive_integer_setting("first_gene_headroom_mb", 4096)
+FIRST_GENE_RUNTIME = positive_integer_setting("first_gene_runtime_minutes", 240)
 ORDINARY_REPORTS_COMPLETE = f"{RESULTS_DIR}/temp/ordinary_reports.complete"
+FIRST_GENE_WARMUP_MARKER = f"{RESULTS_DIR}/temp/first_gene_warmup.json"
 
 
 def allocation_memory_mb(headroom_mb):
@@ -198,9 +220,21 @@ def neutral_preparation_memory_mb():
     return min(requested, available) if available else requested
 
 
+def first_gene_memory_mb():
+    # Same arithmetic as the neutral reference: the declared budget minus headroom ("auto"),
+    # or the configured number limited to that budget. Without any budget it asks for what an
+    # ordinary report asks for, since "everything" is then unknown.
+    try:
+        available = allocation_memory_mb(FIRST_GENE_HEADROOM_MB)
+    except WorkflowError:
+        raise WorkflowError("first_gene_headroom_mb must be smaller than the allocation budget") from None
+    requested = (available or 40000) if FIRST_GENE_MEM_MB == "auto" else FIRST_GENE_MEM_MB
+    return min(requested, available) if available else requested
+
+
 
 def is_neutral_reference(wildcards):
-    return (INCLUDE_ALL_NEUTRAL_MARKERS
+    return (RUN_NEUTRAL_REFERENCE
             and (wildcards.chrom, wildcards.gene) == NEUTRAL_REFERENCE_LOCUS)
 
 
@@ -250,7 +284,7 @@ NEUTRAL_MARKERS_FORMAT = ("normalized" if NEUTRAL_READ_MARKER_TABLE or NEUTRAL_E
 NEUTRAL_EXTREME_VALUE_PERCENTILES = ""
 if NEED_NEUTRAL_POOL:
     if not config.get("calc_gen_diversity_stats"):
-        raise ValueError("run_neutral_sim/include_all_neutral_markers requires calc_gen_diversity_stats: TRUE")
+        raise ValueError("run_neutral_sim/run_neutral_reference requires calc_gen_diversity_stats: TRUE")
     if not NEUTRAL_SUPPLIED_POOL and not NEUTRAL_MARKER_SOURCE and not NEUTRAL_EXTRACT_SNPEFF:
         raise ValueError("Set markers_file or neutral_vcf before using the neutral pool, "
                          "or use vcf_annotation_format: snpeff for automatic intergenic extraction")
@@ -479,7 +513,7 @@ else:
 
 if any(not isinstance(gene, str) or not re.fullmatch(r"[\w][\w.:-]*", gene) for gene in GENES):
     raise ValueError("Gene IDs must use letters, digits, underscores, dots, colons or hyphens, without spaces or path separators")
-if INCLUDE_ALL_NEUTRAL_MARKERS and NEUTRAL_REFERENCE_ID in GENES:
+if RUN_NEUTRAL_REFERENCE and NEUTRAL_REFERENCE_ID in GENES:
     raise ValueError(f"neutral_reference_id {NEUTRAL_REFERENCE_ID!r} already occurs in the gene list")
 
 # Chromosome folders use normalized names; filtering retains the original VCF name.
@@ -527,7 +561,7 @@ if gene_list_limit is not None:
     else:
         GENES = GENES[:gene_list_limit]
 
-if not GENES and not (INCLUDE_ALL_NEUTRAL_MARKERS and gene_list_limit == 0):
+if not GENES and not (RUN_NEUTRAL_REFERENCE and gene_list_limit == 0):
     raise ValueError("No genes to process - check config['genes'] or config['gene_list_file']")
 missing_chrom = [g for g in GENES if g not in GENE_CHROM]
 if missing_chrom:
@@ -614,11 +648,14 @@ def selected_gene_availability(wildcards):
 
 def ordinary_done_marker_paths(wildcards):
     # Only retained ordinary genes: including the reference would form a cycle.
-    return [gene["done_path"] for gene in selected_gene_availability(wildcards)["retained"]]
+    selected = selected_gene_availability(wildcards)
+    wait_for_first_gene(selected)
+    return [gene["done_path"] for gene in selected["retained"]]
 
 
 def done_marker_paths(wildcards):
     selected = selected_gene_availability(wildcards)
+    wait_for_first_gene(selected)
     targets = list(selected["retained"])
     if selected.get("neutral_reference"):
         targets.append(selected["neutral_reference"])
@@ -664,6 +701,101 @@ def neutral_source_after_selection(path):
         return path
     return resolve
 
+
+# ---- First-gene warm-up (see FIRST_GENE_WARMUP above) ----
+_FIRST_GENE_ANNOUNCED = []
+
+
+def first_gene_done_path(wildcards):
+    """.done marker of the first retained gene in gene-list order, or None.
+
+    Read from the selection manifest through the checkpoint, so a caller is postponed until gene
+    selection has finished (as with the other manifest readers). Skipped genes never come first:
+    the first gene is the first one that actually has a report to run."""
+    selected = selected_gene_availability(wildcards)
+    if not selected["retained"]:
+        return None
+    return selected["retained"][0]["done_path"]
+
+
+def report_done_path(wildcards):
+    return f"{RESULTS_DIR}/.snakemake_gene_catalog/{wildcards.chrom}/{wildcards.gene}.done"
+
+
+def is_first_gene(wildcards):
+    """True only for the one report that runs alone first - never for the reference row.
+
+    Used for the report's threads/memory/runtime. A gene requested by name before gene selection has
+    run (`snakemake results/.../GENE.done` on a catalog without a selection yet) has its resources
+    evaluated while the selection checkpoint is still open: that is an ordinary request, and Snakemake
+    must not be handed the checkpoint's exception there (it would stop the run)."""
+    if not FIRST_GENE_WARMUP or is_neutral_reference(wildcards):
+        return False
+    try:
+        first = first_gene_done_path(wildcards)
+    except IncompleteCheckpointException:
+        return False
+    return first == report_done_path(wildcards)
+
+
+def first_gene_marker(wildcards):
+    """Input of checkpoint first_gene_warmup_done: the first gene's report marker. Pulling it in is what
+    makes Snakemake plan the first gene (its extraction, neutral preparation and report) at this stage.
+
+    Evaluated only when the checkpoint is part of the plan, i.e. when the whole catalog is requested, so
+    this is also where the warm-up is announced (once per run): a request for one gene's marker never
+    reaches it. Whether the plan is partial is not known here (Snakemake decides what is out of date
+    later), so a dry run gets a statement that is true either way."""
+    selected = selected_gene_availability(wildcards)
+    if not selected["retained"]:
+        raise WorkflowError("The first-gene warm-up marker needs at least one retained gene.")
+    first = selected["retained"][0]
+    if not _FIRST_GENE_ANNOUNCED:
+        _FIRST_GENE_ANNOUNCED.append(first["gene_id"])
+        others = selected["retained_count"] - 1
+        if not os.path.exists(first["done_path"]):
+            logger.info(
+                f"First-gene warm-up: {first['gene_id']} runs alone first "
+                f"({min(FIRST_GENE_THREADS, workflow.cores)} threads, {first_gene_memory_mb()} MB); "
+                f"the other {others} gene(s) are planned once its report is done. "
+                f"first_gene_warmup: false starts all genes together.")
+        elif getattr(workflow, "dryrun", False):
+            logger.info(
+                f"First-gene warm-up is on: a dry run lists the other {others} gene(s) only while the report of "
+                f"{first['gene_id']} and the warm-up marker are up to date; if either has to be (re)made, only "
+                f"that gene is listed and the others are planned after it.")
+    return [first["done_path"]]
+
+
+def wait_for_first_gene(selected):
+    """Postpones planning every report but the first until the first gene's report is done.
+
+    Called by the two input functions that list ALL reports (the aggregation's markers and the
+    reference row's ordinary_reports_complete) and by nothing else: a gene's own jobs must not wait
+    for the checkpoint that waits for the first gene's report. Until that checkpoint has run,
+    checkpoints.first_gene_warmup_done.get() raises (it also does so on the first look of every run,
+    before Snakemake has registered a checkpoint that is already up to date, so this says nothing
+    about whether the plan stays partial) and Snakemake plans only the first gene. Afterwards the other
+    genes are planned with exactly the inputs they have without the warm-up, so what is out of date is
+    decided as it always was: an edited Rmd or preset re-runs every report, `--forcerun
+    run_wingen_report` re-runs every report, re-running the first report alone re-runs no other gene.
+    A dry run (-n) made while the first report or the marker has to be (re)made shows only that first
+    gene, like any run before the gene-selection checkpoint."""
+    if FIRST_GENE_WARMUP and selected["retained_count"] > 1:
+        checkpoints.first_gene_warmup_done.get()
+
+
+def first_gene_warmup_stamp(wildcards):
+    """Input of the aggregation: the checkpoint's marker, i.e. the time the first report finished.
+    Without it, re-running the first report alone (a forced re-run, an edit that only that gene's
+    input has seen) would leave the catalog built from its previous summary: the marker files are
+    empty and Snakemake ignores a newer empty file whose content is unchanged."""
+    selected = selected_gene_availability(wildcards)
+    if FIRST_GENE_WARMUP and selected["retained_count"] > 1:
+        return [checkpoints.first_gene_warmup_done.get().output.marker]
+    return []
+
+
 # # GPT test for chr/gene* structure.
 # rule all:
 #     input:
@@ -672,10 +804,21 @@ def neutral_source_after_selection(path):
 #             for gene in GENES
 #         ],
 
+def first_gene_warmup_target(wildcards):
+    """The warm-up marker as a target of `rule all`, when there are at least two genes to wait for.
+
+    Everything that waits for the warm-up checkpoint (the aggregation, the catalog page, the reference row) can only be judged out of date or not once the checkpoint exists, because until then its input is a placeholder. If nothing asks for the marker while the first report is up to date - a catalog finished without the warm-up, or one whose marker was deleted - the checkpoint never runs and those jobs are never judged: an edited aggregation script, for instance, would plan nothing. Asking for the marker here makes the (very cheap) checkpoint run once; after that they are planned and judged like any other job. With the warm-up off, or with a single gene, this is empty and `all` gets no extra input."""
+    if not FIRST_GENE_WARMUP:
+        return []
+    selected = selected_gene_availability(wildcards)
+    return [FIRST_GENE_WARMUP_MARKER] if selected["retained_count"] > 1 else []
+
+
 rule all:
     input:
         f"{RESULTS_DIR}/results/gene_catalog.html",
         f"{RESULTS_DIR}/results/gene_catalog.duckdb",
+        first_gene_warmup=first_gene_warmup_target,
 
 
 def filter_mode(wildcards):
@@ -874,7 +1017,7 @@ for chrom, gene in LOCI:
 # Keep this out of GENE_REQUESTS: the full pool has no gene interval or
 # chromosome, and must not pass through extraction/scope availability checks.
 NEUTRAL_REFERENCE_REQUEST = None
-if INCLUDE_ALL_NEUTRAL_MARKERS:
+if RUN_NEUTRAL_REFERENCE:
     folder, gene = NEUTRAL_REFERENCE_LOCUS
     NEUTRAL_REFERENCE_REQUEST = {
         "gene_id": gene,
@@ -999,7 +1142,29 @@ checkpoint select_nonempty_genes:
             print(f"Skipped-gene details (before neutral preparation): {params.report}", flush=True)
         require_retained_genes(manifest, params.report)
 
-if INCLUDE_ALL_NEUTRAL_MARKERS:
+if FIRST_GENE_WARMUP:
+    checkpoint first_gene_warmup_done:
+        """
+        First-gene warm-up: the aggregation (and the reference row) list every report only after this checkpoint has run, and it needs the first retained gene's report.
+        So that report, with its extraction, neutral preparation and the cold download/build of the shared caches, is planned and run alone, with the whole allocation; every other gene is planned afterwards.
+        The marker records when that report finished; the aggregation reads it (so that re-running the first report alone re-aggregates, as re-running any other gene does) and `rule all` asks for it (so that the checkpoint also runs once on a catalog whose reports are already up to date, e.g. one finished without the warm-up). No report lists it, so it never makes a report out of date.
+        If the first report fails, this job does not run and no other gene is started.
+        """
+        input:
+            first_report=first_gene_marker,
+        output:
+            marker=FIRST_GENE_WARMUP_MARKER,
+        resources:
+            mem_mb=100,
+        run:
+            report = Path(str(input[0]))
+            Path(output.marker).parent.mkdir(parents=True, exist_ok=True)
+            Path(output.marker).write_text(
+                json.dumps({"first_gene_report": str(report), "report_finished_ns": report.stat().st_mtime_ns},
+                           indent=2) + "\n", encoding="utf-8")
+            print(f"First-gene warm-up: the report of {report.stem} is done; the other genes are planned now.", flush=True)
+
+if RUN_NEUTRAL_REFERENCE:
     rule ordinary_reports_complete:
         input:
             markers=ordinary_done_marker_paths,
@@ -1203,7 +1368,7 @@ if RUN_NEUTRAL_SIM:
             """
 
 
-if INCLUDE_ALL_NEUTRAL_MARKERS and NEUTRAL_REFERENCE_MAX_MARKERS is not None:
+if RUN_NEUTRAL_REFERENCE and NEUTRAL_REFERENCE_MAX_MARKERS is not None:
     rule prepare_neutral_reference:
         input:
             availability=neutral_availability_manifest,
@@ -1353,7 +1518,7 @@ rule run_wingen_report:
         neutral_min_valid_fraction=lambda wc: config.get("min_valid_fraction", 0.9) if run_neutral_for_locus(wc) else 0.9,
         neutral_prepared_manifest_abs=lambda wc: abspath_pwd(f"{NEUTRAL_DIR}/{wc.chrom}/{wc.gene}/prepared_vcfs/manifest.json") if run_neutral_for_locus(wc) else "",
         neutral_extreme_value_percentiles=lambda wc: NEUTRAL_EXTREME_VALUE_PERCENTILES if run_neutral_for_locus(wc) else "",
-    threads: lambda wc: NEUTRAL_REFERENCE_THREADS if is_neutral_reference(wc) else 2
+    threads: lambda wc: NEUTRAL_REFERENCE_THREADS if is_neutral_reference(wc) else FIRST_GENE_THREADS if is_first_gene(wc) else 2
     resources:
         # from real sacct data (job 6675358, batch_job_gene_catalog.sh):
         # TotalCPU/Elapsed ~= 0.96 -> effectively single-threaded, hence
@@ -1369,8 +1534,11 @@ rule run_wingen_report:
         # field from that same sacct command would settle it directly.
         # mem_mb=40000,
         # runtime=45,
-        mem_mb=lambda wildcards, attempt: neutral_reference_memory_mb() if is_neutral_reference(wildcards) else 40000 * attempt,
-        runtime=lambda wildcards, attempt: NEUTRAL_REFERENCE_RUNTIME if is_neutral_reference(wildcards) else 45 * attempt,
+        # The first gene (first_gene_warmup) asks for everything the allocation has, with no
+        # attempt multiplier - like the reference. It is the only report running, so the cold
+        # download/build gets the whole machine, and a retry starts from the same request.
+        mem_mb=lambda wildcards, attempt: neutral_reference_memory_mb() if is_neutral_reference(wildcards) else first_gene_memory_mb() if is_first_gene(wildcards) else 40000 * attempt,
+        runtime=lambda wildcards, attempt: NEUTRAL_REFERENCE_RUNTIME if is_neutral_reference(wildcards) else FIRST_GENE_RUNTIME if is_first_gene(wildcards) else 45 * attempt,
     retries: 2
     # shell:
     #     """
@@ -1437,7 +1605,7 @@ rule run_wingen_report:
         touch {output.done}
         """
 
-if INCLUDE_ALL_NEUTRAL_MARKERS:
+if RUN_NEUTRAL_REFERENCE:
     # Inherit the identical Rmd/render command; only target category and retries
     # differ. A failed reference report never silently reduces the configured markers.
     use rule run_wingen_report as run_neutral_reference_report with:
@@ -1474,11 +1642,23 @@ rule aggregate_gene_summaries:
     input:
         markers=done_marker_paths,
         availability=availability_manifest,
+        # Empty without first_gene_warmup: the time the first gene's report finished (see the function).
+        first_report_time=first_gene_warmup_stamp,
         script="code/aggregate_gene_summaries.py",
+        # The gene-list BED, read here for its optional gene name (column 5) and description
+        # (column 6). Names are joined in at this last step and never passed into a gene's analysis,
+        # so editing a name re-runs this step, the catalog page and the cheap gene-selection step
+        # that also reads the BED - never a gene's analysis. (Snakemake compares file CONTENT, not
+        # just timestamps: rewriting the BED with identical bytes re-runs nothing.)
+        gene_list=[GENE_LIST_FILE] if gene_list_source == "bed" and os.path.isfile(GENE_LIST_FILE) else [],
 
     output:
         duckdb=f"{RESULTS_DIR}/results/gene_catalog.duckdb",
         tsv=f"{RESULTS_DIR}/results/gene_catalog_summary.tsv",
+    params:
+        gene_list_arg=lambda wildcards, input: (
+            f"--gene-list {shlex.quote(input.gene_list[0])}" if len(input.gene_list) else ""
+        ),
     container:
         CONTAINER
     # conda:
@@ -1488,7 +1668,8 @@ rule aggregate_gene_summaries:
         python {input.script:q} \
             --availability-manifest {input.availability:q} \
             --duckdb {output.duckdb:q} \
-            --tsv {output.tsv:q}
+            --tsv {output.tsv:q} \
+            {params.gene_list_arg}
         """
 
 

@@ -16,6 +16,13 @@ set -euo pipefail
 # gene; a gene's chromosome/bounds/biotype must agree on every genic row.
 # BED uses real gene bounds (start-1, end), not the min/max observed SNP POS.
 # txt keeps IDs in first-seen order; BED is naturally chromosome/start sorted.
+# BED columns 5 and 6 (optional): when the table has gene_name and/or description columns, each
+# gene gets its short name (column 5) and long description (column 6); a missing one is written
+# as "." so every row keeps the same number of columns. A value on ANY row of a gene fills a gap
+# left by its other rows. Two different short names for one gene stop the script; differing
+# descriptions do not (the first one seen is kept and a note is printed). The pipeline's BED
+# reader uses columns 1-4 only, so these columns can never change coordinates, file names or
+# wildcards. Use --gene-name-column none --description-column none for a plain 4-column BED.
 # Output can be a file or directory; an existing file is never overwritten.
 # Only Bash, awk and ordinary GNU coreutils are needed, plus gzip for .gz input.
 # No hardcoded project root or conda activation is needed for these tools.
@@ -31,11 +38,13 @@ Usage: 0_annotation_table_detect_unique_genes.sh bed|txt INPUT_TABLE [OUTPUT] [o
   --biotype-column NAME        default: auto (use gene_biotype if present)
   --annotation-column NAME     default: auto (use annotation if present)
   --pos-column NAME            default: auto (use SNP POS if present)
+  --gene-name-column NAME      default: auto (use gene_name if present); BED only
+  --description-column NAME    default: auto (use description if present); BED only
   --genic-label VALUE          default: genic
   --include-biotypes A,B       keep these exact biotypes; default: all
   --exclude-biotypes A,B       discard these exact biotypes; exclusion wins
   --input-coordinates VALUE    one-based-inclusive (default) or bed
-  --header                     BED only: add #chromosome, pos1, pos2, gene_id
+  --header                     BED only: add a #chrom, chromStart, chromEnd, gene_id[, gene_name, gene_description] comment
 
 Optional columns can be disabled with NAME=none. Explicit names must exist.
 With a status column, only --genic-label rows qualify. Without one, valid
@@ -43,8 +52,18 @@ gene IDs and bounds qualify. Missing IDs are skipped. Optional SNP positions
 are always 1-based and are checked against the supplied gene interval.
 Gene scope is implicit in the input bounds; exon/CDS scope cannot be inferred.
 OUTPUT defaults to unique_genes.bed/txt beside INPUT_TABLE. Output is BED4
-(CHROM, 0-based start, exclusive end, gene ID), or one unique ID per text line.
-BED is headerless by default; --header adds a pipeline-compatible comment.
+(CHROM, 0-based start, exclusive end, gene ID) plus optional gene_name and
+gene_description columns, or one unique ID per text line. BED start is gene_start - 1
+because BED is 0-based; the 1-based gene_start is the first base of the gene and is
+still covered. BED is headerless by default; --header adds a pipeline-compatible comment.
+
+Gene names (BED only): with a gene_name and/or description column in the table, column 5
+is the short name (symbol) and column 6 the long description. A missing value is written
+as "." (never an empty field, so every row keeps the same column count). A value on any
+row of a gene fills a gap left by its other rows. Two different short names for one gene
+are an error; differing descriptions are not (the first one seen is kept and a note is
+printed). Text is whitespace-cleaned and an Ensembl " [Source:...]" tail is dropped from
+descriptions. A gene's chromosome, bounds and biotype must agree on every row.
 HELP
 }
 
@@ -65,6 +84,8 @@ GENE_ID_COLUMN=gene_id
 BIOTYPE_COLUMN=auto
 ANNOTATION_COLUMN=auto
 POS_COLUMN=auto
+GENE_NAME_COLUMN=auto
+DESCRIPTION_COLUMN=auto
 GENIC_LABEL=genic
 INCLUDE_BIOTYPES=""
 EXCLUDE_BIOTYPES=""
@@ -82,6 +103,8 @@ while [[ $# -gt 0 ]]; do
         --biotype-column) BIOTYPE_COLUMN="$2" ;;
         --annotation-column) ANNOTATION_COLUMN="$2" ;;
         --pos-column) POS_COLUMN="$2" ;;
+        --gene-name-column) GENE_NAME_COLUMN="$2" ;;
+        --description-column) DESCRIPTION_COLUMN="$2" ;;
         --genic-label) GENIC_LABEL="$2" ;;
         --include-biotypes) INCLUDE_BIOTYPES="$2" ;;
         --exclude-biotypes) EXCLUDE_BIOTYPES="$2" ;;
@@ -91,6 +114,15 @@ while [[ $# -gt 0 ]]; do
     shift 2
 done
 [[ "$WRITE_HEADER" == false || "$FORMAT" == bed ]] || fail "--header is supported only with bed output"
+if [[ "$FORMAT" == txt ]]; then
+    # A text list holds IDs only. Refuse an explicit name column rather than ignore it silently.
+    for name_option in "$GENE_NAME_COLUMN" "$DESCRIPTION_COLUMN"; do
+        [[ "$name_option" == auto || "$name_option" == none ]] ||
+            fail "--gene-name-column/--description-column are supported only with bed output"
+    done
+    GENE_NAME_COLUMN=none
+    DESCRIPTION_COLUMN=none
+fi
 [[ "$INPUT_COORDINATES" == one-based-inclusive || "$INPUT_COORDINATES" == bed ]] || fail "input coordinates must be 'one-based-inclusive' or 'bed'"
 [[ -f "$INPUT_TABLE" ]] || fail "input table does not exist: $INPUT_TABLE"
 OUTPUT="${OUTPUT:-$(dirname -- "$INPUT_TABLE")/unique_genes.${FORMAT}}"
@@ -130,6 +162,7 @@ read_annotation_table | LC_ALL=C awk \
     -v end_col="$END_COLUMN" -v gene_col="$GENE_ID_COLUMN" \
     -v biotype_col="$BIOTYPE_COLUMN" -v annotation_col="$ANNOTATION_COLUMN" \
     -v pos_col="$POS_COLUMN" -v genic_label="$GENIC_LABEL" \
+    -v name_col="$GENE_NAME_COLUMN" -v desc_col="$DESCRIPTION_COLUMN" \
     -v include_types="$INCLUDE_BIOTYPES" -v exclude_types="$EXCLUDE_BIOTYPES" \
     -v input_coordinates="$INPUT_COORDINATES" '
     function error(message) {
@@ -138,6 +171,20 @@ read_annotation_table | LC_ALL=C awk \
         exit 1
     }
     function missing(value) { return value == "" || value == "NA" || value == "." }
+    # Name text: control characters (tab, CR, ...) become spaces, whitespace runs collapse
+    # to one space, and both ends are trimmed. Missing markers (NA, ., empty) become "".
+    function name_text(value) {
+        gsub(/[[:cntrl:]]+/, " ", value)
+        gsub(/[[:space:]]+/, " ", value)
+        gsub(/^ | $/, "", value)
+        return missing(value) ? "" : value
+    }
+    # Ensembl descriptions end in " [Source:...;Acc:...]": provenance, not part of the name.
+    function description_text(value) {
+        value = name_text(value)
+        sub(/ ?\[Source:[^]]*\]$/, "", value)
+        return name_text(value)
+    }
     function column(name, fallback, optional) {
         if (optional && name == "none") return 0
         if (optional && name == "auto") return fallback in header ? header[fallback] : 0
@@ -181,6 +228,12 @@ read_annotation_table | LC_ALL=C awk \
             a = column(annotation_col, "annotation", 1)
             p = column(pos_col, "POS", 1)
             if (pos_col == "auto" && (p == c || p == s || p == e || p == g)) p = 0
+            nm = column(name_col, "gene_name", 1)
+            ds = column(desc_col, "description", 1)
+            if (name_col == "auto" && (nm == c || nm == s || nm == e || nm == g)) nm = 0
+            if (desc_col == "auto" && (ds == c || ds == s || ds == e || ds == g)) ds = 0
+            if ((nm && (nm == c || nm == s || nm == e || nm == g)) || (ds && (ds == c || ds == s || ds == e || ds == g)))
+                error("gene name/description columns must differ from the chromosome, start, end and gene ID columns")
             if ((include_types != "" || exclude_types != "") && !b)
                 error("biotype filtering requires a biotype column")
             parse_types(include_types, include)
@@ -207,15 +260,33 @@ read_annotation_table | LC_ALL=C awk \
         }
         biotype = b ? ($b "") : "NA"
         if (missing(biotype)) biotype = "NA"
+        # Names only matter for genes that can reach the output; a gene removed by the biotype
+        # filters must not be able to stop the run over a cosmetic field.
+        excluded = (include_types != "" && !(biotype in include)) || (biotype in exclude)
+        name_val = (nm && !excluded) ? name_text($nm "") : ""
+        desc_val = (ds && !excluded) ? description_text($ds "") : ""
         if (gene in first_line) {
             if ((chrom_of[gene] "") != (chrom "") || start_of[gene] != start0 || end_of[gene] != end || (biotype_of[gene] "") != (biotype ""))
                 error("conflicting chromosome, boundaries or biotype for " gene " (first seen at line " first_line[gene] ")")
+            # Short name: a value fills a gap left by an earlier row; two different values are a real conflict.
+            if (name_val != "") {
+                if (name_of[gene] == "") { name_of[gene] = name_val; name_line[gene] = NR }
+                else if (name_of[gene] != name_val)
+                    error("conflicting gene names for " gene ": \"" name_of[gene] "\" (line " name_line[gene] ") vs \"" name_val "\"")
+            }
+            # Description: also fills gaps, but a reworded or longer one is not an error - the first one seen is kept.
+            if (desc_val != "") {
+                if (desc_of[gene] == "") { desc_of[gene] = desc_val; desc_line[gene] = NR }
+                else if (desc_of[gene] != desc_val && !(gene in desc_differs)) desc_differs[gene] = NR
+            }
         } else {
             first_line[gene] = NR
             chrom_of[gene] = chrom
             start_of[gene] = start0
             end_of[gene] = end
             biotype_of[gene] = biotype
+            name_of[gene] = name_val; name_line[gene] = NR
+            desc_of[gene] = desc_val; desc_line[gene] = NR
         }
         if (include_types != "" && !(biotype in include)) next
         if (biotype in exclude) next
@@ -229,16 +300,37 @@ read_annotation_table | LC_ALL=C awk \
         for (i = 1; i <= n_genes; i++) {
             gene = order[i]
             if (format == "txt") print gene
+            else if (nm || ds) {
+                short_name = (name_of[gene] == "") ? "." : name_of[gene]
+                long_name = (desc_of[gene] == "") ? "." : desc_of[gene]
+                if (short_name != ".") n_short++
+                if (long_name != ".") n_long++
+                if (gene in desc_differs) {
+                    n_desc_differ++
+                    if (n_desc_differ <= 3) desc_examples = desc_examples sprintf("\n  %s: lines %d and %d", gene, desc_line[gene], desc_differs[gene])
+                }
+                printf "%s\t%.0f\t%.0f\t%s\t%s\t%s\n", chrom_of[gene], start_of[gene], end_of[gene], gene, short_name, long_name
+            }
             else printf "%s\t%.0f\t%.0f\t%s\n", chrom_of[gene], start_of[gene], end_of[gene], gene
         }
         printf "Selected %d of %d annotation rows; %d unique genes\n", selected_rows, total_rows, n_genes > "/dev/stderr"
+        if (format == "bed" && (nm || ds)) {
+            printf "Gene names: %d short names and %d descriptions among %d genes; missing values are written as \".\"\n", n_short, n_long, n_genes > "/dev/stderr"
+            if (n_desc_differ)
+                printf "NOTE: %d gene(s) have different descriptions on different rows; the first one seen was kept, e.g.:%s\n", n_desc_differ, desc_examples > "/dev/stderr"
+        }
     }
 ' > "$raw_output"
 
 if [[ "$FORMAT" == bed ]]; then
-    # Keep a requested header before the sorted BED4 data, never among the genes.
+    # Keep a requested header before the sorted data, never among the genes. Standard BED names:
+    # chromStart is 0-based (gene_start - 1) and chromEnd is the 1-based last base of the gene.
     if [[ "$WRITE_HEADER" == true ]]; then
-        printf '#chromosome\tpos1\tpos2\tgene_id\n' > "$sorted_output"
+        if awk -F'\t' 'NR == 1 { exit !(NF >= 5) }' "$raw_output"; then
+            printf '#chrom\tchromStart\tchromEnd\tgene_id\tgene_name\tgene_description\n' > "$sorted_output"
+        else
+            printf '#chrom\tchromStart\tchromEnd\tgene_id\n' > "$sorted_output"
+        fi
     else
         : > "$sorted_output"
     fi
@@ -255,5 +347,10 @@ script_end=$(date +%s)
 script_runtime=$((script_end-script_start))
 echo "Gene Catalog Created"
 echo "Interval: supplied gene boundaries | Format: $FORMAT | $n_genes unique genes"
+if [[ "$FORMAT" == bed ]] && awk -F'\t' 'NR == 1 { exit !(NF >= 5) }' "$raw_output"; then
+    n_short=$(awk -F'\t' '$5 != "." { n++ } END { print n + 0 }' "$raw_output")
+    n_long=$(awk -F'\t' '$6 != "." { n++ } END { print n + 0 }' "$raw_output")
+    echo "Gene names: $n_short short names (column 5) and $n_long descriptions (column 6) among $n_genes genes; missing values are '.'"
+fi
 echo "The outputfile is stored as: $OUTPUT"
 echo "Runtime: $script_runtime seconds"

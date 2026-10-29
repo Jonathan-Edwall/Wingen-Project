@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "gene_id": "ENSCHAG00000023766",
+  "gd_stat": "pi",
+  "on_demand": false,
+  "fitting_engine": "R",
+  "metrics": {
+    "salinity": {
+      "label": "Salinity",
+      "fit_unit": "PSU",
+      "interactive_file": "ENSCHAG00000023766_pi_prediction_agreement_salinity.html",
+      "data_file": "ENSCHAG00000023766_pi_prediction_agreement_salinity_data.tsv",
+      "json_file": "ENSCHAG00000023766_pi_prediction_agreement_salinity.json",
+      "on_demand": false,
+      "fitting_engine": "R",
+      "background_files": {
+        "genetic": "ENSCHAG00000023766_pi_prediction_agreement_genetic.png",
+        "environment": "../environment_layers/salinity_dc41844dbb59e295c458e69214abfc05.png"
+      }
+    },
+    "temp_winter": {
+      "label": "Winter water temperature",
+      "fit_unit": "deg C",
+      "interactive_file": "ENSCHAG00000023766_pi_prediction_agreement_temp_winter.html",
+      "data_file": "ENSCHAG00000023766_pi_prediction_agreement_temp_winter_data.tsv",
+      "json_file": "ENSCHAG00000023766_pi_prediction_agreement_temp_winter.json",
+      "on_demand": false,
+      "fitting_engine": "R",
+      "background_files": {
+        "genetic": "ENSCHAG00000023766_pi_prediction_agreement_genetic.png",
+        "environment": "../environment_layers/temp_winter_abc37a5ea4eccbc80258095e3c5d5a85.png"
+      }
+    },
+    "temp_summer": {
+      "label": "Summer water temperature",
+      "fit_unit": "deg C",
+      "interactive_file": "ENSCHAG00000023766_pi_prediction_agreement_temp_summer.html",
+      "data_file": "ENSCHAG00000023766_pi_prediction_agreement_temp_summer_data.tsv",
+      "json_file": "ENSCHAG00000023766_pi_prediction_agreement_temp_summer.json",
+      "on_demand": false,
+      "fitting_engine": "R",
+      "background_files": {
+        "genetic": "ENSCHAG00000023766_pi_prediction_agreement_genetic.png",
+        "environment": "../environment_layers/temp_summer_dfd6f3e1ace3eab28c159e3a4f7cd428.png"
+      }
+    },
+    "chl_log": {
+      "label": "ln(chlorophyll-a)",
+      "fit_unit": "ln(mg/m^3)",
+      "interactive_file": "ENSCHAG00000023766_pi_prediction_agreement_chl_log.html",
+      "data_file": "ENSCHAG00000023766_pi_prediction_agreement_chl_log_data.tsv",
+      "json_file": "ENSCHAG00000023766_pi_prediction_agreement_chl_log.json",
+      "on_demand": false,
+      "fitting_engine": "R",
+      "background_files": {
+        "genetic": "ENSCHAG00000023766_pi_prediction_agreement_genetic.png",
+        "environment": "../environment_layers/chl_log_ec9be69a9ca3b3d062cb06cf75faaf74.png"
+      }
+    },
+    "oxygen": {
+      "label": "Dissolved oxygen",
+      "fit_unit": "mmol/m^3",
+      "interactive_file": "ENSCHAG00000023766_pi_prediction_agreement_oxygen.html",
+      "data_file": "ENSCHAG00000023766_pi_prediction_agreement_oxygen_data.tsv",
+      "json_file": "ENSCHAG00000023766_pi_prediction_agreement_oxygen.json",
+      "on_demand": false,
+      "fitting_engine": "R",
+      "background_files": {
+        "genetic": "ENSCHAG00000023766_pi_prediction_agreement_genetic.png",
+        "environment": "../environment_layers/oxygen_ebb376649d154a83a7d6c6dfa054e8cf.png"
+      }
+    },
+    "current_speed": {
+      "label": "Current speed",
+      "fit_unit": "m/s",
+      "interactive_file": "ENSCHAG00000023766_pi_prediction_agreement_current_speed.html",
+      "data_file": "ENSCHAG00000023766_pi_prediction_agreement_current_speed_data.tsv",
+      "json_file": "ENSCHAG00000023766_pi_prediction_agreement_current_speed.json",
+      "on_demand": false,
+      "fitting_engine": "R",
+      "background_files": {
+        "genetic": "ENSCHAG00000023766_pi_prediction_agreement_genetic.png",
+        "environment": "../environment_layers/current_speed_29f2719b5e64193217b3c8c8461c211d.png"
+      }
+    }
+  }
+}

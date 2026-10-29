@@ -65,6 +65,7 @@
   table.dataTable tbody tr:hover { background: var(--hover); }
   td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
   td.gene-id { font-family: var(--mono); }
+  td.gene-name { min-width: 11em; max-width: 26em; white-space: normal; overflow-wrap: anywhere; }
   td.thumb { width: 50px; }
   td.thumb img {
     width: 44px; height: 28px; object-fit: cover; cursor: zoom-in; display: block;
@@ -286,6 +287,7 @@
 
 <div id="toolbar">
   <label class="decimals-control">Decimals: <input type="number" id="decimals-input" min="0" max="10" value="6"></label>
+  <button type="button" class="chip" id="gene-id-toggle" aria-pressed="false" hidden title="Hide or show the Gene ID column; the Gene name column stays">Hide gene ID</button>
   <button type="button" class="chip" id="location-statistics-toggle" aria-pressed="false" hidden>More location statistics</button>
   <button type="button" class="chip" id="significance-toggle" aria-pressed="false" hidden>Color neutral significance</button>
   <span id="significance-legend" hidden></span>
@@ -735,7 +737,7 @@ function toDtColumn(leaf) {
   return {
     data: leaf.derived ? (row) => leaf.get(row) : leaf.key,
     visible: leaf.visible,
-    className: leaf.numeric ? 'num' : (leaf.key === 'gene_id' ? 'gene-id' : ''),
+    className: leaf.numeric ? 'num' : (leaf.key === 'gene_id' ? 'gene-id' : leaf.key === 'gene_label' ? 'gene-name' : ''),
     type: leaf.numeric ? 'num' : 'string',
     // A gene whose JSON lacks a field (e.g. it errored before computing that
     // block) gets an empty cell rather than DataTables' "unknown parameter" error.
@@ -829,6 +831,16 @@ function dropHiddenSortColumns() {
   if (kept.length !== current.length) dt.order(kept.length ? kept : DEFAULT_ORDER).draw(false);
 }
 
+function toggleGeneId() {
+  if (!geneLeaf || !geneNameLeaf) return;
+  const hiding = geneLeaf.visible;
+  setLeavesVisible([geneLeaf], !geneLeaf.visible);
+  // Sorted by the ID that just disappeared: order by the visible name instead, so the rows stay
+  // in an order the reader can see.
+  const order = dt.order();
+  if (hiding && order.length === 1 && order[0][0] === geneLeaf.colIdx) dt.order([[geneNameLeaf.colIdx, 'asc']]).draw(false);
+}
+
 // Toolbar button: everything shown -> hide it all; otherwise (hidden or
 // mixed) -> show it all.
 function toggleGroup(group) {
@@ -900,6 +912,7 @@ const GLYPH = { all: '\u2611 ', none: '\u2610 ', some: '\u25A3 ' }; // ballot bo
 // The DOM is built once, and refreshToolbar() only updates each button's
 // state in place - so a button keeps keyboard focus after you press it.
 function buildToolbar() {
+  document.getElementById('gene-id-toggle').addEventListener('click', toggleGeneId);
   document.getElementById('location-statistics-toggle').addEventListener('click', toggleLocationStatistics);
   if (!tree.some((n) => n.isGroup)) return;   // nothing to toggle - leave the toolbar empty
   const container = document.getElementById('group-toolbar');
@@ -949,6 +962,14 @@ function refreshToolbar() {
       walk(n.children);
     }
   })(tree);
+  // Hide/show the Gene ID column. Only offered when there is a Gene name column to keep the rows
+  // identifiable; without names the ID is the only identifier, so there is nothing to choose.
+  const idButton = document.getElementById('gene-id-toggle');
+  idButton.hidden = !(geneLeaf && geneNameLeaf);
+  if (geneLeaf) {
+    idButton.textContent = geneLeaf.visible ? 'Hide gene ID' : 'Show gene ID';
+    idButton.setAttribute('aria-pressed', String(!geneLeaf.visible));
+  }
   const button = document.getElementById('location-statistics-toggle');
   const allShown = extraLocationLeaves.length > 0 && extraLocationLeaves.every((leaf) => leaf.visible);
   button.hidden = !extraLocationLeaves.length;
@@ -971,7 +992,9 @@ const FILTER_OPS = [
 
 const filterLeaves = leaves.filter((l) => l.numeric);
 const leafByCol = new Map(leaves.map((l) => [l.colIdx, l]));
-const geneLeaf = leaves.find((l) => l.key === 'gene_id');   // its cell carries the gene-name marker
+const geneLeaf = leaves.find((l) => l.key === 'gene_id');
+const geneNameLeaf = leaves.find((l) => l.key === 'gene_label');   // present only when the catalog has gene names
+const geneLeaves = [geneLeaf, geneNameLeaf].filter(Boolean);        // their cells carry the gene marker
 const filterRules = [];
 let activePrune = [];          // Keep rules with a usable value: these hide genes
 let activeHighlight = [];      // Highlight rules with a usable value: these tint genes
@@ -1026,7 +1049,7 @@ function applyHighlights() {
   const mark = (td, cls) => { if (td) { td.classList.add(cls); tinted.add(td); } };
   dt.rows({ page: 'current' }).every(function (rowIdx) {
     if (!highlightMatches(this.data())) return;
-    if (geneLeaf) mark(dt.cell(rowIdx, geneLeaf.colIdx).node(), 'hl-gene');
+    for (const leaf of geneLeaves) mark(dt.cell(rowIdx, leaf.colIdx).node(), 'hl-gene');   // a hidden column has no cell: skipped
     // With OR, tint only conditions belonging to a complete matching branch.
     for (const group of ruleGroups(activeHighlight)) {
       if (group.every((rule) => ruleMatches(rule, this.data()))) {

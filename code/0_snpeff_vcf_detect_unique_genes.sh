@@ -4,10 +4,10 @@
 script_start=$(date +%s)
 
 # -e/-o pipefail from the very top: any failure from here on stops the
-# script with a clear error, instead of continuing on and (as happened
-# before) reporting a fake "0 unique genes" success. -u (nounset) is turned
-# on further down instead of here, since conda's own activation scripts
-# aren't always safe to `source` under nounset.
+# script with a clear error, instead of continuing on and reporting a fake
+# "0 unique genes" success. -u (nounset) is turned on further down instead
+# of here, since conda's own activation scripts aren't always safe to
+# `source` under nounset.
 set -eo pipefail
 
 ####################################  
@@ -77,7 +77,8 @@ set -u   # nounset from here on - everything below only reads variables this
 #     (all four are matched against ANN's field 2, the effect/consequence term)
 #
 #   format : bed | txt                     (default: bed)
-#     bed - chrom, start, end, gene_id (0-based, BED-style), always sorted by chromosome
+#     bed - chrom, start, end, gene_id (0-based, BED-style) plus gene_name and
+#           gene_description columns (see "Gene names" below), always sorted by chromosome
 #           then start position (natural order: chr1, chr2, ... chr26, not chr1, chr10,
 #           chr11...).
 #           Only scope=all or scope=body are allowed here - see the scope caveat above:
@@ -87,32 +88,24 @@ set -u   # nounset from here on - everything below only reads variables this
 #           list, or filter_vcf_by_scope.sh (in 2_wingen_create_gene_catalog.sh) to
 #           narrow a specific gene's actual variants to exonic/cds correctly.
 #     txt - just the gene IDs, one per line, in the order each gene is first seen in the
-#           VCF (deduplicated, not re-sorted - no alphabetical option any more, this is
-#           the only order it writes). All four scope values are meaningful here, since a
-#           gene list carries no coordinates to mislead - scope just decides which genes
-#           qualify for inclusion at all.
+#           VCF (deduplicated, not re-sorted - this is the only order it writes). All four
+#           scope values are meaningful here, since a gene list carries no coordinates to
+#           mislead - scope just decides which genes qualify for inclusion at all.
 #
 #   output : output file path, OR a directory to write the default-named file
 #            into                          (default: same directory as
 #            input_vcf, named unique_genes.<bed|txt>)
 #     If this is - or looks like - a directory (it already exists as one, or the path
 #     ends in "/"), the file unique_genes.<bed|txt> is written INSIDE it, rather than
-#     treating the directory itself as the output file path. That silent mismatch is
-#     exactly what broke the first two runs of this script: passing a raw_data_dir-style
-#     folder here (out of habit from filter_vcf_by_chr_or_gene.sh's raw_data_dir
-#     convention, which this script does NOT use) set OUTPUT to the directory itself, so
-#     the final sort/wc redirected straight into it and failed with "... : Is a
-#     directory" - and because this script didn't `set -e` at the time, that failure
-#     didn't stop it: it went on to print "0 unique genes" and "Runtime: N seconds" as if
-#     it had actually succeeded. Both problems are fixed now: this directory-handling,
-#     and `set -eo pipefail` above so a failure like it stops the script instead of
-#     reporting a fake result.
+#     treating the directory itself as the output file path. (A raw_data_dir-style folder
+#     is easy to pass here out of habit from filter_vcf_by_chr_or_gene.sh, but this script
+#     does NOT use that convention.) Any failing step stops the script (`set -eo
+#     pipefail` above) instead of ending in a fake "0 unique genes" result.
 #
 #   input_vcf : path to the SnpEff-annotated input VCF     (default: the full herring
 #               cohort VCF hardcoded below)
-#     Previously only changeable by hand-editing the hardcoded input_vcf_file line
-#     below; now overridable from the command line too, with that same hardcoded path
-#     kept as the fallback when this is omitted.
+#     Given on the command line; when it is omitted, the hardcoded input_vcf_file path
+#     below is used.
 #
 # IMPORTANT caveat on the BED output: SnpEff's ANN field does not carry a gene's real
 # start/end - only variant positions and (for upstream/downstream/intergenic effects)
@@ -121,6 +114,36 @@ set -u   # nounset from here on - everything below only reads variables this
 # true gene span, not the span itself. On a subset like head_5000 this can be well short
 # of reality, since most of a gene's real length may simply have no variant called in it.
 # For the real gene boundaries, use the GTF/GFF3 the SnpEff database was built from.
+#
+# Gene names (bed only): column 5 is the gene's short name from ANN field 4 (Gene_Name) and
+# column 6 its long description, which SnpEff does not carry, so it is always "." - the same
+# 6-column layout 0_annotation_table_detect_unique_genes.sh writes. Rules:
+#   - SnpEff repeats the gene ID in Gene_Name when the annotation has no symbol; that means
+#     "no name" and is written as ".". A missing value is never an empty field.
+#   - A name on ANY of a gene's ANN entries fills a gap left by the others; two DIFFERENT
+#     names for one gene stop the script with an error naming both.
+#   - Names are whitespace-cleaned. intergenic_region entries are ignored for genes AND names:
+#     SnpEff reports them against the flanking PAIR ("GeneA-GeneB", "CHR_START-GeneA",
+#     "GeneZ-CHR_END"), which is not a gene.
+#   Optional flags (anywhere on the command line; everything else is positional):
+#     --no-gene-names   write the plain 4-column BED
+#     --header          bed only: add a #chrom chromStart chromEnd gene_id ... comment line
+# The output is written to a temporary file and moved into place only on success, so a failed
+# run can never leave a partial gene list behind for the batch script to reuse.
+
+# Optional flags may appear anywhere; everything else stays positional.
+WITH_NAMES=1
+WRITE_HEADER=false
+positional=()
+for arg in "$@"; do
+    case "$arg" in
+        --no-gene-names) WITH_NAMES=0 ;;
+        --header) WRITE_HEADER=true ;;
+        --*) echo "ERROR: unknown option '$arg' (known: --no-gene-names, --header)" >&2; exit 1 ;;
+        *) positional+=("$arg") ;;
+    esac
+done
+set -- ${positional[@]+"${positional[@]}"}
 
 SCOPE="${1:-body}"
 FORMAT="${2:-bed}"
@@ -131,6 +154,10 @@ if [[ "$SCOPE" != "all" && "$SCOPE" != "body" && "$SCOPE" != "exonic" && "$SCOPE
 fi
 if [[ "$FORMAT" != "bed" && "$FORMAT" != "txt" ]]; then
     echo "ERROR: format must be 'bed' or 'txt' (got '$FORMAT')" >&2
+    exit 1
+fi
+if [[ "$WRITE_HEADER" == true && "$FORMAT" != "bed" ]]; then
+    echo "ERROR: --header is supported only with format 'bed'" >&2
     exit 1
 fi
 if [[ "$FORMAT" == "bed" && ( "$SCOPE" == "exonic" || "$SCOPE" == "cds" ) ]]; then
@@ -155,8 +182,7 @@ if [[ ! -f "$input_vcf_file" ]]; then
     echo "       (Given as the 3rd argument, or - if omitted - the hardcoded default.)" >&2
     exit 1
 fi
-# Follows whichever input_vcf_file is actually in play (default or overridden), instead
-# of being hardcoded separately and left to drift out of sync with it, as it was before.
+# Follows whichever input_vcf_file is actually in play (default or overridden).
 vcf_file_dir_gene_catalog="$(dirname "$input_vcf_file")"
 
 # Output gene list file (4th)
@@ -166,6 +192,9 @@ if [[ -d "$OUTPUT" || "$OUTPUT" == */ ]]; then
     OUTPUT="${OUTPUT%/}/unique_genes.${FORMAT}"
 fi
 mkdir -p "$(dirname "$OUTPUT")"
+# Staged next to the destination and moved into place only on success (see the note above).
+TMP_OUT="${OUTPUT}.tmp.$$"
+trap 'rm -f "$TMP_OUT" "${TMP_OUT}.hdr"' EXIT
 
 ####################################
 # Confirm this really is a SnpEff-annotated VCF
@@ -180,21 +209,18 @@ fi
 ####################################
 # Explode ANN, classify each mention by scope, write the requested format
 ####################################
-# Extraction goes through 'bcftools query' rather than 'zcat -f | awk' over the raw file.
-# Two side effects worth knowing:
-#  - No more explicit decompression step: bcftools reads .gz (bgzip or plain gzip) and
-#    plain VCF directly through the same code path, confirmed against both.
+# Extraction goes through 'bcftools query', so there is no separate decompression step:
+#  - bcftools reads .gz (bgzip or plain gzip) and plain VCF directly through the same code
+#    path, confirmed against both.
 #  - bcftools has already isolated the ANN value, so the awk below reads it straight from
 #    field 3 rather than splitting INFO on ";" and searching for "ANN=" itself. A missing
 #    ANN comes through as "." (VCF's missing-value placeholder), checked for accordingly.
-# On whether this is actually faster on your ~125-sample file: it should still do less
-# per-line work than a generic text pipeline, but I found a real bcftools issue thread
-# reporting that bcftools query does slow down with sample count even when FORMAT fields
-# aren't requested - so "skips the sample columns entirely" was overstated on my part
-# last time. Worth timing directly against the old version on your real file rather than
-# trusting my reasoning here. If it's still slow, 'bcftools view -G' (drop genotypes)
-# piped in before 'query' is worth trying too - I confirmed the syntax works, but have no
-# evidence either way on whether it actually helps versus just moving the cost around.
+# Speed on a ~125-sample file has not been measured. It should do less per-line work than a
+# generic text pipeline, but bcftools query is reported to slow down with the number of
+# samples even when no FORMAT fields are requested, so the gain from not reading the sample
+# columns may be smaller than expected. Worth timing on the real file. If it is slow,
+# 'bcftools view -G' (drop genotypes) piped in before 'query' is worth trying; the syntax
+# works, but whether it helps or only moves the cost elsewhere is untested.
 
 if [[ "$FORMAT" == "txt" ]]; then
 
@@ -218,12 +244,13 @@ if [[ "$FORMAT" == "txt" ]]; then
                 # "splice_region_variant&intron_variant" - matching the whole effect
                 # string against one term misses these entirely, so each "&"-joined
                 # part is checked separately against the same term sets instead.
-                outside_gene = 0; intronic = 0; is_cds = 0
+                outside_gene = 0; intronic = 0; is_cds = 0; intergenic = 0
                 ne = split(f[2], eparts, "&")
                 for (ei = 1; ei <= ne; ei++) {
                     ep = eparts[ei]
                     if (ep == "upstream_gene_variant" || ep == "downstream_gene_variant" || \
                         ep == "intergenic_region") outside_gene = 1
+                    if (ep == "intergenic_region") intergenic = 1
                     if (ep == "intron_variant") intronic = 1
                     if (ep == "missense_variant"        || ep == "synonymous_variant" || \
                         ep == "stop_gained"              || ep == "stop_lost"          || \
@@ -237,13 +264,16 @@ if [[ "$FORMAT" == "txt" ]]; then
                     || (scope == "exonic" && !outside_gene && !intronic) \
                     || (scope == "cds"    && is_cds)
                 if (!keep) continue
+                # An intergenic_region entry names the flanking PAIR ("GeneA-GeneB"), not a gene.
+                if (intergenic) continue
 
                 # Dedupe on first sight and print immediately - genes come out in
                 # exactly the order each one is first encountered in the VCF, no sorting.
                 if (!(gene in seen)) { seen[gene] = 1; print gene }
             }
         }
-    ' > "$OUTPUT"
+    ' > "$TMP_OUT"
+    mv -f "$TMP_OUT" "$OUTPUT"
 
 else
     # bed format: track the min/max variant POS seen per gene at the chosen scope.
@@ -255,7 +285,14 @@ else
     # (-k1,1V uses natural/version order, so chr2 < chr10 the way you'd read it, not the
     # plain lexicographic chr1 < chr10 < chr11 < ... < chr2 that a plain -k1,1 would give
     # on chromosome names like these).
-    bcftools query -f '%CHROM\t%POS\t%INFO/ANN\n' "$input_vcf_file" | awk -v scope="$SCOPE" '
+    bcftools query -f '%CHROM\t%POS\t%INFO/ANN\n' "$input_vcf_file" | awk -v scope="$SCOPE" -v with_names="$WITH_NAMES" '
+        # Name text: control characters become spaces, whitespace runs collapse, ends are trimmed.
+        function name_text(value) {
+            gsub(/[[:cntrl:]]+/, " ", value)
+            gsub(/[[:space:]]+/, " ", value)
+            gsub(/^ | $/, "", value)
+            return (value == "NA" || value == ".") ? "" : value
+        }
         BEGIN { FS="\t"; OFS="\t" }
         {
             chrom = $1; pos = $2; ann = $3
@@ -268,12 +305,13 @@ else
 
                 # SnpEff joins simultaneous effects at one position with "&" - see the
                 # comment in the txt branch above for why each part is checked separately.
-                outside_gene = 0; intronic = 0; is_cds = 0
+                outside_gene = 0; intronic = 0; is_cds = 0; intergenic = 0
                 ne = split(f[2], eparts, "&")
                 for (ei = 1; ei <= ne; ei++) {
                     ep = eparts[ei]
                     if (ep == "upstream_gene_variant" || ep == "downstream_gene_variant" || \
                         ep == "intergenic_region") outside_gene = 1
+                    if (ep == "intergenic_region") intergenic = 1
                     if (ep == "intron_variant") intronic = 1
                     if (ep == "missense_variant"        || ep == "synonymous_variant" || \
                         ep == "stop_gained"              || ep == "stop_lost"          || \
@@ -287,19 +325,49 @@ else
                     || (scope == "exonic" && !outside_gene && !intronic) \
                     || (scope == "cds"    && is_cds)
                 if (!keep) continue
+                # An intergenic_region entry names the flanking PAIR ("GeneA-GeneB"), not a gene.
+                if (intergenic) continue
 
                 if (!(gene in minpos) || pos < minpos[gene]) minpos[gene] = pos
                 if (!(gene in maxpos) || pos > maxpos[gene]) maxpos[gene] = pos
                 chrom_of[gene] = chrom
+
+                if (with_names) {
+                    # Gene_Name (field 4). SnpEff repeats the gene ID when there is no symbol.
+                    gene_name = name_text(f[4])
+                    if (gene_name == gene) gene_name = ""
+                    if (gene_name != "") {
+                        if (!(gene in name_of)) { name_of[gene] = gene_name; name_rec[gene] = NR }
+                        else if (name_of[gene] != gene_name) {
+                            printf "ERROR: conflicting gene names for %s: \"%s\" (variant record %d) vs \"%s\" (record %d)\n", gene, name_of[gene], name_rec[gene], gene_name, NR > "/dev/stderr"
+                            failed = 1; exit 1
+                        }
+                    }
+                }
             }
         }
         END {
-            for (g in minpos) print chrom_of[g], minpos[g] - 1, maxpos[g], g
+            if (failed) exit 1
+            for (g in minpos) {
+                if (with_names) print chrom_of[g], minpos[g] - 1, maxpos[g], g, ((g in name_of) ? name_of[g] : "."), "."
+                else print chrom_of[g], minpos[g] - 1, maxpos[g], g
+            }
         }
-    ' | sort -k1,1V -k2,2n > "$OUTPUT"
+    ' | sort -t $'\t' -k1,1V -k2,2n > "$TMP_OUT"
+    if [[ "$WRITE_HEADER" == true ]]; then
+        if [[ "$WITH_NAMES" == 1 ]]; then
+            header_line=$'#chrom\tchromStart\tchromEnd\tgene_id\tgene_name\tgene_description'
+        else
+            header_line=$'#chrom\tchromStart\tchromEnd\tgene_id'
+        fi
+        { printf '%s\n' "$header_line"; cat "$TMP_OUT"; } > "${TMP_OUT}.hdr"
+        mv -f "${TMP_OUT}.hdr" "$OUTPUT"
+    else
+        mv -f "$TMP_OUT" "$OUTPUT"
+    fi
 fi
 
-n_genes=$(wc -l < "$OUTPUT")
+n_genes=$(grep -vc '^#' "$OUTPUT" || true)
 
 # Ending the timer 
 script_end=$(date +%s)
@@ -308,5 +376,9 @@ script_runtime=$((script_end-script_start))
 
 echo "Gene Catalog Created"
 echo "Scope: $SCOPE | Format: $FORMAT | $n_genes unique genes"
+if [[ "$FORMAT" == bed && "$WITH_NAMES" == 1 ]]; then
+    n_named=$(awk -F'\t' '!/^#/ && $5 != "." { n++ } END { print n + 0 }' "$OUTPUT")
+    echo "Gene names: $n_named of $n_genes genes have a name in column 5 (SnpEff repeats the gene ID when there is no symbol; those get '.'); column 6 is '.' because SnpEff carries no descriptions"
+fi
 echo "The outputfile is stored as: $OUTPUT"
 echo "Runtime: $script_runtime seconds"

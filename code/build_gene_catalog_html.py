@@ -85,6 +85,39 @@ def _alpha_text(percentile):
     return f"{(100 - percentile) / 100:.8f}".rstrip("0").rstrip(".")
 
 
+def _name_part(value):
+    """A name/description exactly as stored, or None when it is missing (NULL, empty, "." or NA)."""
+    if value is None:
+        return None
+    text = " ".join(str(value).split())
+    return None if text in ("", ".", "NA") else text
+
+
+def gene_display_label(name, description):
+    """The catalog's "Gene name" text. The long form comes first, with the short name in
+    parentheses - "karyopherin subunit beta 1 (kpnb1)"; either one alone is shown as it is;
+    None when the gene has neither (the caller falls back to the gene ID). When the two are
+    the same text, ignoring case, it is shown once."""
+    name, description = _name_part(name), _name_part(description)
+    if name and description:
+        return name if name.lower() == description.lower() else f"{description} ({name})"
+    return description or name
+
+
+def add_gene_labels(records):
+    """Give every record a `gene_label`: its display label, or the gene ID for a gene with no
+    name (so the column is never blank, even with the Gene ID column hidden). Returns how many
+    genes have a REAL label. Zero means this catalog has no names at all - e.g. an older run,
+    a plain 4-column BED, or a text gene list - and then no label is added and the page has no
+    Gene name column."""
+    labels = [gene_display_label(rec.get("gene_name"), rec.get("gene_description")) for rec in records]
+    n_labelled = sum(1 for label in labels if label)
+    if n_labelled:
+        for rec, label in zip(records, labels):
+            rec["gene_label"] = label or rec["gene_id"]
+    return n_labelled
+
+
 def add_window_correlations(records, gd_key):
     """Fill display r from older simple-intercept fits without changing saved data.
 
@@ -259,6 +292,8 @@ def build_column_layout(gd_key, gd_short, extreme_value_percentiles=LEGACY_EXTRE
     """
     layout = [
         {"key": "gene_id", "label": "Gene", "numeric": False},
+        # Shown only when the catalog has at least one gene name or description (see add_gene_labels).
+        {"key": "gene_label", "label": "Gene name", "numeric": False},
         {"key": "chr", "label": "Chr", "numeric": False},
         {"key": "n_variants", "label": "Variants", "numeric": True},
         {"key": "n_locations_used", "label": "N sites", "numeric": True},
@@ -494,7 +529,8 @@ def available_columns(con, table, layout, existing_cols, computed_counts=None):
         else:
             if col["key"] not in existing_cols:
                 continue  # case 1
-            n_nonnull = _nonnull_count(con, table, col["key"])
+            n_nonnull = (computed_counts[col["key"]] if computed_counts and col["key"] in computed_counts
+                         else _nonnull_count(con, table, col["key"]))
             if n_nonnull is None:
                 continue  # case 1 - field absent from this schema
             if n_nonnull == 0:
@@ -782,8 +818,14 @@ extreme_value_percentiles = read_extreme_value_percentiles(rows, cols)
 records = [dict(zip(cols, row)) for row in rows]
 COLUMN_LAYOUT = build_column_layout(gd_stat.lower(), gd_label_short, extreme_value_percentiles, records=records)
 window_counts = add_window_correlations(records, gd_stat.lower())
+n_labelled = add_gene_labels(records)
+computed_counts = dict(window_counts)
+if n_labelled:
+    # gene_label is built here, not stored: names can be updated in the DuckDB file without a stale label.
+    cols = cols + ["gene_label"]
+    computed_counts["gene_label"] = n_labelled
 column_layout, dropped_empty, strip_keys = available_columns(con, "genes", COLUMN_LAYOUT, cols,
-                                                             computed_counts=window_counts)
+                                                             computed_counts=computed_counts)
 con.close()
 
 image_bounds_file = Path(html_path).resolve().parent / "catalog_image_bounds.json"
@@ -819,7 +861,7 @@ for rec in records:
         if bounds and expected and asset.is_file() and hashlib.sha256(asset.read_bytes()).hexdigest() == expected:
             rec["gallery_image_bounds"][image] = bounds
     # rec["plots"] = gene_plot_paths(rec["gene_id"], rec.get("gene_dir"), snakemake.output.html)
-    for key in strip_keys + ["gd_stat", "gd_label", "gd_label_short"]:
+    for key in strip_keys + ["gd_stat", "gd_label", "gd_label_short", "gene_name", "gene_description"]:
         rec.pop(key, None)
 
 # One line disclosing what got hidden and why, only when something did -

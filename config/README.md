@@ -30,6 +30,30 @@ any further columns are ignored currently.
 
 **Text** (any other extension): one gene ID per line. A line with several columns stops the run.
 
+## First-gene warm-up
+Every report reads and fills the same caches under `{results_dir}/temp` (the environmental layers in `env_cache`, the Natural Earth maps in `ne_cache`). The first report on an empty cache downloads and builds them, and it is by far the heaviest and slowest report of a run (measured on herring, 125 individuals: about 43 GiB peak and 44 min, against about 4 GiB and 11 min once the layers are cached). Reports that start together on an empty cache all do that at once: four of them add up to about 175 GiB, more than a 160 GiB allocation holds, and the kernel kills one.
+
+With `first_gene_warmup: true` (the default, also when the key is missing) the workflow runs **the first retained gene of the list alone, with the whole allocation, and starts every other gene after it**: that gene's extraction, neutral preparation and report finish first; only then are the other genes planned and run together. The wait is on a finished report and not on a particular download, so it covers any environmental data source and any `domain_type` that caches under `results_dir/temp`; the Rmd is not involved. The reference row (`run_neutral_reference`) is not affected: it already waits for every ordinary report.
+
+The mechanism is a second checkpoint, `first_gene_warmup_done`, whose only input is the first gene's `.done` marker. The final aggregation (and the reference row) list all reports only after that checkpoint has run, so Snakemake creates the other genes' jobs once the first report is finished, and with exactly the inputs they have without the warm-up: which reports are out of date is decided as it always was. The checkpoint writes `{results_dir}/temp/first_gene_warmup.json` (the first report's path and finish time). `rule all` asks for it (when at least two genes are retained) and only the aggregation reads it, so re-running the first gene alone re-aggregates the catalog.
+
+| Setting | Behavior |
+|---|---|
+| `first_gene_warmup: true` | `true`/`false` only. `false`: all genes start together, with no checkpoint and no waiting for the first gene. On the command line Snakemake reads only `True`/`False`: `--config first_gene_warmup=False`. |
+| `first_gene_threads: auto` | Snakemake's `--cores` budget, which is also the number of R workers (`future::multisession`) of that report. A positive integer is accepted and limited by `--cores`. R workers are separate processes, so more threads can mean more memory; the peak of the first report with many workers has not been measured yet, so lower the number if it runs out of memory. With an executor that submits one Slurm job per rule, `--cores`/`--jobs` is not the size of a node: give a number. |
+| `first_gene_mem_mb: auto` | Smaller declared `mem_mb` (`--resources`) / `SLURM_MEM_PER_NODE` budget minus `first_gene_headroom_mb`; 40000 MB when no budget is declared. An explicit number is limited to the same value (budget minus headroom). There is no retry multiplier. |
+| `first_gene_headroom_mb` | Memory kept back from the declared budget for the scheduler and everything else in the job (default 4096); it applies to `auto` and to the limit of an explicit number. |
+| `first_gene_runtime_minutes` | Scheduling metadata, default 240. The enclosing Slurm allocation sets the real time limit. |
+
+* **Which gene.** The first *retained* gene in list order; a gene skipped for lack of variants never comes first. With a single retained gene (for example `gene_list_limit: 1`) there is nothing to wait for and no checkpoint is created. Reorder the list if you would rather warm up on another gene.
+* **If the first gene fails** (after its two retries), no other gene is started and the run stops there. Fix the cause (or set `first_gene_warmup: false`) and run the same command again; finished work is kept.
+* **Cost.** The first report runs with nothing beside it, so the run takes that report's time plus the time of the rest. The cold report took about 44 min with 2 workers while three others ran beside it; how long it takes alone on the whole allocation has not been measured yet. The other genes then run together, without the cold-start collisions.
+* **What is re-run.** Editing the Rmd, the helper scripts or `env_presets.yaml`, or `--forcerun run_wingen_report`, re-runs every report: the first gene alone first, then the others. Forcing only the first gene's `.done` marker re-runs only that gene (and the aggregation); forcing one later gene re-runs only that gene (and the aggregation).
+* **Dry runs.** While the first report or the warm-up marker has to be (re)made (a new catalog, an edited Rmd, a forced first gene), Snakemake cannot know the other genes' jobs yet, so `snakemake -n` lists only the first gene and the final steps, and its log line says that the others are planned after it. Once the first report and the marker are up to date, `-n` lists everything.
+* **One gene by name.** `snakemake results/.../GENE.done` runs just that gene: it is not held back, does not start the warm-up, and gets the ordinary resources of a report even when it is the first gene of the list.
+* **Finished catalogs.** A catalog that was finished without the warm-up plans no report again (every gene's inputs are unchanged). The first run only adds the small checkpoint job and rebuilds the catalog table and page once.
+* **Cache deleted by hand.** A deleted `temp/env_cache` does not make the finished first report out of date, so nothing is re-warmed by itself. To warm it again before more genes run, re-run the first gene (`--forcerun` on its `.done` marker) or all reports (`--forcerun run_wingen_report`); the first gene then runs alone and rebuilds the cache.
+
 ## Wingen script parameters
 These parameter settings are environment variables used in `code/2_Herring_Wingen.Rmd` and can optionally be set, otherwise fallback values are used. More information about the wingen function arguments can be found from the official documentation: https://cran.r-project.org/web/packages/wingen/refman/wingen.html
 ### Domain
@@ -142,7 +166,7 @@ The following settings are only relevant if `use_copernicus_marine: TRUE`.
 
 `ENV_PRESET`: which Copernicus Marine datasets the environmental values (salinity, winter and summer temperature, log chlorophyll-a, dissolved oxygen and current speed) come from. `global` (GLORYS12V1 reanalysis, ~8 km + GlobColour ocean colour, 4 km; the prototype's data) or `baltic` (Baltic reanalysis, ~1.9 km + Baltic ocean colour with a regional chlorophyll algorithm, 1 km). [Default if unset: `global`]
 
-The presets themselves (product id, dataset/layer id, variable names, the years each dataset covers, and notes on when to use which) live in **`config/env_presets.yaml`**. To use another dataset, add an entry there and set `ENV_PRESET` to its name. The first run with a new preset downloads the layers (cached in `{results_dir}/temp/env_cache`); test it on one gene first (`gene_list_limit: 1`).
+The presets themselves (product id, dataset/layer id, variable names, the years each dataset covers, and notes on when to use which) live in **`config/env_presets.yaml`**. To use another dataset, add an entry there and set `ENV_PRESET` to its name. The first run with a new preset downloads the layers (cached in `{results_dir}/temp/env_cache`); test it on one gene first (`gene_list_limit: 1`). With the default `first_gene_warmup: true` the workflow does this by itself: the first gene runs alone and fills the cache before the others start.
 
 `ENV_OXYGEN_ENABLED`: include dissolved oxygen in the downloads, per-location values, window Pearson correlation, location Pearson/Spearman statistics and neutral comparisons. Set `FALSE` to skip it. [Default if unset: FALSE; `config.yaml` uses TRUE]
 
@@ -215,8 +239,8 @@ A Copernicus Marine Service account, with `COPERNICUSMARINE_SERVICE_USERNAME`/`C
 ## Neutral source, simulation pool and optional catalog reference
 
 `run_neutral_sim` controls matched Monte Carlo replicates. Independently,
-`include_all_neutral_markers` adds one pooled catalog reference (default false;
-supplied config true) named by `neutral_reference_id` (supplied
+`run_neutral_reference` (true/false only) adds one pooled catalog reference (default
+false; supplied config true) named by `neutral_reference_id` (supplied
 `neutral_marker_reference`, omitted fallback `All_neutral_markers`). It is an extra
 `neutral_pool` category, not a genomic interval or a matched replicate. Either
 switch requires a valid neutral source; both false permit no neutral inputs.
@@ -226,7 +250,8 @@ switch requires a valid neutral source; both false permit no neutral inputs.
 pool by seeded uniform sampling without replacement. This changes the sampling
 population and may change neutral p-values. `neutral_reference_max_markers`
 (omitted/null = the whole effective simulation pool; supplied 100000) independently
-caps only the extra reference. It never caps ordinary simulations. Overlarge caps
+caps only the extra reference (and is ignored while `run_neutral_reference` is false).
+It never caps ordinary simulations. Overlarge caps
 retain all available records; insufficient debug pools are not silently expanded.
 `neutral_pool_seed` and `neutral_reference_seed` independently fall back to `seed`,
 then 42. Source files are unchanged. Caps count markers, not bytes or RAM.
@@ -305,7 +330,7 @@ files are checked and published under a lock. Each page retains its own correctl
 transformed marker positions. Genetic backgrounds remain gene-specific.
 
 Neutral simulations are independent of these model fits. With both
-`run_neutral_sim: false` and `include_all_neutral_markers: false`, no neutral-marker
+`run_neutral_sim: false` and `run_neutral_reference: false`, no neutral-marker
 input is required. Ordinary environmental correlations and model pages remain
 available. If either neutral option is enabled, the existing workflow still
 requires a supplied neutral VCF/markers or configured automatic SnpEff extraction.

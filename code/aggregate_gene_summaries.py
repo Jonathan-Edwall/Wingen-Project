@@ -39,6 +39,13 @@ and do not say which statistic they are a mean of, so a catalog must never mix
 statistics: that is checked right after the load below.
 
 Per-gene statistics are passed through without multiple-testing adjustment.
+
+Gene names: with --gene-list (the gene-list BED), the optional columns 5 (short gene name) and
+6 (long description) are added to the catalog as `gene_name` and `gene_description`, right after
+`gene_id`; a missing value (".", NA or empty) becomes NULL. They are joined in HERE, at the very
+end, rather than passed into each gene's analysis, so a name can change without any gene being
+re-run. A BED with only four columns, or no --gene-list at all, leaves the catalog's columns
+exactly as they were.
 """
 import argparse
 import json
@@ -52,10 +59,44 @@ def quote_identifier(name):
     return '"' + name.replace('"', '""') + '"'
 
 
+MISSING_NAME = {"", ".", "NA"}
+
+
+def read_gene_names(path):
+    """gene_id -> [short name or None, description or None] from a gene-list BED.
+
+    Columns 1-4 are chrom, start, end, gene_id; the optional columns 5 and 6 are the short name
+    and the long description. Lines are split the same way the Snakefile's read_gene_bed does
+    (on tabs when there is one). A value on any line of a gene fills a gap left by its other
+    lines; a gene with neither value is left out.
+    """
+    names = {}
+    with open(path, encoding="utf-8-sig") as handle:
+        for number, raw in enumerate(handle, 1):
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            fields = line.split("\t") if "\t" in line else line.split()
+            if len(fields) < 4:
+                raise RuntimeError(f"{path}, line {number}: expected at least 4 columns "
+                                   f"(chrom, start, end, gene_id), got {len(fields)}")
+            gene = fields[3].strip()
+            values = [fields[i].strip() if len(fields) > i else "" for i in (4, 5)]
+            values = [None if v in MISSING_NAME else v for v in values]
+            if gene and any(values):
+                known = names.setdefault(gene, [None, None])
+                for i, value in enumerate(values):
+                    if known[i] is None:
+                        known[i] = value
+    return names
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--duckdb", required=True)
 parser.add_argument("--tsv", required=True)
 parser.add_argument("--availability-manifest", help="Read only retained summaries from this run.")
+parser.add_argument("--gene-list", help="Gene-list BED; its optional columns 5 and 6 (gene name, description) "
+                                        "become the catalog's gene_name and gene_description columns.")
 args = parser.parse_args()
 
 duckdb_path = args.duckdb
@@ -151,6 +192,34 @@ con.execute(
 con.execute("ALTER TABLE genes ADD COLUMN chr VARCHAR")
 con.execute(r"UPDATE genes SET chr = regexp_replace(gene_dir, '^.*[/\\]', '')")
 
+# Gene names, from the gene-list BED's optional columns. A LEFT JOIN rebuild (not UPDATE) keeps every
+# STRUCT column intact and puts the two new columns right after gene_id in the TSV.
+# ORDER BY g.rowid: the join may be planned with `genes` on the build side, which emits the unmatched
+# (unnamed) genes LAST, so on a large catalog the TSV / DuckDB row order would silently depend on whether
+# names are attached. rowid is the insertion order (= the manifest order), i.e. the order this script
+# always produced, so attaching names changes only the two new columns.
+gene_names = read_gene_names(args.gene_list) if args.gene_list else {}
+if args.gene_list and not gene_names:
+    print(f"gene names: {args.gene_list} has no name or description columns - the catalog gets no name columns")
+if gene_names:
+    con.execute("CREATE TEMP TABLE gene_names (gene_id VARCHAR, gene_name VARCHAR, gene_description VARCHAR)")
+    con.executemany("INSERT INTO gene_names VALUES (?, ?, ?)",
+                    [(gene, values[0], values[1]) for gene, values in gene_names.items()])
+    present = {r[0] for r in con.execute("DESCRIBE genes").fetchall()}
+    pick = lambda col: f"COALESCE(n.{col}, g.{col})" if col in present else f"n.{col}"
+    exclude = ", ".join(quote_identifier(c) for c in ["gene_id"] + [c for c in ("gene_name", "gene_description") if c in present])
+    con.execute(f"""
+        CREATE TABLE genes_named AS
+        SELECT g.gene_id, {pick('gene_name')} AS gene_name, {pick('gene_description')} AS gene_description,
+               g.* EXCLUDE ({exclude})
+        FROM genes g LEFT JOIN gene_names n ON g.gene_id = n.gene_id
+        ORDER BY g.rowid
+    """)
+    con.execute("DROP TABLE genes")
+    con.execute("ALTER TABLE genes_named RENAME TO genes")
+    n_short, n_desc = con.execute("SELECT count(gene_name), count(gene_description) FROM genes").fetchone()
+    print(f"gene names: {n_short} gene(s) have a short name and {n_desc} a description (from {args.gene_list})")
+
 n_genes = con.execute("SELECT count(*) FROM genes").fetchone()[0]
 if n_genes == 0:
     raise RuntimeError(
@@ -188,7 +257,7 @@ else:
 # (old-schema genes without that field at all), not genes with just one
 # null sub-field - a coarser check, but still the first thing worth
 # knowing about a bad batch.
-cols = [r[0] for r in con.execute("DESCRIBE genes").fetchall() if r[0] != "gene_dir"]
+cols = [r[0] for r in con.execute("DESCRIBE genes").fetchall() if r[0] not in ("gene_dir", "gene_name", "gene_description")]
 null_counts = con.execute(
     "SELECT " + ", ".join(
         f"count(*) - count({quote_identifier(c)}) AS {quote_identifier(c)}"

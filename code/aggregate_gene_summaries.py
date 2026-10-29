@@ -164,6 +164,24 @@ con.execute(
     """,
     [summary_source],
 )
+
+# Older summaries called this sample-location cluster count n_locations_used.
+# Normalize mixed old/new runs once here so DuckDB and TSV expose the same
+# unambiguous field as newly written gene-summary JSON. Variant counts are separate.
+summary_columns = {row[0] for row in con.execute("DESCRIBE genes").fetchall()}
+if "n_locations_used" in summary_columns:
+    if "n_clusters_used" not in summary_columns:
+        con.execute("ALTER TABLE genes RENAME n_locations_used TO n_clusters_used")
+    else:
+        conflicting = con.execute("""
+            SELECT count(*) FROM genes
+            WHERE n_clusters_used IS NOT NULL AND n_locations_used IS NOT NULL
+              AND n_clusters_used != n_locations_used
+        """).fetchone()[0]
+        if conflicting:
+            raise RuntimeError(f"Conflicting sample cluster counts in {conflicting} gene summary/ies")
+        con.execute("UPDATE genes SET n_clusters_used = COALESCE(n_clusters_used, n_locations_used)")
+        con.execute("ALTER TABLE genes DROP COLUMN n_locations_used")
 # con.execute(
 #     f"""
 #     CREATE OR REPLACE TABLE genes AS

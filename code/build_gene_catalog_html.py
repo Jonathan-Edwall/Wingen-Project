@@ -64,6 +64,10 @@ TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "templates")
 # to hide them again; a column whose data does not exist in a given run is dropped automatically either way.
 SHOW_LOCATION_STATS = True
 LEGACY_EXTREME_VALUE_PERCENTILES = (95.0, 99.0)
+# Presentation gates from the supplied screening integration. The calculation
+# keeps top-K partners; the page shows only its unusual catalog-tail matches.
+DISPLAY_PERCENTILE_FLOOR = 0.90
+MAX_SIMILAR_PER_GENE_DISPLAY = 20
 
 
 def _percentile_text(percentile):
@@ -116,6 +120,24 @@ def add_gene_labels(records):
         for rec, label in zip(records, labels):
             rec["gene_label"] = label or rec["gene_id"]
     return n_labelled
+
+
+def normalize_cluster_counts(records):
+    """Read older location-count fields as sample clusters, without changing the database.
+
+    New summaries use n_clusters_used. n_locations_used was the same pooled-genotype
+    sample-cluster count, formerly labelled "N sites"; it did not count variant sites.
+    """
+    for record in records:
+        if "n_locations_used" not in record:
+            continue
+        legacy = record.pop("n_locations_used")
+        current = record.get("n_clusters_used")
+        if current is not None and legacy is not None and current != legacy:
+            raise ValueError(f"Conflicting sample cluster counts for gene {record.get('gene_id')!r}")
+        if current is None:
+            record["n_clusters_used"] = legacy
+    return sum(record.get("n_clusters_used") is not None for record in records)
 
 
 def add_window_correlations(records, gd_key):
@@ -296,7 +318,8 @@ def build_column_layout(gd_key, gd_short, extreme_value_percentiles=LEGACY_EXTRE
         {"key": "gene_label", "label": "Gene name", "numeric": False},
         {"key": "chr", "label": "Chr", "numeric": False},
         {"key": "n_variants", "label": "Variants", "numeric": True},
-        {"key": "n_locations_used", "label": "N sites", "numeric": True},
+        {"key": "n_clusters_used", "label": "Clusters", "numeric": True,
+         "tooltip": "Sample location clusters with a defined pooled-genotype diversity value; a correlation can use fewer if its predictor is missing."},
         {
             "group": "N ind",
             "columns": [
@@ -367,7 +390,31 @@ def build_column_layout(gd_key, gd_short, extreme_value_percentiles=LEGACY_EXTRE
                          "Dissolved oxygen concentration in mmol/m³, averaged over the configured baseline at the configured depth."),
         _covariate_group("Current Speed", "current_speed", "current_speed", gd_key, gd_short, extreme_value_percentiles,
                          "Horizontal current speed in m/s: sqrt(uo² + vo²) is calculated for each monthly field, then averaged over the physics baseline."),
-
+        {
+            # Optional predictor (WATER_DIST_ENABLED, section 2.7 of the Rmd). Location level only: there is no window
+            # correlation, because the distance is only defined for the sampling sites. Dropped automatically when absent.
+            "group": "Water Route Distance",
+            "tooltip": "Shortest route from the nearest start (a start point, or any cell of a start box) through water (over land when domain_type is land), in km. Negative only where an optional negative-side box is configured. Each location cluster uses the mean over its individuals.",
+            "columns": [
+                {
+                    "group": "Location",
+                    "columns": _location_stat_columns("water_route_distance", "water_dist", extreme_value_percentiles,
+                                                      gd_short=gd_short),
+                },
+            ],
+        },
+        # Optional summary is joined read-only below; absent tables prune this group.
+        {
+            "group": "Gene Linkage Screening",
+            "columns": [
+                {"key": "correlation_similarity.best_match_gene", "label": "Most similar gene",
+                 "tooltip": "The other gene in this run whose location-level environment-correlation profile is most similar to this one's. A screening candidate for a follow-up LD study, not a measurement of linkage itself."},
+                {"key": "correlation_similarity.best_match_r", "label": "Similarity (r)", "numeric": True,
+                 "tooltip": "Pearson r between this gene's and its most similar partner's vectors of location-level correlations with the environmental variables. Positive means the two genes track the environmental gradients the same way."},
+                {"key": "correlation_similarity.best_match_percentile", "label": "Catalog percentile", "numeric": True,
+                 "tooltip": "Where this gene's best match ranks among all tested gene pairs in this run by |similarity| (1.0 = the most similar pair). This is a within-catalog rank, not a significance test."},
+            ],
+        },
     ]
     # Column visibility is a catalog-wide choice; row values use abs(mean).
     if records is not None:
@@ -805,27 +852,88 @@ skipped_genes = read_skipped_genes(args.skipped_genes)
 
 con = duckdb.connect(duckdb_path, read_only=True)
 # con = duckdb.connect(snakemake.input.duckdb, read_only=True)
-cols = [r[0] for r in con.execute("DESCRIBE genes").fetchall()]
-rows = con.execute("SELECT * FROM genes ORDER BY gene_id").fetchall()
+catalog_tables = {row[0] for row in con.execute(
+    "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()"
+).fetchall()}
+has_similarity_summary = "gene_correlation_similarity_summary" in catalog_tables
+has_similarity_pairs = "gene_correlation_similarity_pairs" in catalog_tables
+table = "genes"
+if has_similarity_summary:
+    # The supplied screening command writes separate tables. A temporary view
+    # attaches its fixed-size summary without changing the saved database.
+    con.execute("""
+        CREATE OR REPLACE TEMP VIEW genes_with_similarity AS
+        SELECT g.*, struct_pack(
+            best_match_gene := s.best_match_gene,
+            best_match_r := s.best_match_r,
+            best_match_percentile := s.best_match_percentile
+        ) AS correlation_similarity
+        FROM genes g LEFT JOIN gene_correlation_similarity_summary s USING (gene_id)
+    """)
+    table = "genes_with_similarity"
+cols = [r[0] for r in con.execute(f"DESCRIBE {table}").fetchall()]
+rows = con.execute(f"SELECT * FROM {table} ORDER BY gene_id").fetchall()
 
 # Needs `con` still open - the emptiness check in available_columns runs
-# its own COUNT queries against "genes" rather than working from `rows`
+# its own COUNT queries against `table` rather than working from `rows`
 # in Python, so it stays correct even if this script's own row-fetch
 # above ever changes shape.
-gd_stat, gd_label, gd_label_short = read_gd_metric(con, "genes", cols)
+gd_stat, gd_label, gd_label_short = read_gd_metric(con, table, cols)
 # gd_key has to match how the Rmd builds the Window fields' names: tolower(gd_stat).
 extreme_value_percentiles = read_extreme_value_percentiles(rows, cols)
 records = [dict(zip(cols, row)) for row in rows]
+cluster_count = normalize_cluster_counts(records)
+if "n_locations_used" in cols:
+    cols = [name for name in cols if name != "n_locations_used"]
+    if "n_clusters_used" not in cols:
+        cols.append("n_clusters_used")
 COLUMN_LAYOUT = build_column_layout(gd_stat.lower(), gd_label_short, extreme_value_percentiles, records=records)
 window_counts = add_window_correlations(records, gd_stat.lower())
 n_labelled = add_gene_labels(records)
 computed_counts = dict(window_counts)
+computed_counts["n_clusters_used"] = cluster_count
 if n_labelled:
     # gene_label is built here, not stored: names can be updated in the DuckDB file without a stale label.
     cols = cols + ["gene_label"]
     computed_counts["gene_label"] = n_labelled
-column_layout, dropped_empty, strip_keys = available_columns(con, "genes", COLUMN_LAYOUT, cols,
+column_layout, dropped_empty, strip_keys = available_columns(con, table, COLUMN_LAYOUT, cols,
                                                              computed_counts=computed_counts)
+
+# Keep the variable-length ranked list separate from the summary columns. Read
+# either optional table independently so partially exported older catalogs can
+# still show the information they hold without requiring the other table.
+similar_genes_by_gene = {}
+if has_similarity_pairs:
+    pair_rows = con.execute("""
+        SELECT gene_id, partner, similarity_r, spearman_similarity_r,
+               percentile_vs_all_pairs, n_shared_variables
+        FROM gene_correlation_similarity_pairs
+        WHERE percentile_vs_all_pairs >= ?
+        ORDER BY gene_id, abs(similarity_r) DESC, partner
+    """, [DISPLAY_PERCENTILE_FLOOR]).fetchall()
+    for gene_id, partner, similarity_r, spearman_r, percentile, n_shared in pair_rows:
+        partners = similar_genes_by_gene.setdefault(gene_id, [])
+        if len(partners) < MAX_SIMILAR_PER_GENE_DISPLAY:
+            partners.append({"partner": partner, "similarity_r": similarity_r,
+                             "spearman_similarity_r": spearman_r, "percentile": percentile,
+                             "n_shared_variables": n_shared})
+
+# The environmental matrix describes the input variables across locations. It
+# is independent of gene linkage screening and is embedded only when available.
+env_correlation_matrix = None
+if "env_correlation_matrix" in catalog_tables:
+    pair_rows = con.execute("SELECT variable_a, variable_b, r FROM env_correlation_matrix").fetchall()
+    variables = sorted({variable for a, b, _ in pair_rows for variable in (a, b)})
+    labels = dict(con.execute("SELECT variable, label FROM env_correlation_matrix_labels").fetchall()) \
+        if "env_correlation_matrix_labels" in catalog_tables else {}
+    if len(variables) >= 2:
+        correlations = {}
+        for a, b, value in pair_rows:
+            correlations[a, b] = correlations[b, a] = value
+        env_correlation_matrix = {
+            "variables": [labels.get(variable, variable) for variable in variables],
+            "rows": [[correlations.get((a, b)) for b in variables] for a in variables],
+        }
 con.close()
 
 image_bounds_file = Path(html_path).resolve().parent / "catalog_image_bounds.json"
@@ -861,6 +969,8 @@ for rec in records:
         if bounds and expected and asset.is_file() and hashlib.sha256(asset.read_bytes()).hexdigest() == expected:
             rec["gallery_image_bounds"][image] = bounds
     # rec["plots"] = gene_plot_paths(rec["gene_id"], rec.get("gene_dir"), snakemake.output.html)
+    if has_similarity_pairs:
+        rec["similar_genes"] = similar_genes_by_gene.get(rec["gene_id"], [])
     for key in strip_keys + ["gd_stat", "gd_label", "gd_label_short", "gene_name", "gene_description"]:
         rec.pop(key, None)
 
@@ -915,6 +1025,7 @@ html = env.get_template("gene_catalog_template.html").render(
     ),
     data_json=embeddable_json(records),
     columns_json=embeddable_json(column_layout),
+    env_correlation_matrix_json=embeddable_json(env_correlation_matrix) if env_correlation_matrix else None,
 )
 
 with open(html_path, "w", encoding="utf-8") as f:

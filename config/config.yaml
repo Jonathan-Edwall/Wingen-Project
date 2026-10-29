@@ -34,64 +34,64 @@
 # results_dir: "results/gene_catalog_herring_secd_AT_OLS_pi_v3"
 
 
-
-# # Herring SECD
-# # results_dir: "gene_catalog/gene_catalog_herring_secd_AT_OLS_pi_v3"
-# markers_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/pnas.2526500123.sd03.xlsx" # Herring SECD
-# input_vcf: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/Goodall2025_Swedish_East_Coast_Dataset_BalticSea_Herring.vcf.gz" # Herring SECD
-# sample_coordinates_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/individuals_w_mapped_geographical_coordinates_Goodall2025_Swedish_East_Coast_Dataset_BalticSea_Herring.xlsx" # Herring SECD
-# study_species: herring_SECD # Herring SECD
-# gene_annotation_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/ALL_SNP_Gene_Annotations.txt" # Herring SECD
-# gene_annotation_include_biotypes: []  # all; or [protein_coding], [protein_coding, lncRNA, rRNA]
+# Herring SECD
+results_dir: "gene_catalog/herring_secd_gene_name_pi_v2"
+markers_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/pnas.2526500123.sd03.xlsx" # Herring SECD
+input_vcf: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/Goodall2025_Swedish_East_Coast_Dataset_BalticSea_Herring.vcf.gz" # Herring SECD
+sample_coordinates_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/individuals_w_mapped_geographical_coordinates_Goodall2025_Swedish_East_Coast_Dataset_BalticSea_Herring.xlsx" # Herring SECD
+study_species: herring_SECD # Herring SECD
+gene_annotation_include_biotypes: []  # all; or [protein_coding], [protein_coding, lncRNA, rRNA]
 # gene_list_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/herring_SECD_annotated_table_genes_w_names.bed" # AT=Annotated Table, 6k
-# gene_chrom_file: null  # not required in BED mode; chromosome comes from column 1  # SECD
-# vcf_annotation_format: bed # Herring SECD
-# run_neutral_reference: true
-# neutral_reference_id: "neutral_marker_reference"
-# dataset_wingen_params: &dataset_wingen_params
-#   RESOLUTION_KM: 2.5 # Good for Herring 125 Ind Global Dataset
-#   USE_RARIFY: TRUE # TRUE/FALSE # Herring SECD
-#   RARIFY_N: 10 # Herring SECD
-#   NMAX_NEIGHBOURS: 15
-#   GRD_DISAGG_FACTOR: 3
-#   CLUSTER_VARIANCE_POINTS_KM: 10 # complete-linkage location clusters for genotype statistics
-#   WDIM: 7 #
-#   FACT: 3 #
-#   MAX_INTERP_DIST_SCALE: 3 # Herring 125 Ind Global Dataset
-#   ENV_PRESET: baltic # Herring SECD
-
-
-# Herring 125 Ind Global Dataset
-results_dir: "gene_catalog/herring_sentieon_125ind_pi_gene_name" # Herring 125 Ind Global Dataset
-input_vcf: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/herring_sentieon_125ind_231031.newID.filter.setGT.noIndels.minDP3.0maxDP3.0avg.snpEff.biallelic.vcf.gz" # Herring 125 Ind Global Dataset
-sample_coordinates_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/125_individual_info_list_shared_with_media_coordinates.xlsx" # Herring 125 Ind Global Dataset
-study_species: herring_sentieon_125ind # Herring 125 Ind Global Dataset
-gene_chrom_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/gene_chrom.tsv"  # Herring 125 Ind Global Dataset required if the gene list comes from a txt file or or array; built by code/build_gene_chrom_map.py.
-# gene_list_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/unique_genes.txt"
-# gene_list_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/unique_genes_w_names.bed"
-gene_list_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/unique_genes_w_only_names.bed"
-gene_scope: all
-vcf_annotation_format: snpeff # Herring 125 Ind Global Dataset
-neutral_pool_max_markers: 1000
-run_neutral_reference: true             # Adds a neutral reference (from the pooled neutral markers) as one extra gene catalog row 
+gene_list_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/herring_2026_Swedish_East_Coast/herring_SECD_annotated_table_genes_w_only_names.bed" # AT=Annotated Table, 6k
+gene_chrom_file: null  # not required in BED mode; chromosome comes from column 1  # SECD
+vcf_annotation_format: bed # Herring SECD
+run_neutral_reference: true
 neutral_reference_id: "neutral_marker_reference"
-# neutral_reference_max_markers: 100000
-neutral_reference_max_markers: 1000     # size of that row; unset = whole pool
-gd_stat: "pi" # or "watterson_theta"
-neutral_vcf: null  # already-neutral BGZF VCF; when provided, markers_file and its table settings are ignored
-# Optional convenience: dataset-only settings merged into wingen_params below.
-# To use the original flat layout, move these active entries into the single
-# wingen_params mapping, then comment this whole block AND its << merge line.
-# Top-level settings such as input_vcf can appear anywhere, once per key.
 dataset_wingen_params: &dataset_wingen_params
-  RESOLUTION_KM: 10 # Good for Herring 125 Ind Global Dataset (10km was used before efficiency..)
-  USE_RARIFY: FALSE # TRUE/FALSE  # Herring 125 Ind Global Dataset
-  WDIM: 7 # Good for Herring 125 Ind Global Dataset
-  FACT: 1 # Good for Herring 125 Ind Global Dataset
+  RESOLUTION_KM: 2.5 # Good for Herring 125 Ind Global Dataset
+  USE_RARIFY: TRUE # TRUE/FALSE # Herring SECD
+  RARIFY_N: 10 # Herring SECD
+  NMAX_NEIGHBOURS: 15
+  GRD_DISAGG_FACTOR: 3
   CLUSTER_VARIANCE_POINTS_KM: 10 # complete-linkage location clusters for genotype statistics
-  MAX_INTERP_DIST_SCALE: 5 # Herring 125 Ind Global Dataset
-  ENV_PRESET: global # Herring 125 Ind Global Dataset
+  WDIM: 7 #
+  FACT: 3 #
+  MAX_INTERP_DIST_SCALE: 2 # Herring 125 Ind Global Dataset
+  ENV_PRESET: baltic # Herring SECD
+  WATER_DIST_ENABLED: TRUE # Herring SECD
+  WATER_DIST_REFERENCE_BOXES: "latitude = [57.7395, 57.7415] longitude = [10.60, 12.00]" # Herring SECD: HELCOM definition of the entrance to the Baltic Sea (WGS84); the distance is the shortest water route to ANY cell of this box
 
+
+# # Herring 125 Ind Global Dataset
+# results_dir: "gene_catalog/herring_sentieon_125ind_pi_gene_name" # Herring 125 Ind Global Dataset
+# input_vcf: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/herring_sentieon_125ind_231031.newID.filter.setGT.noIndels.minDP3.0maxDP3.0avg.snpEff.biallelic.vcf.gz" # Herring 125 Ind Global Dataset
+# sample_coordinates_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/125_individual_info_list_shared_with_media_coordinates.xlsx" # Herring 125 Ind Global Dataset
+# study_species: herring_sentieon_125ind # Herring 125 Ind Global Dataset
+# gene_chrom_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/gene_chrom.tsv"  # Herring 125 Ind Global Dataset required if the gene list comes from a txt file or or array; built by code/build_gene_chrom_map.py.
+# # gene_list_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/unique_genes.txt"
+# # gene_list_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/unique_genes_w_names.bed"
+# gene_list_file: "/proj/uppmax2025-2-125/nobackup/jonathan/Wingen-Project/data/raw/genetic_variation_herring/unique_genes_w_only_names.bed"
+# gene_scope: all
+# vcf_annotation_format: snpeff # Herring 125 Ind Global Dataset
+# neutral_pool_max_markers: 1000
+# run_neutral_reference: true             # Adds a neutral reference (from the pooled neutral markers) as one extra gene catalog row 
+# neutral_reference_id: "neutral_marker_reference"
+# # neutral_reference_max_markers: 100000
+# neutral_reference_max_markers: 1000     # size of that row; unset = whole pool
+# gd_stat: "pi" # or "watterson_theta"
+# neutral_vcf: null  # already-neutral BGZF VCF; when provided, markers_file and its table settings are ignored
+# # Optional convenience: dataset-only settings merged into wingen_params below.
+# # To use the original flat layout, move these active entries into the single
+# # wingen_params mapping, then comment this whole block AND its << merge line.
+# # Top-level settings such as input_vcf can appear anywhere, once per key.
+# dataset_wingen_params: &dataset_wingen_params
+#   RESOLUTION_KM: 10 # Good for Herring 125 Ind Global Dataset (10km was used before efficiency..)
+#   USE_RARIFY: FALSE # TRUE/FALSE  # Herring 125 Ind Global Dataset
+#   WDIM: 7 # Good for Herring 125 Ind Global Dataset
+#   FACT: 1 # Good for Herring 125 Ind Global Dataset
+#   CLUSTER_VARIANCE_POINTS_KM: 10 # complete-linkage location clusters for genotype statistics
+#   MAX_INTERP_DIST_SCALE: 5 # Herring 125 Ind Global Dataset
+#   ENV_PRESET: global # Herring 125 Ind Global Dataset
 
 # gene_scope: all
 
@@ -162,6 +162,25 @@ first_gene_threads: "auto"
 first_gene_mem_mb: "auto"
 first_gene_headroom_mb: 4096
 first_gene_runtime_minutes: 240
+
+# Optional analyses over the finished catalog. Both are off by default. Each one adds tables to
+# {results_dir}/results/gene_catalog.duckdb after the aggregation, and the catalog page shows whatever tables the file
+# holds. Setting a switch back to false does not remove tables that are already in the file; a new aggregation does.
+# On the command line Snakemake only reads True/False: --config run_correlation_similarity_screen=True
+#
+# "Gene Linkage Screening Test": which genes have a similar pattern of location-level correlations with the
+# environmental variables (latitude included). It lists candidate gene pairs for a later linkage study and is not a
+# measurement of linkage disequilibrium. Needs WRITE_LOCATION_STATS: TRUE (the default) and use_copernicus_marine: TRUE.
+# Every pair of genes is compared, so the time grows with the square of the gene count; the genes are compared in blocks, so the memory does not. The job takes all of Snakemake's cores.
+# run_correlation_similarity_screen: false
+run_correlation_similarity_screen: true
+correlation_similarity_min_shared_variables: 4      # a pair is scored only if both genes have a finite location-level r for at least this many variables (3 or more)
+correlation_similarity_top_k_per_gene: 20           # safety cap on the partners stored per gene; the page lists only partners at or above the 0.90 catalog percentile
+correlation_similarity_max_full_export_genes: 2000  # also write the all-pairs table when the catalog has at most this many genes (0 = never)
+#
+# How correlated the environmental predictors are with EACH OTHER across the sample locations: a redundancy check that
+# involves no gene. Needs WRITE_PER_LOCATION_TSV: TRUE (the default) and use_copernicus_marine: TRUE.
+run_env_correlation_matrix: false
 
 
 # "all" (default) | "body" | "exonic" | "cds" - narrows each gene's
@@ -391,6 +410,29 @@ wingen_params:
   # Oxygen uses the preset's biogeochemical product; current speed uses its physics product.
   # Both use the baseline above. Oxygen defaults to the same depth as ENV_DEPTH_M.
   # ENV_OXYGEN_DEPTH_M: 0   # optional oxygen-specific depth, in metres below the surface
+
+  # ---- Water-route distance from start points and/or start boxes (optional predictor, location level only) --------
+  # How far each sampling location lies from a start, travelling ONLY through water (domain_type: "ocean") or ONLY over land
+  # (domain_type: "land") - never as the crow flies. A start is a point, a lon/lat box, or several of them; the distance of a
+  # location is the shortest route to the NEAREST start, and to ANY cell of a box. The distance is 0 or positive on every side
+  # of a start (no sign) unless WATER_DIST_NEGATIVE_BOX is set. Treated like another environmental variable at the location
+  # level: each location cluster gets the mean over its individuals, then the location Pearson/Spearman statistics, the neutral
+  # comparison and the catalog columns follow. It does not need Copernicus. Uses igraph (installed with wingen's gdistance) and
+  # jsonlite. Computed once per dataset (not per gene) and cached in the env cache. Every setting is explained in config/README.md.
+  # Switched off unless WATER_DIST_ENABLED is TRUE and at least one start is given; the Herring SECD dataset block above carries
+  # the HELCOM start box. Uncomment the settings here, or in a dataset block, to use them.
+  # WATER_DIST_ENABLED: TRUE
+  # WATER_DIST_REFERENCE_BOXES: "latitude = [57.7395, 57.7415] longitude = [10.60, 12.00]"   # start box(es), WGS84 degrees; several separated by semicolons.
+  #                             5"   # start point(s) as "lon,lat" (WGS84); several separated by semicolons, e.g. "12.80,55.75; 10.95,55.45"
+  #                                              # (Oresund; Great Belt). Each is snapped to the nearest passable cell. Points and boxes can be combined.
+  WATER_DIST_RES_KM: 1           # cell size of the route search (independent of RESOLUTION_KM); 1 km or finer near narrow straits (a 2 km grid closes the Oresund)
+  WATER_DIST_MIN_COVER: 0.99     # a cell is passable only if at least this fraction of it lies in the medium (0.99 = any land touching a cell makes it land)
+  WATER_DIST_SNAP_TOL_KM: 3      # how far a sa                   # The interval after "latitude" / "longitude" belongs to that axis, in either order;
+  #                                                # the bare form "10.60, 12.00, 57.7395, 57.7415" (xmin, xmax, ymin, ymax) works too.
+  # WATER_DIST_REFERENCE_POINTS: "12.80,55.7mple coordinate may be moved to reach a passable cell; further away = flagged
+  WATER_DIST_NEGATIVE_BOX: "8,13,55.95,60"   # optional sign: lon/lat box xmin,xmax,ymin,ymax whose sites get NEGATIVE distances (e.g. Kattegat/Skagerrak). Leave it unset for a study inside one sea.
+  WATER_DIST_ON_FAILED_SITES: drop   # stop = list the sites that cannot be routed and stop the run; drop = give them no value and continue
+  WATER_DIST_QA_PLOT: TRUE       # write one figure of the routes next to the cache file (once) to check that no route crosses land
 
   # ---- Optional outputs - set to FALSE to switch one off (no code editing needed) ------------------------------
   WRITE_PER_LOCATION_TSV: TRUE   # {gene}_per_location.tsv next to the plots: one row per location (the audit trail)

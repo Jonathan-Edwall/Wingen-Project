@@ -9,10 +9,11 @@
 |---|---|
 | `results_dir` | Output folder for the gene catalog run. Defaults to `results/gene_catalog`. To avoid two gene catalogs colliding, simply assign a unique name for `results_dir`.|
 | `input_vcf`, `sample_coordinates_file` | Paths to the cohort VCF and the per-individual coordinates file |
-# Gene selection
+## Gene selection
 Two independent settings decides what the pipeline does with the genes:
 * **which genes run:** `gene_list_file` or `genes`
 * **how each gene's variants are found in the VCF:** `vcf_annotation_format`.
+
 | Variable | Purpose |
 |---|---|
 | `gene_list_file`, `genes` | Defines which genes to run. The file type is read from the extension: `.bed` is a BED file (chrom, start, end, gene ID; one row per gene), any other extension is a text file with one gene ID per line. If the path is set but the file doesn't exist yet, `batch_job_gene_catalog_snakemake.sh` creates it from the SnpEff annotation of `input_vcf` (needs a SnpEff-annotated VCF). |
@@ -23,7 +24,7 @@ Two independent settings decides what the pipeline does with the genes:
 | `gene_scope` | `all` \| `body` \| `exonic` \| `cds`: Used if `vcf_annotation_format`:`snpeff`. Runs filter_vcf_by_scope.sh to narrow down the gene-filtered VCF down (based off the ANN block) to filter the scope of the genes down to: `body` (gene body), `exonic` (exonic region), `cds` (coding sequence). Default option is `all`, which includes the whole gene region including upstream and downstream region annotations. |
 
 ## Gene list file formats
-**BED** (`.bed`, case-insensitive): the genes are listed with stamdard bed format with one gene per row and the following columns:
+**BED** (`.bed`, case-insensitive): the genes are listed with standard bed format with one gene per row and the following columns:
 - column 1-3: chrom, start, end
 - column 4: gene ID;
 any further columns are ignored currently. 
@@ -31,7 +32,7 @@ any further columns are ignored currently.
 **Text** (any other extension): one gene ID per line. A line with several columns stops the run.
 
 ## First-gene warm-up
-Every report reads and fills the same caches under `{results_dir}/temp` (the environmental layers in `env_cache`, the Natural Earth maps in `ne_cache`). The first report on an empty cache downloads and builds them, and it is by far the heaviest and slowest report of a run (measured on herring, 125 individuals: about 43 GiB peak and 44 min, against about 4 GiB and 11 min once the layers are cached). Reports that start together on an empty cache all do that at once: four of them add up to about 175 GiB, more than a 160 GiB allocation holds, and the kernel kills one.
+Every report reads and fills the same caches under `{results_dir}/temp` (the environmental layers in `env_cache`, the Natural Earth maps in `ne_cache`). The first report on an empty cache downloads and builds them, and it is by far the heaviest and slowest report of a run (measured on herring, 125 individuals: about 43 GiB peak and 44 min, against about 4 GiB and 11 min once the layers are cached). 
 
 With `first_gene_warmup: true` (the default, also when the key is missing) the workflow runs **the first retained gene of the list alone, with the whole allocation, and starts every other gene after it**: that gene's extraction, neutral preparation and report finish first; only then are the other genes planned and run together. The wait is on a finished report and not on a particular download, so it covers any environmental data source and any `domain_type` that caches under `results_dir/temp`; the Rmd is not involved. The reference row (`run_neutral_reference`) is not affected: it already waits for every ordinary report.
 
@@ -45,20 +46,11 @@ The mechanism is a second checkpoint, `first_gene_warmup_done`, whose only input
 | `first_gene_headroom_mb` | Memory kept back from the declared budget for the scheduler and everything else in the job (default 4096); it applies to `auto` and to the limit of an explicit number. |
 | `first_gene_runtime_minutes` | Scheduling metadata, default 240. The enclosing Slurm allocation sets the real time limit. |
 
-* **Which gene.** The first *retained* gene in list order; a gene skipped for lack of variants never comes first. With a single retained gene (for example `gene_list_limit: 1`) there is nothing to wait for and no checkpoint is created. Reorder the list if you would rather warm up on another gene.
-* **If the first gene fails** (after its two retries), no other gene is started and the run stops there. Fix the cause (or set `first_gene_warmup: false`) and run the same command again; finished work is kept.
-* **Cost.** The first report runs with nothing beside it, so the run takes that report's time plus the time of the rest. The cold report took about 44 min with 2 workers while three others ran beside it; how long it takes alone on the whole allocation has not been measured yet. The other genes then run together, without the cold-start collisions.
-* **What is re-run.** Editing the Rmd, the helper scripts or `env_presets.yaml`, or `--forcerun run_wingen_report`, re-runs every report: the first gene alone first, then the others. Forcing only the first gene's `.done` marker re-runs only that gene (and the aggregation); forcing one later gene re-runs only that gene (and the aggregation).
-* **Dry runs.** While the first report or the warm-up marker has to be (re)made (a new catalog, an edited Rmd, a forced first gene), Snakemake cannot know the other genes' jobs yet, so `snakemake -n` lists only the first gene and the final steps, and its log line says that the others are planned after it. Once the first report and the marker are up to date, `-n` lists everything.
-* **One gene by name.** `snakemake results/.../GENE.done` runs just that gene: it is not held back, does not start the warm-up, and gets the ordinary resources of a report even when it is the first gene of the list.
-* **Finished catalogs.** A catalog that was finished without the warm-up plans no report again (every gene's inputs are unchanged). The first run only adds the small checkpoint job and rebuilds the catalog table and page once.
-* **Cache deleted by hand.** A deleted `temp/env_cache` does not make the finished first report out of date, so nothing is re-warmed by itself. To warm it again before more genes run, re-run the first gene (`--forcerun` on its `.done` marker) or all reports (`--forcerun run_wingen_report`); the first gene then runs alone and rebuilds the cache.
-
 ## Wingen script parameters
 These parameter settings are environment variables used in `code/2_Herring_Wingen.Rmd` and can optionally be set, otherwise fallback values are used. More information about the wingen function arguments can be found from the official documentation: https://cran.r-project.org/web/packages/wingen/refman/wingen.html
 ### Domain
 `domain_type`: `"ocean"` (default) or `"land"`: intended to switch which side of the coastline is kept (marine vs. terrestrial species).
-The selected domain determines which side of the coastline is retained for prediction eligibility and the final domain mask.
+The selected domain determines which side of the coastline is retained for prediction eligibility and the final domain mask. The water-route distance (`WATER_DIST_*` below) uses it too: `"land"` routes over land instead of through water.
 ### Booleans
 `calc_gen_diversity_stats`: decides whether a statistical summary file is created, `{gene}_gene_summary.json` (`TRUE`). Required to be set `TRUE` for creating the HTML gene catalog.
 
@@ -140,8 +132,6 @@ diversity from each cluster's pooled genotypes. Environmental values are then av
 
 `MAX_INTERP_DIST_SCALE`: A factor which controls how far interpolation may extend from observed data whichever `MAX_INTERP_DIST` mode resolves to. Controls how far the interpolation may extend beyond observed data (default `1`).
 
-(`MAX_INTERP_DIST_SCALE`), which controls how far interpolation may extend from observed data.
-`MIN_SAMPLE_COUNT_VALUE`: Minimum number of empirical samples required for a spatial region to remain unmasked when `MIN_SAMPLE_COUNT_MODE="hardcoded"`.
 
 ### Species-range polygon masking
 `MASKING_POLYGON`: path to a raster mask — typically a species distribution or habitat layer (e.g. a spawning-area or range `.tif`) — reprojected and aligned onto the working grid, then applied via `mask_gd()`. The practical use: cropping the interpolation to where the species actually occurs, rather than letting it extend across open water (or land) the species doesn't naturally reach. If set, the file must exist or the render stops immediately; if unset, this step is skipped entirely. Two real example layers (both HELCOM/HOLAS products — a herring spawning-area layer and a *Zostera marina* distribution layer) sit commented out right next to the setting in the Rmd already.
@@ -182,6 +172,23 @@ For `baltic`, salinity, temperature and current speed components come from `BALT
 
 `ENV_CACHE_DIR`: where downloaded/derived environmental rasters are cached, shared across every gene run.
 
+## Water-route distance (optional)
+The distance from each sampling location to the nearest start point or start box, travelling **only through water** (`domain_type: "ocean"`) or **only over land** (`"land"`), **never** *as the crow flies*. It is treated like the other environmental variables at the location level (cluster mean, location Pearson/Spearman statistics, neutral comparison, catalog column "Water Route Distance"); there is no window-level correlation. Distances are computed once per dataset and cached in `ENV_CACHE_DIR` (`water_distance_<hash>.tsv`, `.json` and `_routes.png`). Which start to use is a methods choice, e.g. the HELCOM entrance line vs. the three Danish straits for the Baltic. Method, cache columns and test results: `docs/water_distance.md`.
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `WATER_DIST_ENABLED` | `FALSE` | `TRUE` switches it on and requires at least one start. The Herring SECD block in `config.yaml` is a working example. |
+| `WATER_DIST_REFERENCE_POINTS` | none | Start points as `"lon,lat"` pairs separated by semicolons, e.g. `"12.80,55.75; 10.95,55.45"` (Øresund; Great Belt). A single point can also be given as `WATER_DIST_REF_LON` and `WATER_DIST_REF_LAT`. |
+| `WATER_DIST_REFERENCE_BOXES` | none | Start boxes separated by semicolons, written as `"latitude = [57.7395, 57.7415] longitude = [10.60, 12.00]"` (the HELCOM entrance to the Baltic) or `"lon_min, lon_max, lat_min, lat_max"`. Every passable cell a box touches is a start at distance 0. |
+| `WATER_DIST_RES_KM` | `1` | Cell size of the route search. Straits narrower than a cell close: 1 km keeps Øresund open, 2 km or coarser can close it. |
+| `WATER_DIST_MIN_COVER` | `0.99` | Fraction of a cell that must lie in the medium for it to be passable. `0.99` lets any land block a cell; lower values keep narrow straits open but can leak across thin land. At 2 km, `0.9` was the reliable value. |
+| `WATER_DIST_SNAP_TOL_KM` | `max(3 × WATER_DIST_RES_KM, 3)` | How far a site may be moved to the nearest passable cell; further than this it fails as `no_passable_cell_near`. |
+| `WATER_DIST_NEGATIVE_BOX` | none | One box whose sites get negative distances (e.g. the Kattegat/Skagerrak side of Øresund), so the gradient runs through zero. Leave unset for a study inside one sea. |
+| `WATER_DIST_ON_FAILED_SITES` | `stop` | `stop` lists every site that could not be routed and stops the run; `drop` leaves those sites out and continues. |
+| `WATER_DIST_QA_PLOT` | `TRUE` | Writes a map of the routes next to the cache file; check that the routes stay in the water. |
+
+`{gene}_per_location.tsv` also gets `water_dist_km` (the cluster's mean distance), `water_dist_range_km` and `water_dist_span_flag`, which flags a cluster whose sites' distances differ by more than 1.5 × `CLUSTER_VARIANCE_POINTS_KM`.
+
 ## Reproducibility and optional outputs
 `SEED`: seed for the random individual draws of rarefaction (`window_gd()`, and the location values when `LOCATION_RARIFY` rarefies them). With a seed the window values are identical on every re-run. [Default: 42]
 
@@ -210,7 +217,7 @@ This toggle controls both the neutral Snakemake rules and the Rmd's `RUN_NEUTRAL
 | `technical_replicates` | `100` | Number of random neutral sets per gene. Each set has the target gene's final SNP count. A gene with 40 SNPs produces 100 VCFs of 40 SNPs each. |
 | `seed` | `42` | Base seed for reproducible marker sampling. This is separate from `wingen_params.SEED`, which controls individual rarefaction. |
 | `min_valid_fraction` | `0.9` | Minimum fraction of requested sets yielding finite correlations, checked separately for Pearson and Spearman for each predictor. With 100 sets, at least 90 are required; otherwise that empirical comparison is unavailable. Statistical failures and job errors differ; see below. |
-| `extreme_value_percentiles` | `[95, 99]` | Cutoff percentiles in the neutral model correlation distributionions (Pearson and Spearman). The values must be between 0 and 100. Examples: `[95]`, `[90, 97.5]`. |
+| `extreme_value_percentiles` | `[95, 99]` | Cutoff percentiles in the neutral model correlation distributions (Pearson and Spearman). The values must be between 0 and 100. Examples: `[95]`, `[90, 97.5]`. |
 
 ### Table parameters
 
@@ -251,16 +258,7 @@ pool by seeded uniform sampling without replacement. This changes the sampling
 population and may change neutral p-values. `neutral_reference_max_markers`
 (omitted/null = the whole effective simulation pool; supplied 100000) independently
 caps only the extra reference (and is ignored while `run_neutral_reference` is false).
-It never caps ordinary simulations. Overlarge caps
-retain all available records; insufficient debug pools are not silently expanded.
-`neutral_pool_seed` and `neutral_reference_seed` independently fall back to `seed`,
-then 42. Source files are unchanged. Caps count markers, not bytes or RAM.
 
-The availability checkpoint precedes neutral preparation. The extra reference
-waits for retained ordinary reports; source preparation/debug limiting remain
-upstream. Provenance records source/effective counts and selection digests even
-with `WRITE_RUN_SETTINGS: FALSE`, and distinguishes all effective markers from all
-original markers. Manifest/VCF count mismatches are errors.
 
 | Resource setting | Behavior |
 |---|---|
@@ -270,43 +268,49 @@ original markers. Manifest/VCF count mismatches are errors.
 | `neutral_reference_mem_mb: auto` | Same allocation calculation with `neutral_reference_headroom_mb` (4096); fallback 40000 MB. |
 | `neutral_reference_threads`, `neutral_reference_runtime_minutes` | Supplied one R worker and 720 minutes for the extra reference. |
 
-Explicit preparation/reference memory requests are limited to the available
-budget after headroom. These controls describe local Snakemake inside one Slurm
-allocation, as in the supplied launcher. They reserve scheduler resources rather
-than imposing per-process R memory limits or allocating additional Slurm memory.
-A job-per-rule executor requires a separate resource review.
 
 ## Efficient execution, preview and supplied test settings
 
 `GRID_MIN_CELLS` compares the total rectangular aggregated-grid cell count using
-`>=`: zero selects the efficient adapters, `"Inf"` native execution. The adapters
-require audited Wingen 2.2.0 / furrr 0.4.0; other versions retain the guarded native
-fallback. `WINGEN_DIAGNOSTICS` enables profiling; expensive native comparisons also
-require `GRID_VALIDATE`. `PREVIEW_WINDOWS` defaults true independently. The supplied
-config uses efficient execution, diagnostics/validation false and preview true.
+`>=`: zero selects the efficient adapters, `"Inf"` native execution.  `WINGEN_DIAGNOSTICS` enables profiling; expensive native comparisons also
+require `GRID_VALIDATE`. `PREVIEW_WINDOWS` defaults true independently. By default the efficient execution is used, diagnostics/validation false and preview true.
 These execution controls preserve the configured grid, estimator, rarefaction and
 kriging inputs. The final geographic distance mask uses nearest unique empirical
-sites, with nearest-neighbor reprojection to the output grid. Mollweide preserves
-area, not distance.
+sites, with nearest-neighbor reprojection to the output grid (Mollweide preserves
+area, not distance).
 
-The supplied global herring test uses 125 individuals and the first 12 genes,
-pi, ocean domain, 10 km resolution, WDIM 7, FACT 1, no window rarefaction, distance
-scale 5, global environmental layers, disaggregation factor 3, 15 kriging neighbors,
-100 neutral replicates, minimum valid fraction 0.9, the full simulation pool and a
-100000-marker reference. These are test choices rather than universal defaults.
+## Optional analyses over the finished catalog
+Two analyses can be added after the final aggregation. Each reads the finished catalog, stores its result as tables in `gene_catalog.duckdb` and as a TSV next to it, and the catalog page shows it when the tables exist. Both are off by default; with both off, neither job is part of the plan and the DuckDB file and the page hold nothing of them.
+
+| Setting | Behavior |
+|---|---|
+| `run_correlation_similarity_screen: false` | `true`/`false` only. Adds the gene linkage screening below. On the command line Snakemake reads only `True`/`False`: `--config run_correlation_similarity_screen=True`. |
+| `correlation_similarity_min_shared_variables: 4` | A pair of genes is scored only if both have a location-level `r` for at least this many of the environmental variables (latitude included). A whole number of 3 or more: over two variables a correlation is always +1 or -1. |
+| `correlation_similarity_top_k_per_gene: 20` | Partners stored per gene, most similar first. The page lists only the partners at or above the 0.90 catalog percentile, so this is a cap. |
+| `correlation_similarity_max_full_export_genes: 2000` | The table of every scored pair is also written when the catalog has at most this many genes (2000 genes are about 2 million pairs); `0` never writes it. |
+| `run_env_correlation_matrix: false` | `true`/`false` only. Adds the environmental correlation matrix below. |
+
+### Gene linkage screening
+Which genes have a similar pattern of location-level correlations with the environment? Each gene has a vector of its location-level Pearson `r` with every environmental variable that the catalog holds (latitude, salinity, summer and winter water temperature, log chlorophyll-a, oxygen, current speed). The similarity of two genes is the Pearson correlation of their two vectors over the variables both have (`n_shared_variables`, at least `correlation_similarity_min_shared_variables`); the Spearman correlation of their `rho` vectors is stored beside it for the partners that are kept, and the percentile says where the pair's |similarity| lies among all pairs of the catalog. The result lists candidate pairs for a later linkage study. It is not a measurement of linkage disequilibrium.
+
+It needs `WRITE_LOCATION_STATS: TRUE` (the location-level `r` and `rho` come from the gene summaries), at least three variables with such values, and at least three genes; without them the job stops with a message that names the missing piece, and the result tables and TSVs are not written. The pooled neutral reference row (`run_neutral_reference`) is a reference sample and not a gene: it stays in the catalog and on the page, and is not screened.
+
+* **What is stored.** In `gene_catalog.duckdb`: `gene_correlation_similarity_pairs` (`gene_id`, `partner`, `similarity_r`, `spearman_similarity_r`, `percentile_vs_all_pairs`, `n_shared_variables`; up to `correlation_similarity_top_k_per_gene` rows per gene) and `gene_correlation_similarity_summary` (`gene_id`, `best_match_gene`, `best_match_r`, `best_match_percentile`: the best partner of each gene), plus the working tables `top_matches` and `cutoffs`. As files in `{results_dir}/results`: `gene_correlation_similarity_pairs.tsv`, `gene_correlation_similarity_summary.tsv` and, for catalogs of at most `correlation_similarity_max_full_export_genes` genes, `gene_correlation_similarity_all_pairs.tsv` (every scored pair, to see what a high similarity looks like in this catalog).
+* **On the page.** A "Gene Linkage Screening" group of the column layout (best partner, its similarity and percentile), a "Similar genes" column (the partners at or above the 0.90 percentile, `DISPLAY_PERCENTILE_FLOOR` in `code/build_gene_catalog_html.py`, at most 20, `MAX_SIMILAR_PER_GENE_DISPLAY`, most similar first; a click opens the Pearson and Spearman values, the percentile, the number of shared variables and the breakdown by environmental variable), the chip "Color linkage screening" and the filter "Only genes with a linkage match".  Lowering `MAX_SIMILAR_PER_GENE_DISPLAY` or raising `DISPLAY_PERCENTILE_FLOOR` in `code/build_gene_catalog_html.py` shortens the lists and the file.
+* **How it is computed.** Genes are compared with all other genes one block at a time (`--block-genes` of `code/compute_gene_correlation_similarity.py`, 256 genes by default), and only each gene's best partners and a histogram of |similarity| are kept, so the memory depends on the block size and not on the number of pairs. The percentile is read from seven cutoffs of that histogram (0, 50, 90, 95, 99, 99.9 and 100 % of |similarity|; exact to 1e-5) and the pair is placed on that curve: an approximation by design, good for "is this pair in the upper tail", not for the second decimal. The result is the same on every run, with any thread count and any block size. A gene whose values are all equal has no correlation with anything and is not paired.
+* **Reading the result.** The percentile ranks a pair among the gene pairs of this catalog.
+* **Order and re-runs.** The aggregation writes `gene_catalog.duckdb` first; then the screen, then the matrix, then the page, one after the other because DuckDB lets only one process write to a file. The two jobs follow the catalog TSV, so they run again whenever the aggregation does; a changed setting of the screen re-runs the screen, the matrix (which starts after it) and the page, and nothing else. Switching the screen on for a catalog that is already finished runs only the new job and the page; no gene is touched. Switching it off again leaves its tables in the DuckDB file, and on the page, until the aggregation next runs (for example `--forcerun aggregate_gene_summaries`), because the aggregation writes a new file.
+* **Cores.** The screen asks for all of `--cores`; DuckDB uses what it can of them inside a block (on the 2-core test machine two threads were about 15 % faster than one; more cores have not been measured). With an executor that submits one Slurm job per rule, `--cores`/`--jobs` is not the size of a node.
+
+### Environmental correlation matrix
+How correlated are the environmental variables with each other across the sample locations? This is a redundancy check on the predictors (the environmental metrics) and involves no gene. It reads the `{gene}_per_location.tsv` files of the catalog (so it needs `WRITE_PER_LOCATION_TSV: TRUE`), takes one value per variable for each of the 10 km location clusters, and correlates every pair of variables over the clusters. Every numeric column of those files except the bookkeeping columns (gene, cluster, counts, longitude, the statistic itself and the `n_individuals_filled_*` flags) is a variable, so a variable added to the Rmd is picked up without a change here. It adds the tables `env_correlation_matrix` (`variable_a`, `variable_b`, `r`, `n_locations`, one row per unordered pair) and `env_correlation_matrix_labels` to `gene_catalog.duckdb`, writes `{results_dir}/results/env_correlation_matrix.tsv`, and the page shows the matrix in a section of its own.
 
 <!-- BEGIN OLS_MODEL_AGREEMENT_DOCUMENTATION -->
 ## Per-gene environmental model gallery
 
-The main Rmd fits the straight OLS and degree-two quadratic models in R and saves
-their omitted-cluster predictions, training-mean baseline, curve points and model
-definitions alongside observed cluster pairs, labelled map PNGs and marker
-coordinates. The opened gene/metric page displays those saved values; changing
-categories or selecting the quadratic comparison does not fit another model.
-Existing pipeline genetic calculations and ordinary correlation statistics are
-unchanged. No server, R installation or internet access is required while viewing
-results. HTML-only refreshes require these saved R outputs; older raw browser-fit
-exports must first be regenerated by the R report.
+The main Rmd fits the straight OLS and degree-two quadratic models in R and saves their omitted-cluster predictions, training-mean baseline, curve points and model definitions alongside observed cluster pairs, labelled map PNGs and marker coordinates.
+The opened gene/metric page displays those saved values; changing categories or selecting the quadratic comparison does not fit another model.
+Existing pipeline genetic calculations and ordinary correlation statistics are unchanged. No server, R installation or internet access is required while viewing results. HTML-only refreshes require these saved R outputs; older raw browser-fit exports must first be regenerated by the R report.
 
 | Setting under `wingen_params` | Supplied value | Purpose |
 |---|---|---|
@@ -316,24 +320,18 @@ exports must first be regenerated by the R report.
 | `LINKED_PERCENTILE_GD_PROBS` | `"0.3333333333333333,0.6666666666666667"` | Observed-value thirds used as initial genetic category boundaries. |
 | `LINKED_PERCENTILE_MATRIX_ENV_BREAKS` | `"0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1"` | Initial environmental deciles; strata can be changed in the browser. |
 
-Earlier GAM, geographic-group, pair-ordering and direction flags are not used by
-this exporter. All paired clusters are shown initially. Disabling either
-new export switch omits the added pages; inherited catalog plots/statistics remain.
+All paired clusters are shown initially. Disabling either new export switch omits the added pages; inherited catalog plots/statistics remain.
 The workflow tracks the main Rmd, required efficiency helper, optional diagnostics when present, and the prediction-agreement HTML template when enabled.
 The catalog embeds pinned JavaScript, CSS and licenses for offline use.
 
-The environmental backgrounds use the derived full environmental raster field,
-not a surface interpolated from sampling-cluster values. Identical render inputs
+The environmental backgrounds use the derived full environmental raster field (not a surface interpolated from sampling-cluster values). Identical render inputs
 share a PNG under delivered `results/environment_layers/`. The cache key includes
 raster values/grid/CRS, display extent, palette/style, context and render settings;
 files are checked and published under a lock. Each page retains its own correctly
 transformed marker positions. Genetic backgrounds remain gene-specific.
 
-Neutral simulations are independent of these model fits. With both
-`run_neutral_sim: false` and `run_neutral_reference: false`, no neutral-marker
-input is required. Ordinary environmental correlations and model pages remain
-available. If either neutral option is enabled, the existing workflow still
-requires a supplied neutral VCF/markers or configured automatic SnpEff extraction.
+Neutral simulations are independent of these model fits. With both `run_neutral_sim: false` and `run_neutral_reference: false`, no neutral-marker input is required.
+Ordinary environmental correlations and model pages remain available. If either neutral option is enabled, the existing workflow still requires a supplied neutral VCF/markers or configured automatic SnpEff extraction.
 Missing requested neutral inputs produce the existing configuration error.
 
 The metric dropdown groups the smaller available Pearson or Spearman neutral

@@ -70,6 +70,18 @@
   td.thumb img {
     width: 44px; height: 28px; object-fit: cover; cursor: zoom-in; display: block;
   }
+  td.similar-genes { max-width: 220px; }
+  .env-matrix-title { font-size: 15px; margin: 18px 0 4px; }
+  #env-matrix-section { margin-bottom: 18px; }
+  #env-matrix-table table { border-collapse: collapse; font-size: 12px; }
+  #env-matrix-table th, #env-matrix-table td {
+    padding: 4px 8px; border: 1px solid var(--line); text-align: right; font-family: var(--mono);
+  }
+  #env-matrix-table th:first-child, #env-matrix-table td:first-child { text-align: left; font-family: inherit; }
+  .similar-gene {
+    cursor: help; border-bottom: 1px dotted currentColor;
+  }
+  .similar-gene-more { color: var(--muted); font-style: italic; white-space: nowrap; }
 
   #lightbox {
     display: none; position: fixed; inset: 0; z-index: 50;
@@ -117,6 +129,31 @@
     .gallery-tabs .chip { font-size: 11px; padding: 4px 8px; }
     #gallery-metric { max-width: 68vw; }
   }
+
+  #similar-genes-modal {
+    display: none; position: fixed; inset: 0; z-index: 50;
+    background: rgba(0, 0, 0, 0.45);
+    align-items: center; justify-content: center; padding: 24px;
+  }
+  #similar-genes-modal.open { display: flex; }
+  #similar-genes-modal .modal-panel {
+    background: #fff; color: var(--text); border-radius: 8px; box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+    max-width: 560px; width: 100%; max-height: 80vh; overflow: auto; padding: 18px 20px; position: relative;
+  }
+  #similar-genes-modal .modal-close {
+    position: absolute; top: 10px; right: 12px; border: none; background: none; cursor: pointer;
+    font-size: 20px; line-height: 1; color: var(--muted); padding: 4px;
+  }
+  #similar-genes-modal .modal-close:hover { color: var(--text); }
+  #similar-genes-modal h3 { margin: 0 0 4px; font-size: 15px; }
+  #similar-genes-modal .modal-sub { margin: 0 0 12px; font-size: 12px; color: var(--muted); }
+  #similar-genes-modal table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  #similar-genes-modal th, #similar-genes-modal td {
+    text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line);
+  }
+  #similar-genes-modal td.num, #similar-genes-modal th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  td.similar-genes { cursor: pointer; }
+  td.similar-genes:hover { text-decoration: underline; text-decoration-style: dotted; }
 
   /* Neutral rules separate environmental groups without competing with the
      significance-cell colours or the reader's Highlight conditions. */
@@ -209,6 +246,16 @@
   #significance-preset label { font-size: 13px; }
   #significance-legend { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 5px 10px; font-size: 12px; color: var(--muted); }
   #significance-legend[hidden] { display: none; }
+  #similarity-legend { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 5px 10px; font-size: 12px; color: var(--muted); }
+  #similarity-legend[hidden] { display: none; }
+  .similarity-swatch { display: inline-block; width: 11px; height: 11px; border: 1px solid #0072B2; border-radius: 2px; vertical-align: -1px; margin-right: 4px; }
+  /* Blue of the Okabe-Ito palette (#0072B2), a different hue from the green of the
+     neutral-significance coloring. The left border carries the marking too, so it does
+     not rest on colour alone (it still shows in a grayscale printout). */
+  table.dataTable tbody td.similarity-notable {
+    background-color: var(--similarity-color) !important; box-shadow: none !important;
+    border-left: 3px solid #0072B2 !important;
+  }
   .significance-swatch { display: inline-block; width: 11px; height: 11px; border: 1px solid #679e92; border-radius: 2px; vertical-align: -1px; margin-right: 4px; }
   table.dataTable tbody td.neutral-significant { background-color: var(--neutral-significance-color) !important; box-shadow: none !important; }
   .chip.filter-remove { padding: 1px 8px; color: var(--muted); }
@@ -256,7 +303,7 @@
 <h1>Gene diversity catalog</h1>
 {% if catalog_demo_note %}<p class="meta" role="note"><strong>{{ catalog_demo_note }}</strong></p>{% endif %}
 {% if gd_label %}<p class="meta">Genetic diversity statistic: <strong>{{ gd_label }}</strong>{% if gd_stat %} &middot; <code>window_gd(stat = "{{ gd_stat }}")</code>{% endif %}</p>{% endif %}
-<p class="meta">Generated {{ generated_at }}. Click a thumbnail to open the gene gallery. Use Previous/Next or →/← to browse plots; click an image to zoom, drag to pan, and Esc to close. Click a group header, or its button below, to hide those columns.</p>
+<p class="meta">Generated {{ generated_at }}. Click a thumbnail to open the gene gallery. Use Previous/Next or →/← to browse plots; click an image to zoom, drag to pan, and Esc to close. Click a group header, or its button below, to hide those columns.<span id="similar-genes-hint" hidden> Hover any column header for what it means. Click a "Similar genes" cell for that gene's full ranked list.</span></p>
 {% if empty_columns_note %}<p class="meta">{{ empty_columns_note }}</p>{% endif %}
 {% if neutral_thresholds_present %}<p class="meta">Location results are grouped by Pearson and Spearman. Each p neutral compares the observed correlation magnitude with neutral simulations. Neutral |r| and |ρ| show upper percentiles of their corresponding neutral distributions; hover over a header for details. Sim status “ok” means the comparison is available.</p>{% endif %}
 <p id="table-error" class="meta error" role="alert" hidden></p>
@@ -291,6 +338,9 @@
   <button type="button" class="chip" id="location-statistics-toggle" aria-pressed="false" hidden>More location statistics</button>
   <button type="button" class="chip" id="significance-toggle" aria-pressed="false" hidden>Color neutral significance</button>
   <span id="significance-legend" hidden></span>
+  <button type="button" class="chip" id="similarity-toggle" aria-pressed="false" hidden>Color linkage screening</button>
+  <span id="similarity-legend" hidden></span>
+  <button type="button" class="chip" id="linkage-filter-toggle" aria-pressed="false" hidden>Only genes with a linkage match</button>
   <button type="button" class="chip info-btn" id="info-toggle" aria-expanded="false" aria-controls="info-panel"><span class="info-i" aria-hidden="true">i</span>Window, Location &amp; run settings</button>
   <div id="group-toolbar" role="group" aria-label="Column groups" title="Click a group to show or hide its columns"></div>
 </div>
@@ -305,7 +355,7 @@
     <div>
       <h2>Location</h2>
       <p>Nearby sampling sites are grouped by complete-linkage clustering. The grouping distance limits the maximum pairwise distance within a location. Diversity is calculated from pooled genotypes, with rarefaction controlled separately from Window rarefaction.</p>
-      <p>Each eligible location contributes one equally weighted correlation point. Environmental values are averaged over its member individuals. <strong>N sites</strong> counts locations with a diversity value; a correlation can use fewer if its predictor is missing.</p>
+      <p>Each eligible sample location cluster contributes one equally weighted correlation point. Environmental values are averaged over its member individuals. <strong>Clusters</strong> counts sample location clusters with a diversity value; a correlation can use fewer if its predictor is missing.</p>
     </div>
   </div>
   <div id="info-neutral" hidden>
@@ -338,6 +388,15 @@
   </div>
   <p id="filter-help" hidden>AND adds a condition within a group; OR starts an alternative group. AND is evaluated before OR, as shown in parentheses below each block. Empty conditions are ignored. Missing values fail a condition. Values use full precision.</p>
 </div>
+
+{% if env_correlation_matrix_json %}
+<section id="env-matrix-section" aria-label="Environmental variable correlation matrix">
+  <h2 class="env-matrix-title">Environmental variable correlations</h2>
+  <p class="meta">How correlated the environmental predictors are with EACH OTHER, across the empirical sample locations - unrelated to genetic diversity or Gene Linkage Screening. A high |r| here is a candidate for redundancy between two predictors, not a biological result.</p>
+  <div id="env-matrix-table" style="overflow-x:auto;"></div>
+</section>
+<script id="env-matrix-data" type="application/json">{{ env_correlation_matrix_json | safe }}</script>
+{% endif %}
 
 <table id="catalog" class="display" style="width:100%">
   <thead></thead>
@@ -383,6 +442,22 @@
   </div>
 </div>
 
+<div id="similar-genes-modal">
+  <div class="modal-panel">
+    <button type="button" class="modal-close" aria-label="Close">&times;</button>
+    <h3 id="similar-genes-modal-title"></h3>
+    <p class="modal-sub">Gene Linkage Screening: candidates for a follow-up LD study, not a measured LD pair.</p>
+    <table>
+      <thead><tr><th>Gene</th><th class="num">Pearson r</th><th class="num">Spearman r</th><th class="num">Catalog percentile</th><th class="num">Shared vars</th></tr></thead>
+      <tbody id="similar-genes-modal-body"></tbody>
+    </table>
+    <p class="modal-sub" style="margin-top:14px;">Where the similarity actually lies - this gene's and each partner's own correlation, per environmental variable:</p>
+    <div style="overflow-x:auto;">
+      <table id="similar-genes-modal-breakdown"></table>
+    </div>
+  </div>
+</div>
+
 <script id="catalog-jquery">{{ vendor_jquery | safe }}</script>
 <script id="catalog-datatables">{{ vendor_datatables | safe }}</script>
 <script id="catalog-vendor-licenses" type="application/json">{{ vendor_licenses_json | safe }}</script>
@@ -400,6 +475,54 @@
 
 const rows = JSON.parse(document.getElementById('gene-data').textContent);
 const columnLayout = JSON.parse(document.getElementById('gene-columns').textContent);
+// True only when at least one gene actually has a screened similar-gene
+// match - false when the Gene Linkage Screening Test never ran (every
+// row's similar_genes is absent/empty). Mirrors hasEnvironment/hasSetting
+// below: derived from the data itself rather than a separate flag
+// threaded through Python/Jinja.
+const hasSimilarGenes = rows.some((row) => Array.isArray(row.similar_genes) && row.similar_genes.length > 0);
+const similarGenesHint = document.getElementById('similar-genes-hint');
+if (similarGenesHint) similarGenesHint.hidden = !hasSimilarGenes;
+// Mirrors CANDIDATE_VARIABLES in compute_gene_correlation_similarity.py -
+// used only to build the per-variable breakdown in the similar-genes modal
+// below, from data already embedded on every row (no new data needed).
+const PROFILE_VARIABLES = [
+  ['latitude', 'latitude', 'Latitude'],
+  ['salinity', 'salinity', 'Salinity'],
+  ['water_temp_summer', 'temp_summer', 'Temp (summer)'],
+  ['water_temp_winter', 'temp_winter', 'Temp (winter)'],
+  ['chlorophyll_a_log', 'chl_log', 'log(chl-a)'],
+  ['oxygen', 'oxygen', 'Oxygen'],
+  ['current_speed', 'current_speed', 'Current speed'],
+];
+const genesById = new Map(rows.map((row) => [row.gene_id, row]));
+
+// Environmental correlation matrix - a plain static table, not a DataTable:
+// it's one small, whole-run matrix (at most ~8x8), not one row per gene, so
+// none of the sort/filter/column-hide machinery below applies to it. Color
+// intensity is a secondary cue only - the r value itself is always the
+// visible text, never color alone.
+(function renderEnvMatrix() {
+  const script = document.getElementById('env-matrix-data');
+  const container = document.getElementById('env-matrix-table');
+  if (!script || !container) return;
+  const matrix = JSON.parse(script.textContent);
+  const n = matrix.variables.length;
+  let html = '<table><thead><tr><th></th>' +
+    matrix.variables.map((v) => `<th>${escapeHtml(v)}</th>`).join('') + '</tr></thead><tbody>';
+  for (let i = 0; i < n; i++) {
+    html += `<tr><th>${escapeHtml(matrix.variables[i])}</th>`;
+    for (let j = 0; j < n; j++) {
+      const r = matrix.rows[i][j];
+      if (r === null || r === undefined) { html += '<td>\u2013</td>'; continue; }
+      const mag = Math.min(Math.abs(r), 1);
+      const bg = i === j ? 'transparent' : `hsla(202, 45%, 45%, ${(mag * 0.5).toFixed(2)})`;
+      html += `<td style="background:${bg}" title="${escapeHtml(matrix.variables[i])} vs ${escapeHtml(matrix.variables[j])}: r=${r.toFixed(3)}">${r.toFixed(3)}</td>`;
+    }
+    html += '</tr>';
+  }
+  container.innerHTML = html + '</tbody></table>';
+})();
 
 let decimals = 5;
 const DEFAULT_ORDER = [[1, 'asc']];   // column 0 is the thumbnail, column 1 is Gene
@@ -559,6 +682,23 @@ function fillRunSettings(host) {
     );
   }
   if (hasEnvironment) section('Environmental data', environmentalDefinitions);
+  if (hasSetting('water_dist_enabled') || columnLayout.some(node => node.group === 'Water Route Distance')) {
+    section('Water-route distance', [
+      ['Route medium', 'water_dist_domain'],
+      ['Start point(s) (lon, lat)', 'water_dist_reference_lonlat'],
+      ['Start point(s) snapped to', 'water_dist_reference_snapped_lonlat'],
+      ['Start box(es) (lon range, lat range)', 'water_dist_reference_boxes'],
+      ['Start box cells used', 'water_dist_reference_box_cells'],
+      ['Grid cell size', 'water_dist_res_km', value => value + ' km'],
+      ['Cell passable if at least', 'water_dist_min_cover', value => Math.round(100 * Number(value)) + ' % of it is in the medium'],
+      ['Neighbours per cell', 'water_dist_connectivity'],
+      ['Snap tolerance', 'water_dist_snap_tol_km', value => value + ' km'],
+      ['Predictor', 'water_dist_predictor', value => value === 'signed_route_km' ? 'Signed route distance (km)' : 'Route distance (km)'],
+      ['Negative side (lon/lat box)', 'water_dist_negative_side', value => value === 'none' ? 'none (0 or positive on every side)' : value],
+      ['Cluster span flag', 'water_dist_span_flag_km', value => 'range above ' + value + ' km'],
+      ['Coastline', 'water_dist_coastline'],
+    ]);
+  }
   const hasNeutral = rows.some(row => row.neutral_model);
   document.getElementById('info-neutral').hidden = !hasNeutral;
   if (hasNeutral) section('Neutral simulations', [
@@ -661,6 +801,39 @@ function renderThumb(plots, type, row) {
   return `<img src="${escapeHtml(thumbnail)}" alt="${escapeHtml(row.gene_id)}"`
        + ` role="button" tabindex="0" aria-label="Open gallery for ${gene}" data-gallery-gene="${gene}"`
        + ` data-plots="${escapeHtml(JSON.stringify(plots))}" onerror="handleImgError(this)">`;
+}
+
+// Hand-written like renderThumb, rather than a generic toDtColumn() leaf:
+// "similar_genes" is a variable-length ranked list (Gene Linkage
+// Screening Test - see compute_gene_correlation_similarity.py), which
+// doesn't fit columnLayout's fixed-shape struct-column model. Partners
+// are pre-sorted server-side, most similar first; per-partner detail
+// rides in a native title tooltip rather than a new expand/collapse
+// widget, so a reader finds out more with a hover.
+//
+// The CELL only ever shows up to INLINE_PARTNER_PREVIEW of them - a gene
+// sitting in a genuinely large correlated block could otherwise qualify
+// many partners and balloon that one table row far past every other row's
+// height. The full, uncapped list is never actually lost: the modal reads
+// straight from this same cell's underlying data (dt.cell(td).data()),
+// not from what got rendered here, so "+N more" always opens to the
+// complete list regardless of this cap.
+const INLINE_PARTNER_PREVIEW = 5;
+
+function renderSimilarGenes(partners, type, row) {
+  if (!partners || !partners.length) return '';
+  if (type !== 'display') return partners.map((p) => p.partner).join(' ');
+  const shown = partners.slice(0, INLINE_PARTNER_PREVIEW).map((p) => {
+    const spearmanPart = (p.spearman_similarity_r === null || p.spearman_similarity_r === undefined || p.spearman_similarity_r === '')
+      ? '' : `  (Spearman check: ${fmt(p.spearman_similarity_r)})`;
+    const title = `r=${fmt(p.similarity_r)}${spearmanPart}  percentile=${fmt(p.percentile)}  `
+                + `(${p.n_shared_variables} shared variables) \u2013 screening candidate, not a measured LD pair`;
+    return `<span class="similar-gene" title="${escapeHtml(title)}">${escapeHtml(p.partner)}</span>`;
+  }).join(', ');
+  const remaining = partners.length - INLINE_PARTNER_PREVIEW;
+  const more = remaining > 0
+    ? ` <span class="similar-gene-more">+${remaining} more \u2013 click to see all</span>` : '';
+  return shown + more;
 }
 
 // --- Column layout tree ------------------------------------------------------
@@ -795,6 +968,21 @@ function buildHeader() {
     }
   }
   for (const node of tree) place(node, 0);
+
+  // Similar genes (Gene Linkage Screening Test): a hand-written column
+  // like the thumbnail, outside columnLayout/leaves, so the tree loop
+  // above never produces a header cell for it - appended last here,
+  // matching where it sits last in the DataTable init's columns: array.
+  if (hasSimilarGenes) {
+    const similarTh = document.createElement('th');
+    similarTh.rowSpan = maxDepth;
+    similarTh.textContent = 'Similar genes';
+    similarTh.title = 'Genes whose environment-correlation pattern is most similar to this one\u2019s '
+                     + '\u2013 a screen for linkage-disequilibrium candidates, not a measurement of '
+                     + 'linkage itself. Hover a gene name for its similarity r and percentile.';
+    headerRows[0].appendChild(similarTh);
+  }
+
   for (const tr of headerRows) thead.appendChild(tr);
 }
 
@@ -1117,6 +1305,110 @@ function applySignificance() {
   });
 }
 
+// Percentile coloring for the Gene Linkage Screening columns - same shape as
+// applySignificance()/buildSignificanceControls() above, but keyed on
+// correlation_similarity.best_match_percentile (a rank within this catalog's
+// OWN pairwise distribution - see compute_gene_correlation_similarity.py)
+// rather than a neutral-model p-value. A different hue (blue, not green)
+// so the two colorings stay visually distinct if both are turned on at once.
+const SIMILARITY_LEVELS = [0.90, 0.95, 0.99];
+const similarityCells = new Set();
+let colorSimilarity = false;
+
+function similarityLevel(row) {
+  const pct = row.correlation_similarity ? row.correlation_similarity.best_match_percentile : null;
+  if (!Number.isFinite(pct)) return -1;
+  let level = -1;
+  SIMILARITY_LEVELS.forEach((threshold, i) => { if (pct >= threshold) level = i; });
+  return level;
+}
+
+function similarityColor(index) {
+  const fraction = SIMILARITY_LEVELS.length > 1 ? index / (SIMILARITY_LEVELS.length - 1) : 0;
+  // hue 202 = the Okabe-Ito blue (#0072B2) family, apart from the green of the
+  // neutral-significance coloring; the left border from the CSS is the second cue.
+  return `hsl(202, 45%, ${72 + 15 * fraction}%)`;
+}
+
+function applySimilarityColoring() {
+  for (const td of similarityCells) {
+    td.classList.remove('similarity-notable');
+    td.style.removeProperty('--similarity-color');
+    td.removeAttribute('data-similarity-percentile');
+    td.removeAttribute('aria-label');
+  }
+  similarityCells.clear();
+  if (!colorSimilarity) return;
+  const keys = ['correlation_similarity.best_match_gene', 'correlation_similarity.best_match_r', 'correlation_similarity.best_match_percentile'];
+  dt.rows({ page: 'current' }).every(function (rowIdx) {
+    const row = this.data();
+    const level = similarityLevel(row);
+    if (level < 0) return;
+    for (const key of keys) {
+      const leaf = leaves.find((candidate) => candidate.key === key);
+      if (!leaf) continue;
+      const td = dt.cell(rowIdx, leaf.colIdx).node();
+      if (!td) continue;
+      td.classList.add('similarity-notable');
+      td.style.setProperty('--similarity-color', similarityColor(level));
+      td.setAttribute('data-similarity-percentile', String(SIMILARITY_LEVELS[level]));
+      td.setAttribute('aria-label', `${leaf.fullLabel}: ${fmt(leaf.get(row))}; best-match percentile \u2265 ${SIMILARITY_LEVELS[level]}`);
+      similarityCells.add(td);
+    }
+  });
+}
+
+function buildSimilarityControls() {
+  const button = document.getElementById('similarity-toggle');
+  const legend = document.getElementById('similarity-legend');
+  if (!hasSimilarGenes) return;
+  button.hidden = false;
+  button.title = 'Gene Linkage Screening: color this gene\u2019s best-match columns by where that match ranks within THIS CATALOG\u2019S OWN pairwise distribution (not a significance test, not related to the neutral-marker coloring above).';
+  SIMILARITY_LEVELS.forEach((threshold, index) => {
+    const item = document.createElement('span');
+    const swatch = document.createElement('span');
+    swatch.className = 'similarity-swatch';
+    swatch.style.backgroundColor = similarityColor(index);
+    swatch.setAttribute('aria-hidden', 'true');
+    item.append(swatch, `percentile \u2265 ${threshold}`);
+    legend.appendChild(item);
+  });
+  button.addEventListener('click', () => {
+    colorSimilarity = !colorSimilarity;
+    button.setAttribute('aria-pressed', String(colorSimilarity));
+    button.textContent = colorSimilarity ? 'Remove linkage screening colors' : 'Color linkage screening';
+    legend.hidden = !colorSimilarity;
+    applySimilarityColoring();
+  });
+}
+
+// Row-level filter: hide genes with no qualifying linkage match from the
+// table entirely, rather than just leaving their "Similar genes" cell
+// empty. A separate, optional layer on top of the percentile floor
+// build_gene_catalog_html.py already applies to each gene's own partner
+// list - that floor decides what counts as a match at all; this decides
+// whether to even show a gene that has none.
+let onlyLinkageMatches = false;
+
+function linkageRowFilter(settings, searchData, dataIndex, rowData) {
+  if (settings.nTable.id !== 'catalog') return true;
+  if (!onlyLinkageMatches) return true;
+  return Array.isArray(rowData.similar_genes) && rowData.similar_genes.length > 0;
+}
+
+function buildLinkageFilterControl() {
+  const button = document.getElementById('linkage-filter-toggle');
+  if (!hasSimilarGenes) return;
+  button.hidden = false;
+  button.title = 'Hide every gene with no partner above the Gene Linkage Screening percentile floor, rather than showing it with an empty Similar genes cell.';
+  button.addEventListener('click', () => {
+    onlyLinkageMatches = !onlyLinkageMatches;
+    button.setAttribute('aria-pressed', String(onlyLinkageMatches));
+    button.textContent = onlyLinkageMatches ? 'Show all genes' : 'Only genes with a linkage match';
+    dt.draw();
+  });
+}
+
 function buildSignificanceControls() {
   const button = document.getElementById('significance-toggle');
   const legend = document.getElementById('significance-legend');
@@ -1198,7 +1490,7 @@ function buildColumnSelect() {
     o.textContent = leaf.fullLabel;
     return o;
   };
-  let general = null;   // numeric columns that sit in no group at all (Variants, N sites)
+  let general = null;   // numeric columns that sit in no group at all (Variants, Clusters)
   for (const node of tree) {
     if (node.isGroup) {
       const numeric = node.leaves.filter((l) => l.numeric);
@@ -1499,14 +1791,17 @@ function buildSignificancePreset() {
 function buildFilterPanel() {
   if (!filterLeaves.length) return;   // no numeric column to filter on - the panel stays hidden
   DataTable.ext.search.push(pruneFilter);
+  DataTable.ext.search.push(linkageRowFilter);
   document.getElementById('filter-add').addEventListener('click', () => addRule('prune'));
   document.getElementById('filter-add-highlight').addEventListener('click', () => addRule('highlight'));
   document.getElementById('filter-clear').addEventListener('click', clearRules);
-  dt.on('draw', () => { applyHighlights(); applySignificance(); updateFilterSummary(); });
+  dt.on('draw', () => { applyHighlights(); applySignificance(); applySimilarityColoring(); updateFilterSummary(); });
   document.getElementById('filter-panel').hidden = false;
   filterPanelReady = true;
   buildSignificanceControls();
   buildSignificancePreset();
+  buildSimilarityControls();
+  buildLinkageFilterControl();
 }
 
 // --- Table -------------------------------------------------------------------
@@ -1517,6 +1812,10 @@ try {
     columns: [
       { data: 'plots', orderable: false, searchable: false, className: 'thumb', render: renderThumb },
       ...leaves.map(toDtColumn),
+      ...(hasSimilarGenes ? [{
+        data: 'similar_genes', className: 'similar-genes', orderable: false,
+        defaultContent: '', render: renderSimilarGenes,
+      }] : []),
     ],
     order: DEFAULT_ORDER,
     pageLength: 25,
@@ -1804,10 +2103,66 @@ galleryImageStage.addEventListener('click', (e) => {
   zoomGalleryImage(1.75, {x: e.clientX - rect.left - rect.width / 2, y: e.clientY - rect.top - rect.height / 2});
 });
 
+// --- Similar-genes modal (Gene Linkage Screening) -----------------------
+// A click-triggered panel, not a hover tooltip - same "dim the background,
+// show a panel on top" shape as the lightbox above, so it stays consistent
+// with the one other modal this page already has, but a styled table of
+// the gene's full ranked matches rather than an image.
+const similarGenesModal = document.getElementById('similar-genes-modal');
+
+function openSimilarGenesModal(td) {
+  const partners = dt.cell(td).data();
+  const row = dt.row(td.closest('tr')).data();
+  if (!partners || !partners.length || !row) return;
+  document.getElementById('similar-genes-modal-title').textContent = `Genes most similar to ${row.gene_id}`;
+  const tbody = document.getElementById('similar-genes-modal-body');
+  tbody.innerHTML = '';
+  for (const p of partners) {
+    const spearman = (p.spearman_similarity_r === null || p.spearman_similarity_r === undefined || p.spearman_similarity_r === '')
+      ? '' : fmt(p.spearman_similarity_r);
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${escapeHtml(p.partner)}</td><td class="num">${fmt(p.similarity_r)}</td>`
+      + `<td class="num">${spearman}</td><td class="num">${fmt(p.percentile)}</td>`
+      + `<td class="num">${p.n_shared_variables}</td>`;
+    tbody.appendChild(tr);
+  }
+
+  // Per-variable breakdown: rows = environmental variables (only the ones
+  // this gene actually has), columns = this gene + each listed partner.
+  // Every value here is already sitting in `rows` (this gene's record and
+  // each partner's record are both full catalog rows) - nothing new is
+  // computed, just laid out so the specific variables driving an agreement
+  // (or not) are visible at a glance, not buried in a single r value.
+  const geneIds = [row.gene_id, ...partners.map((p) => p.partner)];
+  const availableVars = PROFILE_VARIABLES.filter(([group, suffix]) =>
+    row[group] && row[group][`location_${suffix}_r`] !== undefined && row[group][`location_${suffix}_r`] !== null);
+  const breakdown = document.getElementById('similar-genes-modal-breakdown');
+  if (availableVars.length) {
+    const headCells = geneIds.map((id) => `<th class="num">${escapeHtml(id)}</th>`).join('');
+    const bodyRows = availableVars.map(([group, suffix, label]) => {
+      const cells = geneIds.map((id) => {
+        const g = genesById.get(id);
+        const v = g && g[group] ? g[group][`location_${suffix}_r`] : null;
+        return `<td class="num">${v === null || v === undefined ? '\u2013' : fmt(v)}</td>`;
+      }).join('');
+      return `<tr><td>${escapeHtml(label)}</td>${cells}</tr>`;
+    }).join('');
+    breakdown.innerHTML = `<thead><tr><th>Variable</th>${headCells}</tr></thead><tbody>${bodyRows}</tbody>`;
+  } else {
+    breakdown.innerHTML = '';
+  }
+
+  similarGenesModal.classList.add('open');
+}
+
 document.addEventListener('click', (e) => {
   const opener = e.target.closest('td.thumb [data-gallery-gene]');
+  const similarCell = e.target.closest('td.similar-genes');
+  const modalClose = e.target.closest('#similar-genes-modal .modal-close');
   if (opener) openGallery(opener);
   else if (e.target === lightbox) closeGallery();
+  else if (similarCell) openSimilarGenesModal(similarCell);
+  else if (modalClose || e.target === similarGenesModal) similarGenesModal.classList.remove('open');
 });
 galleryClose.addEventListener('click', closeGallery);
 for (const tab of galleryTabs) tab.addEventListener('click', () => setGalleryMode(tab.dataset.galleryMode));
@@ -1826,6 +2181,11 @@ for (const tab of galleryTabs) tab.addEventListener('keydown', (event) => {
   next.click(); next.focus();
 });
 document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && similarGenesModal.classList.contains('open')) {
+    e.preventDefault();
+    similarGenesModal.classList.remove('open');
+    return;
+  }
   const opener = e.target.closest('td.thumb img[data-gallery-gene]');
   if (opener && ['Enter', ' '].includes(e.key)) { e.preventDefault(); openGallery(opener); return; }
   if (!lightbox.classList.contains('open')) return;

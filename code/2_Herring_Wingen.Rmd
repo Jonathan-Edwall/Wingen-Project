@@ -642,33 +642,69 @@ ema_fit_models <- function(rows, definitions = ema_model_definitions()) {
         (!is.null(model$rank) && model$rank != length(coefficients))) return(failed("Model fit failed or was rank deficient."))
     list(model = model, normalization = normalization, reason = NULL)
   }
-  predict_saved <- function(fitted, values) {
-    result <- rep(NA_real_, length(values))
-    if (is.null(fitted$model)) return(result)
+  prediction_newdata <- function(fitted, values) {
     z <- fitted$normalization
     scaled <- (values/z$divisor - z$center)/z$scale
     overflow <- !is.finite(scaled) & is.finite(values)
     scaled[overflow] <- values[overflow]/z$divisor/z$scale - z$center/z$scale
+    data.frame(x_scaled = scaled)
+  }
+  predict_saved <- function(fitted, values) {
+    result <- rep(NA_real_, length(values))
+    if (is.null(fitted$model)) return(result)
     prediction <- tryCatch(as.numeric(stats::predict(fitted$model,
-      newdata = data.frame(x_scaled = scaled))), error = function(e) result)
+      newdata = prediction_newdata(fitted, values))), error = function(e) result)
     if (length(prediction) == length(result)) result[is.finite(prediction)] <- prediction[is.finite(prediction)]
     result
   }
+  predict_saved_interval <- function(fitted, values) {
+    # Individual-cluster prediction intervals, not confidence intervals for the
+    # fitted mean and not uncertainty in the observed category boundaries.
+    result <- matrix(NA_real_, nrow = length(values), ncol = 2L,
+      dimnames = list(NULL, c("lower", "upper")))
+    if (is.null(fitted$model)) return(result)
+    degrees <- tryCatch(stats::df.residual(fitted$model), error = function(e) NA_real_)
+    if (length(degrees) != 1L || !is.finite(degrees) || degrees <= 0) return(result)
+    prediction <- tryCatch(stats::predict(fitted$model,
+      newdata = prediction_newdata(fitted, values), interval = "prediction", level = .95),
+      error = function(e) NULL)
+    # Custom model definitions may not implement predict(..., interval=...).
+    # Retain their point predictions and leave unsupported bounds unavailable.
+    if (!is.matrix(prediction) || nrow(prediction) != length(values) ||
+        !all(c("lwr", "upr") %in% colnames(prediction))) return(result)
+    keep <- is.finite(prediction[, "lwr"]) & is.finite(prediction[, "upr"])
+    result[keep, ] <- prediction[keep, c("lwr", "upr"), drop = FALSE]
+    result
+  }
   rows$oof_ols <- rows$oof_quadratic <- rows$oof_baseline <- rep(NA_real_, nrow(rows))
+  for (column in c("oof_ols_lower", "oof_ols_upper", "oof_quadratic_lower", "oof_quadratic_upper"))
+    rows[[column]] <- rep(NA_real_, nrow(rows))
   grid <- data.frame(environment_value = numeric(), ols = numeric(), quadratic = numeric())
   if (eligible) {
     fraction <- seq(0, 1, length.out = 81L)
     grid <- data.frame(environment_value = (1-fraction)*min(x[paired]) + fraction*max(x[paired]), ols = NA_real_, quadratic = NA_real_)
     for (i in paired) rows$oof_baseline[i] <- mean(y[setdiff(paired, i)])
   }
+  for (column in c("ols_lower", "ols_upper", "quadratic_lower", "quadratic_upper"))
+    grid[[column]] <- rep(NA_real_, nrow(grid))
   metadata <- list()
   for (name in c("linear", "quadratic")) {
     definition <- definitions[[name]]
     full <- if (eligible) fit_training(paired, definition) else list(model = NULL, normalization = NULL, reason = reason)
     column <- if (name == "linear") "oof_ols" else "oof_quadratic"
     if (eligible) {
-      grid[[if (name == "linear") "ols" else "quadratic"]] <- predict_saved(full, grid$environment_value)
-      for (i in paired) rows[[column]][i] <- predict_saved(fit_training(setdiff(paired, i), definition), x[i])
+      grid_column <- if (name == "linear") "ols" else "quadratic"
+      grid[[grid_column]] <- predict_saved(full, grid$environment_value)
+      bounds <- predict_saved_interval(full, grid$environment_value)
+      grid[[paste0(grid_column, "_lower")]] <- bounds[, "lower"]
+      grid[[paste0(grid_column, "_upper")]] <- bounds[, "upper"]
+      for (i in paired) {
+        withheld <- fit_training(setdiff(paired, i), definition)
+        rows[[column]][i] <- predict_saved(withheld, x[i])
+        bounds <- predict_saved_interval(withheld, x[i])
+        rows[[paste0(column, "_lower")]][i] <- bounds[1L, "lower"]
+        rows[[paste0(column, "_upper")]][i] <- bounds[1L, "upper"]
+      }
     }
     metadata[[name]] <- list(label = definition$label, available = !is.null(full$model), reason = full$reason,
       n_oof = sum(is.finite(rows[[column]])), formula = if (is.null(full$model)) NULL else paste(deparse(stats::formula(full$model)), collapse = " "),
@@ -679,7 +715,10 @@ ema_fit_models <- function(rows, definitions = ema_model_definitions()) {
   list(rows = rows, fit_grid = grid, on_demand = FALSE, fitting_engine = "R",
     prediction_agreement = list(schema_version = 1L, metadata = list(prediction_column = "oof_ols", baseline_column = "oof_baseline")),
     model_fitting = list(engine = "R", R_version = R.version.string, validation = "leave-one-cluster-out",
-      n_paired = n, eligible = eligible, reason = reason, models = metadata))
+      n_paired = n, eligible = eligible, reason = reason, models = metadata,
+      prediction_interval = list(type = "prediction", level = .95, method = "stats::predict.lm",
+        target = "individual cluster genetic diversity", training = "same training set as each prediction",
+        unavailable = "rank failure, zero residual degrees of freedom, or unsupported prediction method")))
 }
 # <<< [environmental-model-agreement-model-functions]
 # >>> [environmental-model-agreement-export-functions]
@@ -1506,12 +1545,24 @@ if (RUN_NEUTRAL_SIM) {
       keep <- is.finite(observed) & is.finite(x)
       obs <- location_association(observed[keep], x[keep])
       r <- rho <- rep(NA_real_, ncol(null_gd))
+      # A one-marker subset can be fixed at every eligible cluster, or have no
+      # usable calls at one cluster. These are undefined correlations, not failed
+      # VCF preparation. Record the reason without resampling/filtering the null
+      # pool or changing the fixed observed-cluster mask/minimum-valid gate.
+      reason <- rep(if (sum(keep) < 3L) "too_few_observed_clusters" else
+        if (sd(x[keep]) == 0) "constant_predictor" else "nonfinite_cluster_diversity", ncol(null_gd))
+      n_finite <- colSums(is.finite(null_gd[keep, , drop = FALSE]))
       if (sum(keep) >= 3 && sd(x[keep]) > 0) {
         for (b in seq_len(ncol(null_gd))) {
           y <- null_gd[keep, b]
-          if (all(is.finite(y)) && sd(y) > 0) {
-            r[b] <- cor(x[keep], y, method = "pearson")
-            rho[b] <- cor(x[keep], y, method = "spearman")
+          if (all(is.finite(y))) {
+            if (sd(y) == 0) {
+              reason[b] <- "constant_cluster_diversity"
+            } else {
+              r[b] <- cor(x[keep], y, method = "pearson")
+              rho[b] <- cor(x[keep], y, method = "spearman")
+              reason[b] <- if (is.finite(r[b]) && is.finite(rho[b])) "ok" else "nonfinite_correlation"
+            }
           }
         }
       }
@@ -1522,12 +1573,17 @@ if (RUN_NEUTRAL_SIM) {
         p_neutral_rho = spearman$p, neutral_n_valid = pearson$n,
         neutral_n_valid_rho = spearman$n, neutral_abs_r_median = pearson$median,
         neutral_status = pearson$status,
-        neutral_rho_status = spearman$status)
+        neutral_rho_status = spearman$status,
+        neutral_n_nonfinite_cluster_diversity = sum(reason == "nonfinite_cluster_diversity"),
+        neutral_n_constant_cluster_diversity = sum(reason == "constant_cluster_diversity"),
+        neutral_n_invalid_predictor = sum(reason %in% c("too_few_observed_clusters", "constant_predictor")),
+        neutral_n_nonfinite_correlation = sum(reason == "nonfinite_correlation"))
       result[[variable]] <- c(result[[variable]],
         setNames(pearson[cutoff_names], neutral_percentile_fields(extreme_value_percentiles, "neutral_abs_r_")),
         setNames(spearman[cutoff_names], neutral_percentile_fields(extreme_value_percentiles, "neutral_abs_rho_")))
       replicate_rows[[variable]] <- data.frame(variable = variable, replicate = seq_along(r),
-        n_locations = obs$n, r = r, rho = rho)
+        n_locations = obs$n, r = r, rho = rho, reason = reason,
+        n_clusters_required = sum(keep), n_clusters_finite = n_finite)
     }
     list(fields = result, replicates = do.call(rbind, replicate_rows))
   }
@@ -1641,7 +1697,8 @@ if (RUN_NEUTRAL_SIM) {
     if (metadata$status != "ok") {
       # Replace stale replicate results on a rerun with an unavailable target.
       write.table(data.frame(variable = character(), replicate = integer(),
-        n_locations = integer(), r = numeric(), rho = numeric()),
+        n_locations = integer(), r = numeric(), rho = numeric(), reason = character(),
+        n_clusters_required = integer(), n_clusters_finite = integer()),
         paste0(output_prefix, "_neutral_replicates.tsv"), sep = "\t", quote = FALSE, row.names = FALSE)
       write.table(data.frame(cluster_id = character(), replicate = integer(), gd = numeric()),
         paste0(output_prefix, "_neutral_locations.tsv"), sep = "\t", quote = FALSE, row.names = FALSE)
@@ -1745,6 +1802,7 @@ bb  <- as.vector(ext(project(coords_v_mollweide, crs(ocean))))
 pad <- 10  # degrees
 zoom_area <- ext(bb["xmin"] - pad, bb["xmax"] + pad, bb["ymin"] - pad, bb["ymax"] + pad)
 ocean <- crop(ocean, zoom_area)
+ocean_lonlat <- ocean  # lon/lat copy for the optional water-route distance (section 2.7); `ocean` itself is projected on the next line
 ocean <- project(ocean, world_crs)
 ```
 ## 2.3 (coords_to_raster) Building the raster
@@ -1808,7 +1866,16 @@ lyr <- mask_gd(lyr, ocean)
 if (preview_windows) {
   wingen::preview_gd(lyr, coords_sf_mollweide, method = "window",
     wdim = wdim_value, fact = fact_value, sample_count = TRUE, min_n = min_n_samples_per_calc)
-  window_preview_output_filename <- paste0(output_prefix, "window_preview_buffer_", buffer_cells, ".png")
+  # A catalog already separates genes/metrics by output directory. Preview
+  # coverage depends on the window/grid settings, not palette, diversity metric,
+  # rarefaction or kriging. Keep those unrelated settings out of this filename.
+  window_preview_output_filename <- if (gene_catalog_run) paste0(
+    statistics_output_prefix, "_window_preview_w", wdim_value, "_f", fact_value,
+    "_n", min_n_samples_per_calc, "_res", signif(resolution_m / 1e3, digits = 2),
+    "km_buffer", buffer_cells, if (!is.null(ctr_disagg)) paste0("_d", ctr_disagg) else "",
+    if (SPHERICAL_GRID) "_spherical" else "",
+    if (ROI_ACTIVE) "_subpop" else "", ".png") else
+      paste0(output_prefix, "window_preview_buffer_", buffer_cells, ".png")
   png(file.path(output_dir, window_preview_output_filename), width = 10, height = 6, units = "in", res = 300)
   wingen::preview_gd(lyr, coords_sf_mollweide, method = "window",
     wdim = wdim_value, fact = fact_value, sample_count = TRUE, min_n = min_n_samples_per_calc)
@@ -2213,6 +2280,149 @@ if (USE_COPERNICUS_MARINE) {
   print(env_after_na)
   # <<< [fill-count]
   }
+```
+## 2.7 Water-route distance from start points and/or start boxes (optional predictor)
+A purely geographic predictor: how far a sampling location lies from a start **through water only** - or, with
+`domain_type: "land"`, over land only. Never as the crow flies. A start is a point (e.g. the Ã˜resund entrance of the
+Baltic) or a **box**: a lon/lat rectangle such as the HELCOM definition of the entrance to the Baltic Sea, the line at
+57Â°44.43' N (`WATER_DIST_REFERENCE_BOXES`). Every passable grid cell a box touches lies at distance 0, and the distance of a
+location is the shortest route to *any* of them. With several starts (e.g. all the entrances to a sea) it is the shortest
+route to the *nearest* one. The distance is not signed: it is 0 or positive on every side of a start, which is what a study
+inside one sea needs. An optional `WATER_DIST_NEGATIVE_BOX` makes it negative inside a lon/lat box (the far side of an entrance).
+It is switched on with `WATER_DIST_ENABLED: TRUE` in `config.yaml` and needs `WATER_DIST_REFERENCE_POINTS` and/or
+`WATER_DIST_REFERENCE_BOXES` (see `config/README.md`). It does not need Copernicus.
+
+Treated like any other environmental value *at the location level*: every cluster of section 4 gets the mean over its
+member individuals (the same rule as `env_for_cluster()`), and the location Pearson/Spearman statistics, the neutral
+comparison, the JSON, the per-location table and the catalog columns follow. No window-level correlation (Track A) is
+computed: the metric is defined for the empirical sampling sites only.
+
+How it is computed (everything is in `code/water_distance.R`, tested by `code/test_water_distance.R`): the coastline
+polygons are rasterised onto a square-cell grid in a local equal-area projection (not the Mollweide grid of section 2.3,
+which is equal-area but does not preserve distances); a cell is passable only if at least `WATER_DIST_MIN_COVER` of it
+lies in the domain, so thin spits stay barriers; cells are joined to their 16 neighbours only when every cell the
+connecting segment crosses is passable, so a route can never slip between two land cells that touch at a corner;
+one Dijkstra search per start then gives the shortest route to every cell (for a box, one search from a virtual start joined
+to each passable cell the box touches by a zero-length connection; a box thinner than a cell still selects the cells it passes
+through, and the route ends at the centre of such a cell, so a box is resolved to about half a cell).
+The claim to make is "shortest route through the passable cells of this grid built from this coastline", not the exact continuous path.
+
+The distances are computed ONCE for every unique coordinate in the coordinate file - not per gene - and cached next to
+the Copernicus layers under a file name that carries a hash of all settings, the coastline and the set of sites, so a
+changed setting can never reuse a stale file. The file is written atomically, so genes that start at the same moment
+on a cold cache each compute it once (seconds) and none reads a half-written file. A gene run only looks its
+individuals up, so individuals dropped for one gene do not matter. Sites that cannot be routed stop the run with a
+list (default) or are dropped (`WATER_DIST_ON_FAILED_SITES: drop`). The first computation also writes one figure of the routes next to the cache file
+(`WATER_DIST_QA_PLOT`, default TRUE) so that you can check that no route crosses land.
+```{r 2.7 Water-route distance}
+WATER_DIST_ENABLED <- tolower(trimws(Sys.getenv("WATER_DIST_ENABLED", unset = "FALSE")))
+if (!(WATER_DIST_ENABLED %in% c("true", "false"))) stop("WATER_DIST_ENABLED must be TRUE or FALSE")
+WATER_DIST_ENABLED <- WATER_DIST_ENABLED == "true"
+
+if (WATER_DIST_ENABLED) {
+  source(file.path(github_repository_path, "code", "water_distance.R"))   # needs terra + igraph (+ jsonlite); attaches nothing
+
+  wd_setting <- function(name, default) {
+    value <- trimws(Sys.getenv(name, unset = ""))
+    if (!nzchar(value)) return(default)
+    out <- suppressWarnings(as.numeric(value))
+    if (!is.finite(out)) stop(name, " must be a number - got '", value, "'")
+    out
+  }
+  WATER_DIST_DOMAIN           <- tolower(trimws(Sys.getenv("DOMAIN_TYPE", unset = "ocean")))   # config.yaml: domain_type
+  # The starts. Points: "lon,lat; lon,lat" (WGS84); a single point can also be given as WATER_DIST_REF_LON and WATER_DIST_REF_LAT.
+  # Boxes: "lon [10.60, 12.00], lat [57.7395, 57.7415]", several separated by semicolons. A site's distance is the shortest
+  # route to the NEAREST start - to ANY passable cell of a box.
+  wd_ref_text <- Sys.getenv("WATER_DIST_REFERENCE_POINTS", unset = "")
+  if (!nzchar(trimws(wd_ref_text)) && nzchar(Sys.getenv("WATER_DIST_REF_LON", "")) && nzchar(Sys.getenv("WATER_DIST_REF_LAT", ""))) {
+    wd_ref_text <- paste0(Sys.getenv("WATER_DIST_REF_LON"), ",", Sys.getenv("WATER_DIST_REF_LAT"))
+  }
+  WATER_DIST_REF_POINTS       <- water_dist_parse_points(wd_ref_text)
+  WATER_DIST_REF_BOXES        <- water_dist_parse_boxes(Sys.getenv("WATER_DIST_REFERENCE_BOXES", unset = ""))
+  WATER_DIST_RES_KM           <- wd_setting("WATER_DIST_RES_KM", 1)
+  WATER_DIST_MIN_COVER        <- wd_setting("WATER_DIST_MIN_COVER", 0.99)
+  WATER_DIST_SNAP_TOL_KM      <- wd_setting("WATER_DIST_SNAP_TOL_KM", max(3 * WATER_DIST_RES_KM, 3))
+  WATER_DIST_NEGATIVE_BOX     <- water_dist_parse_box(Sys.getenv("WATER_DIST_NEGATIVE_BOX", unset = ""))   # optional: NULL = unsigned
+  WATER_DIST_ON_FAILED_SITES  <- tolower(trimws(Sys.getenv("WATER_DIST_ON_FAILED_SITES", unset = "stop")))
+  WATER_DIST_SPAN_FLAG_FACTOR <- 1.5   # a cluster is flagged when its water-distance range exceeds this x CLUSTER_VARIANCE_POINTS_KM
+  WATER_DIST_QA_PLOT          <- tolower(trimws(Sys.getenv("WATER_DIST_QA_PLOT", unset = "TRUE")))
+  if (!(WATER_DIST_DOMAIN %in% c("ocean", "land"))) stop("domain_type must be \"ocean\" or \"land\" - got '", WATER_DIST_DOMAIN, "'")
+  if (is.null(WATER_DIST_REF_POINTS) && is.null(WATER_DIST_REF_BOXES)) {
+    stop("WATER_DIST_ENABLED needs a start in wingen_params: WATER_DIST_REFERENCE_POINTS (WGS84 'lon,lat' pairs separated by semicolons) ",
+         "and/or WATER_DIST_REFERENCE_BOXES (for example \"lon [10.60, 12.00], lat [57.7395, 57.7415]\")")
+  }
+  if (!(WATER_DIST_ON_FAILED_SITES %in% c("stop", "drop"))) stop("WATER_DIST_ON_FAILED_SITES must be stop or drop")
+  if (!(WATER_DIST_QA_PLOT %in% c("true", "false"))) stop("WATER_DIST_QA_PLOT must be TRUE or FALSE")
+  WATER_DIST_QA_PLOT <- WATER_DIST_QA_PLOT == "true"
+  if (WATER_DIST_RES_KM <= 0 || WATER_DIST_MIN_COVER <= 0 || WATER_DIST_MIN_COVER > 1 || WATER_DIST_SNAP_TOL_KM < 0) {
+    stop("WATER_DIST_RES_KM must be > 0, WATER_DIST_MIN_COVER in (0, 1] and WATER_DIST_SNAP_TOL_KM >= 0")
+  }
+  wd_n_points <- if (is.null(WATER_DIST_REF_POINTS)) 0L else nrow(WATER_DIST_REF_POINTS)
+  wd_n_boxes  <- if (is.null(WATER_DIST_REF_BOXES)) 0L else nrow(WATER_DIST_REF_BOXES)
+
+  # Every start must lie within the coastline of section 2.2, which is cropped to the sampling area +- 10 degrees
+  wd_cover <- as.vector(terra::ext(ocean_lonlat))   # xmin, xmax, ymin, ymax
+  wd_points_outside <- wd_n_points > 0 && any(WATER_DIST_REF_POINTS[, 1] < wd_cover[1] | WATER_DIST_REF_POINTS[, 1] > wd_cover[2] |
+                                              WATER_DIST_REF_POINTS[, 2] < wd_cover[3] | WATER_DIST_REF_POINTS[, 2] > wd_cover[4])
+  wd_boxes_outside  <- wd_n_boxes > 0 && any(WATER_DIST_REF_BOXES[, 2] < wd_cover[1] | WATER_DIST_REF_BOXES[, 1] > wd_cover[2] |
+                                             WATER_DIST_REF_BOXES[, 4] < wd_cover[3] | WATER_DIST_REF_BOXES[, 3] > wd_cover[4])
+  if (wd_points_outside || wd_boxes_outside) {
+    stop("A water-route start (WATER_DIST_REFERENCE_POINTS / WATER_DIST_REFERENCE_BOXES) lies outside the coastline loaded in section 2.2, ",
+         "which covers the sampling area +- 10 degrees: lon ", round(wd_cover[1], 2), " to ", round(wd_cover[2], 2), ", lat ",
+         round(wd_cover[3], 2), " to ", round(wd_cover[4], 2), ". Check the coordinates (lon first, then lat).")
+  }
+
+  # What the coastline is, for the cache key and the provenance in the JSON: the Natural Earth layer of section 2.2
+  water_dist_coastline <- sprintf("naturalearth_%s_scale%s_%dfeatures_%.0fkm2", map_type, ocean_map_scale,
+                                  nrow(ocean_lonlat), sum(terra::expanse(ocean_lonlat, unit = "km")))
+  wd_cache_dir <- Sys.getenv("ENV_CACHE_DIR", unset = file.path(dirname(output_dir), "env_cache"))   # same folder as section 2.6
+  # ocean_lonlat is the layer that domain_type selects in 2.2 (sea polygons for ocean, land polygons for land): polygons_domain says so
+  wd <- water_dist_cached(water_dist_sites(coords_file_df), ref = WATER_DIST_REF_POINTS,
+                          polygons = ocean_lonlat, cache_dir = wd_cache_dir, domain = WATER_DIST_DOMAIN,
+                          res_km = WATER_DIST_RES_KM, min_cover = WATER_DIST_MIN_COVER,
+                          snap_tol_km = WATER_DIST_SNAP_TOL_KM, negative_side = WATER_DIST_NEGATIVE_BOX,
+                          coastline_id = water_dist_coastline, qa_plot = WATER_DIST_QA_PLOT,
+                          ref_box = WATER_DIST_REF_BOXES, polygons_domain = map_type)
+  wd_ok <- wd$table$status == "ok"
+  cat("Water-route distance (", WATER_DIST_DOMAIN, " route, ", WATER_DIST_RES_KM, " km grid): ", sum(wd_ok), " of ",
+      nrow(wd$table), " sites routed; ", if (wd$from_cache) "loaded from cache " else "computed and cached as ",
+      basename(wd$file), "\n", sep = "")
+  if (!is.na(wd$qa_file)) cat("  route figure (check that no route crosses land; made once per dataset):", wd$qa_file, "\n")
+  wd_snapped <- matrix(wd$meta$reference_snapped_lonlat, ncol = 2)   # one row per start point, also after reading the cache; no rows without start points
+  for (i in seq_len(wd_n_points)) {
+    cat(sprintf("  start point %d (%.4f E, %.4f N) snapped to (%.4f E, %.4f N), %.2f km away; nearest start for %d sites\n",
+                i, WATER_DIST_REF_POINTS[i, 1], WATER_DIST_REF_POINTS[i, 2], wd_snapped[i, 1], wd_snapped[i, 2],
+                wd$meta$reference_snapped_km[i], sum(wd$table$ref_id == i, na.rm = TRUE)))
+  }
+  wd_box_cells <- character(0)   # per box, for the JSON: how much of it stands for the start
+  for (j in seq_len(wd_n_boxes)) {
+    bi <- wd$meta$reference_box_info[j, ]
+    wd_box_cells[j] <- sprintf("%d of %d touched grid cells passable, %.3f-%.3f E", bi$cells_passable, bi$cells_touched, bi$passable_lon_min, bi$passable_lon_max)
+    cat(sprintf("  start box %d (lon %.4f to %.4f E, lat %.4f to %.4f N): %s, all at distance 0; nearest start for %d sites\n",
+                wd_n_points + j, bi$xmin, bi$xmax, bi$ymin, bi$ymax, wd_box_cells[j], sum(wd$table$ref_id == wd_n_points + j, na.rm = TRUE)))
+  }
+  if (any(wd_ok)) {
+    cat(sprintf("  route lengths %.0f-%.0f km; site snap distance median %.2f km, max %.2f km\n",
+                min(abs(wd$table$route_km[wd_ok])), max(abs(wd$table$route_km[wd_ok])),
+                median(wd$table$snap_km[wd_ok]), max(wd$table$snap_km[wd_ok])))
+    worst_snap <- wd$table[wd_ok, c("lon", "lat", "snap_km")]
+    worst_snap <- utils::head(worst_snap[order(-worst_snap$snap_km), ], 5)
+    cat("  sites moved furthest to reach a passable cell (km; the limit is WATER_DIST_SNAP_TOL_KM):\n")
+    print(worst_snap, row.names = FALSE, digits = 4)
+  }
+  wd_failure <- water_dist_failure_text(wd$table, WATER_DIST_SNAP_TOL_KM)
+  if (!is.null(wd_failure)) {
+    if (WATER_DIST_ON_FAILED_SITES == "stop") stop(wd_failure, call. = FALSE)
+    message("WARNING: ", wd_failure, "\nThese sites get no water-route distance; their individuals drop out of their cluster's mean.")
+  }
+
+  # Per individual, named by Sample ID like the env_ind_* vectors of section 2.6. The predictor is route_km (0 or positive),
+  # or signed_route_km when the optional WATER_DIST_NEGATIVE_BOX is set (then negative inside the box, e.g. the Kattegat/Skagerrak side of Oresund).
+  WATER_DIST_PREDICTOR <- if (is.null(WATER_DIST_NEGATIVE_BOX)) "route_km" else "signed_route_km"
+  env_ind_water_dist <- wd$table[[WATER_DIST_PREDICTOR]][match(paste(coords_file_df$Latitude, coords_file_df$Longitude), wd$table$site_key)]
+  names(env_ind_water_dist) <- coords_file_df$`Sample ID`
+  cat("individuals with NO water-route distance:", sum(is.na(env_ind_water_dist)), "of", length(env_ind_water_dist), "\n")
+}
 ```
 # 3. Moving-window genetic diversity (window_gd / window_general)
 ```{r 3. window-gd}
@@ -3199,13 +3409,13 @@ if (compute_genetic_diversity_statistics == TRUE) {
   per_location_gd <- location_gd_from_draws(gd_input, location_draws, gd_of,
     na.rm = gd_uses_general)
 
-  n_locations_used <- sum(!is.na(per_location_gd))
+  n_clusters_used <- sum(!is.na(per_location_gd))
   # Keep the calculations visible. A window spanning several locations can contain variation even if each location is fixed and its D is undefined; in that case report NA for the location summary rather than Inf/NaN.
   gd_variance_per_location <- var(per_location_gd, na.rm = TRUE)
-  gd_mean_per_location <- if (n_locations_used) mean(per_location_gd, na.rm = TRUE) else NA_real_
-  gd_median_per_location <- if (n_locations_used) median(per_location_gd, na.rm = TRUE) else NA_real_
-  gd_min_per_location <- if (n_locations_used) min(per_location_gd, na.rm = TRUE) else NA_real_
-  gd_max_per_location <- if (n_locations_used) max(per_location_gd, na.rm = TRUE) else NA_real_
+  gd_mean_per_location <- if (n_clusters_used) mean(per_location_gd, na.rm = TRUE) else NA_real_
+  gd_median_per_location <- if (n_clusters_used) median(per_location_gd, na.rm = TRUE) else NA_real_
+  gd_min_per_location <- if (n_clusters_used) min(per_location_gd, na.rm = TRUE) else NA_real_
+  gd_max_per_location <- if (n_clusters_used) max(per_location_gd, na.rm = TRUE) else NA_real_
   gd_abs_mean_per_location <- abs(gd_mean_per_location)
 
   # --------------------------------------------------------------------
@@ -3345,6 +3555,37 @@ if (compute_genetic_diversity_statistics == TRUE) {
   if (isTRUE(WRITE_LOCATION_STATS)) {
     perloc_stats_latitude <- location_association(per_location_gd, perloc_latitude)
   }
+  # >>> [water-dist-location] -------------------------------------------------------------------------------
+  # Optional predictor from section 2.7: water-route distance from the start point(s) / box(es). Location level only; like
+  # latitude it is available with Copernicus on or off. One value per cluster = mean over its member individuals'
+  # site distances - the same rule env_for_cluster() applies to the Copernicus variables above.
+  # water_dist_cluster_summary() also returns the within-cluster range. Clusters are built from STRAIGHT-LINE
+  # distances, so one can straddle a thin barrier (e.g. both sides of a spit) and its mean route distance then means
+  # little. Two sites' route distances cannot differ by more than the water distance between them, so a range far above
+  # the cluster diameter exposes this. Clusters above WATER_DIST_SPAN_FLAG_FACTOR x CLUSTER_VARIANCE_POINTS_KM are
+  # flagged in the per-location table and counted in the JSON; they are NOT removed - it is an audit flag.
+  if (WATER_DIST_ENABLED) {
+    wd_cluster <- water_dist_cluster_summary(cluster_groups, env_ind_water_dist,
+                                              flag_km = WATER_DIST_SPAN_FLAG_FACTOR * CLUSTER_VARIANCE_POINTS_KM)
+    perloc_water_dist <- wd_cluster$mean
+    wd_fit <- local({   # same simple-regression R2/slope as fit_perloc_gradient() above
+      keep <- is.finite(per_location_gd) & is.finite(perloc_water_dist)
+      if (sum(keep) < 3 || sd(per_location_gd[keep]) == 0 || sd(perloc_water_dist[keep]) == 0) {
+        list(r2 = NA_real_, slope = NA_real_)
+      } else {
+        fit <- lm(per_location_gd[keep] ~ perloc_water_dist[keep])
+        list(r2 = summary(fit)$r.squared, slope = unname(coef(fit)[2]))
+      }
+    })
+    if (isTRUE(WRITE_LOCATION_STATS)) perloc_stats_water_dist <- location_association(per_location_gd, perloc_water_dist)
+    if (any(wd_cluster$flag)) {
+      message("WARNING: ", sum(wd_cluster$flag), " of ", nrow(wd_cluster), " location cluster(s) have a water-route distance range above ",
+              WATER_DIST_SPAN_FLAG_FACTOR * CLUSTER_VARIANCE_POINTS_KM, " km (cluster ids: ",
+              paste(names(cluster_groups)[wd_cluster$flag], collapse = ", "),
+              "): the straight-line cluster spans a land barrier, so its mean distance is not representative.")
+    }
+  }
+  # <<< [water-dist-location] -------------------------------------------------------------------------------
   if (RUN_NEUTRAL_SIM) {
     # Reuse this gene's individuals, clusters, environmental means, estimator
     # and individual rarefaction draws. No maps/kriging are recomputed for nulls.
@@ -3356,6 +3597,7 @@ if (compute_genetic_diversity_statistics == TRUE) {
       if (ENV_OXYGEN_ENABLED) neutral_predictors$oxygen <- unname(perloc_env_oxygen)
       if (ENV_CURRENT_SPEED_ENABLED) neutral_predictors$current_speed <- unname(perloc_env_current_speed)
     }
+    if (WATER_DIST_ENABLED) neutral_predictors$water_dist <- perloc_water_dist   # section 2.7 (works with Copernicus on or off)
     min_valid_fraction <- as.numeric(Sys.getenv("NEUTRAL_MIN_VALID_FRACTION", unset = "0.9"))
     if (!is.finite(min_valid_fraction) || min_valid_fraction <= 0 || min_valid_fraction > 1) {
       stop("NEUTRAL_MIN_VALID_FRACTION must be in (0, 1]")
@@ -3400,6 +3642,14 @@ if (compute_genetic_diversity_statistics == TRUE) {
           unname(vapply(cluster_groups, function(ids) sum(env_raw_na_flags[[v]][ids], na.rm = TRUE), numeric(1)))
       }
     }
+    if (WATER_DIST_ENABLED) {
+      # section 2.7: the cluster's mean route distance (km; negative on the configured opposite side), the spread behind it
+      # (max - min over its individuals) and the audit flag for clusters that straddle a barrier
+      per_location_table$water_dist_km             <- unname(perloc_water_dist)
+      per_location_table$water_dist_range_km       <- unname(wd_cluster$range)
+      per_location_table$water_dist_span_flag      <- unname(wd_cluster$flag)
+      per_location_table$n_individuals_no_water_dist <- unname(wd_cluster$n_missing)
+    }
     if (isTRUE(WRITE_PER_LOCATION_TSV)) {
       per_location_path <- file.path(output_dir, paste0(statistics_output_prefix, "_per_location.tsv"))
       write.table(per_location_table, per_location_path, sep = "\t", quote = FALSE, row.names = FALSE)
@@ -3438,7 +3688,7 @@ if (compute_genetic_diversity_statistics == TRUE) {
       agreement_context, CLUSTER_VARIANCE_POINTS_KM, EMA_GD_PROBS, EMA_ENV_BREAKS,
       height = max(4, min(16, 7/agreement_aspect + .8)),
       genetic_summary = list(windows = list(min = gd_min_raw_windows, max = gd_max_raw_windows, mean = gd_mean_raw_windows),
-        location = list(min = gd_min_per_location, max = gd_max_per_location, mean = gd_mean_per_location, n = n_locations_used)))
+        location = list(min = gd_min_per_location, max = gd_max_per_location, mean = gd_mean_per_location, n = n_clusters_used)))
   } else if (file.exists(agreement_manifest)) unlink(agreement_manifest)
   # <<< [environmental-model-agreement-export]
 
@@ -3478,7 +3728,7 @@ if (compute_genetic_diversity_statistics == TRUE) {
     gd_label = gd_label,
     gd_label_short = gd_label_short,
     n_variants = n_variants,
-    n_locations_used = n_locations_used,
+    n_clusters_used = n_clusters_used,
     n_individuals_vcf = list(initial = n_individuals_input, retained = n_individuals_retained, vcf_error = n_pruned_vcf_error, coords_mismatch = n_pruned_coord_mismatch),
 
     windows = list(variance = gd_variance_raw_windows, mean = gd_mean_raw_windows, abs_mean = gd_abs_mean_raw_windows,
@@ -3541,10 +3791,22 @@ if (compute_genetic_diversity_statistics == TRUE) {
       list(st$n, st$r, st$r_ci_lo, st$r_ci_hi, st$p, st$rho),
       paste0("location_latitude", c("_n", "_r", "_r_ci_lo", "_r_ci_hi", "_p", "_rho"))))
   }
+  # (e) Water-route distance (section 2.7), location level only: R2 and slope of the location fit, the location statistics,
+  #     how many clusters straddle a barrier and how many individuals had no distance. The neutral fields are appended below.
+  if (WATER_DIST_ENABLED) {
+    gene_summary$water_route_distance <- list(location_water_dist_r2 = wd_fit$r2, location_water_dist_slope = wd_fit$slope,
+      n_locations_span_flagged = sum(wd_cluster$flag), n_individuals_no_distance = sum(is.na(env_ind_water_dist)))
+    if (isTRUE(WRITE_LOCATION_STATS)) {
+      st <- perloc_stats_water_dist
+      gene_summary$water_route_distance <- c(gene_summary$water_route_distance, setNames(
+        list(st$n, st$r, st$r_ci_lo, st$r_ci_hi, st$p, st$rho),
+        paste0("location_water_dist", c("_n", "_r", "_r_ci_lo", "_r_ci_hi", "_p", "_rho"))))
+    }
+  }
   if (RUN_NEUTRAL_SIM) {
     groups_by_variable <- c(latitude = "latitude", salinity = "salinity", temp_summer = "water_temp_summer",
       temp_winter = "water_temp_winter", chl_log = "chlorophyll_a_log",
-      oxygen = "oxygen", current_speed = "current_speed")
+      oxygen = "oxygen", current_speed = "current_speed", water_dist = "water_route_distance")
     for (variable in names(neutral_comparison$fields)) {
       fields <- neutral_comparison$fields[[variable]]
       names(fields) <- paste0("location_", variable, "_", names(fields))
@@ -3640,6 +3902,22 @@ if (compute_genetic_diversity_statistics == TRUE) {
           env_current_northward_variable = ENV_CURRENT_NORTHWARD_VAR
         ))
       }
+    }
+    if (WATER_DIST_ENABLED) {
+      gene_summary$run_settings <- c(gene_summary$run_settings, list(
+        water_dist_enabled = TRUE, water_dist_domain = WATER_DIST_DOMAIN,
+        water_dist_reference_lonlat = if (wd_n_points) paste(sprintf("%.4f, %.4f", WATER_DIST_REF_POINTS[, 1], WATER_DIST_REF_POINTS[, 2]), collapse = "; ") else "none",
+        water_dist_reference_snapped_lonlat = if (wd_n_points) paste(sprintf("%.4f, %.4f", wd_snapped[, 1], wd_snapped[, 2]), collapse = "; ") else "none",
+        water_dist_n_reference_points = wd_n_points,
+        water_dist_reference_boxes = if (wd_n_boxes) paste(sprintf("lon %s to %s, lat %s to %s", as.character(WATER_DIST_REF_BOXES[, 1]), as.character(WATER_DIST_REF_BOXES[, 2]),
+                                                                    as.character(WATER_DIST_REF_BOXES[, 3]), as.character(WATER_DIST_REF_BOXES[, 4])), collapse = "; ") else "none",
+        water_dist_reference_box_cells = if (wd_n_boxes) paste(wd_box_cells, collapse = "; ") else "none",
+        water_dist_n_reference_boxes = wd_n_boxes, water_dist_predictor = WATER_DIST_PREDICTOR,
+        water_dist_res_km = WATER_DIST_RES_KM, water_dist_min_cover = WATER_DIST_MIN_COVER,
+        water_dist_connectivity = wd$meta$connectivity, water_dist_snap_tol_km = WATER_DIST_SNAP_TOL_KM,
+        water_dist_negative_side = if (is.null(WATER_DIST_NEGATIVE_BOX)) "none" else paste(WATER_DIST_NEGATIVE_BOX, collapse = ", "),
+        water_dist_coastline = water_dist_coastline, water_dist_algorithm = WATER_DIST_VERSION,
+        water_dist_span_flag_km = WATER_DIST_SPAN_FLAG_FACTOR * CLUSTER_VARIANCE_POINTS_KM))
     }
   }
   # <<< [json-extras] ---------------------------------------------------------------------------------------

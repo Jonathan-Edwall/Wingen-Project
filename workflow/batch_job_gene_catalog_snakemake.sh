@@ -2,10 +2,9 @@
 #SBATCH -A uppmax2026-1-187 # Specifying the project ID for compute allocation
 #SBATCH --cpus-per-task=8 # 2 genes concurrently x threads=2 each (Snakefile's run_wingen_report) - matches max_parallel_jobs_gene_catalog_creation=2 in the non-Snakemake pipeline
 #SBATCH --mem=160G # 2 genes concurrently x ~28.3GB observed peak each (sacct, job 6675358) - same reasoning as the 80G batch_job_gene_catalog.sh now requests
-#SBATCH -t 10:00:00
+#SBATCH -t 02:00:00
 #SBATCH -J gene_catalog_snakemake
 #SBATCH --mail-type=ALL
-#SBATCH --mail-user=edwalljonathan@gmail.com
 
 # Submit from the project root with sbatch; direct Bash runs locate it via workflow/.
 export ROOT="${SLURM_SUBMIT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"

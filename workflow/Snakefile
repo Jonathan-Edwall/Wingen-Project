@@ -189,6 +189,33 @@ FIRST_GENE_RUNTIME = positive_integer_setting("first_gene_runtime_minutes", 240)
 ORDINARY_REPORTS_COMPLETE = f"{RESULTS_DIR}/temp/ordinary_reports.complete"
 FIRST_GENE_WARMUP_MARKER = f"{RESULTS_DIR}/temp/first_gene_warmup.json"
 
+# Optional analyses over the finished catalog. Both are off by default, and each one adds tables to gene_catalog.duckdb after the aggregation, which the catalog page then shows. They run one after the other because DuckDB lets only one process write to a file at a time.
+RUN_CORRELATION_SIMILARITY = config.get("run_correlation_similarity_screen", False)
+if not isinstance(RUN_CORRELATION_SIMILARITY, bool):
+    raise ValueError("run_correlation_similarity_screen must be a YAML boolean (true/false); "
+                     "on the command line Snakemake only reads True/False, "
+                     "e.g. --config run_correlation_similarity_screen=True")
+RUN_ENV_CORRELATION_MATRIX = config.get("run_env_correlation_matrix", False)
+if not isinstance(RUN_ENV_CORRELATION_MATRIX, bool):
+    raise ValueError("run_env_correlation_matrix must be a YAML boolean (true/false); "
+                     "on the command line Snakemake only reads True/False, "
+                     "e.g. --config run_env_correlation_matrix=True")
+CORRELATION_SIMILARITY_MIN_SHARED_VARIABLES = positive_integer_setting("correlation_similarity_min_shared_variables", 4)
+if CORRELATION_SIMILARITY_MIN_SHARED_VARIABLES < 3:
+    raise ValueError("correlation_similarity_min_shared_variables must be at least 3: "
+                     "the correlation over two shared variables is always +1 or -1")
+CORRELATION_SIMILARITY_TOP_K_PER_GENE = positive_integer_setting("correlation_similarity_top_k_per_gene", 20)
+CORRELATION_SIMILARITY_MAX_FULL_EXPORT_GENES = config.get("correlation_similarity_max_full_export_genes", 2000)
+if (isinstance(CORRELATION_SIMILARITY_MAX_FULL_EXPORT_GENES, bool)
+        or not isinstance(CORRELATION_SIMILARITY_MAX_FULL_EXPORT_GENES, int)
+        or CORRELATION_SIMILARITY_MAX_FULL_EXPORT_GENES < 0):
+    raise ValueError("correlation_similarity_max_full_export_genes must be a non-negative YAML integer "
+                     "(0 = never write the all-pairs table)")
+SIMILARITY_PAIRS = f"{RESULTS_DIR}/results/gene_correlation_similarity_pairs.tsv"
+SIMILARITY_SUMMARY = f"{RESULTS_DIR}/results/gene_correlation_similarity_summary.tsv"
+SIMILARITY_ALL_PAIRS = f"{RESULTS_DIR}/results/gene_correlation_similarity_all_pairs.tsv"
+ENV_CORRELATION_MATRIX = f"{RESULTS_DIR}/results/env_correlation_matrix.tsv"
+
 
 def allocation_memory_mb(headroom_mb):
     """Available declared budget, leaving headroom for the local scheduler."""
@@ -896,6 +923,18 @@ def report_location_screening_inputs(wildcards):
 # END OLS_MODEL_AGREEMENT_DEPENDENCIES
 
 
+def report_water_distance_inputs(wildcards):
+    """Track code/water_distance.R when the water-route distance is switched on (WATER_DIST_ENABLED in
+    wingen_params). Switched off, the list is empty and no report depends on the file."""
+    settings = config.get("wingen_params", {}) or {}
+    if not isinstance(settings, dict):
+        raise ValueError("wingen_params must be a YAML mapping")
+    enabled = settings.get("WATER_DIST_ENABLED", False)
+    if isinstance(enabled, str):  # the Rmd accepts TRUE/FALSE in any case
+        enabled = enabled.strip().lower() == "true"
+    return ["code/water_distance.R"] if enabled else []
+
+
 rule filter_vcf_for_gene:
     """create_gene_vcf_file(): subset the cohort VCF to one gene's variants."""
     wildcard_constraints:
@@ -1425,6 +1464,7 @@ rule run_wingen_report:
         rmd="code/2_Herring_Wingen.Rmd",
         wingen_helpers=report_wingen_helper_inputs,
         model_agreement_sources=report_location_screening_inputs,
+        water_distance=report_water_distance_inputs,
         # One stable order-only dependency preserves reference reuse when the
         # ordinary gene limit/input list expands. Pool preparation stays earlier.
         ordinary_reports=lambda wc: [ancient(ORDINARY_REPORTS_COMPLETE)] if is_neutral_reference(wc) else [],
@@ -1731,6 +1771,82 @@ rule aggregate_gene_summaries:
 #     script:
 #         "../code/build_gene_catalog_html.py"
 
+if RUN_CORRELATION_SIMILARITY:
+    rule compute_gene_correlation_similarity:
+        """
+        "Gene Linkage Screening Test": which genes have a similar pattern of location-level
+        correlations with the environmental variables. These are candidates for a later linkage
+        study, not a measurement of linkage disequilibrium. Adds the tables
+        gene_correlation_similarity_pairs and gene_correlation_similarity_summary to
+        gene_catalog.duckdb; the catalog page shows them when they exist.
+        """
+        input:
+            # The script adds its tables to this file after it has written its own outputs, so the
+            # file is always newer than them. As an ordinary input that would make this job look
+            # out of date on every run. ancient() keeps the ordering (the file is made first) and
+            # leaves the decision to the catalog TSV below, which is rewritten whenever the
+            # aggregation runs again and so removes the tables from a fresh gene_catalog.duckdb.
+            # str(): ancient() marks the object it is given, and the page rule's duckdb input is
+            # that same object, which must stay an ordinary input.
+            duckdb=ancient(str(rules.aggregate_gene_summaries.output.duckdb)),
+            catalog_tsv=rules.aggregate_gene_summaries.output.tsv,
+            script="code/compute_gene_correlation_similarity.py",
+        output:
+            pairs=SIMILARITY_PAIRS,
+            summary=SIMILARITY_SUMMARY,
+        params:
+            min_shared_variables=CORRELATION_SIMILARITY_MIN_SHARED_VARIABLES,
+            top_k_per_gene=CORRELATION_SIMILARITY_TOP_K_PER_GENE,
+            max_full_export_genes=CORRELATION_SIMILARITY_MAX_FULL_EXPORT_GENES,
+            all_pairs=SIMILARITY_ALL_PAIRS,
+        # Every pair of genes is compared, so the time grows with the square of the gene count; the script compares the genes in blocks, so the memory does not. The rule is given all of Snakemake's cores; DuckDB uses what it can of them.
+        threads: workflow.cores
+        container:
+            CONTAINER
+        shell:
+            """
+            rm -f {params.all_pairs:q}
+            python {input.script:q} \
+                --duckdb {input.duckdb:q} \
+                --min-shared-variables {params.min_shared_variables} \
+                --top-k-per-gene {params.top_k_per_gene} \
+                --max-full-export-genes {params.max_full_export_genes} \
+                --threads {threads} \
+                --output-tsv {output.pairs:q} \
+                --output-summary-tsv {output.summary:q} \
+                --output-full-pairs-tsv {params.all_pairs:q}
+            """
+
+if RUN_ENV_CORRELATION_MATRIX:
+    rule compute_environmental_correlation_matrix:
+        """
+        How correlated the environmental predictors are with each other across the sample
+        locations (not a property of any gene). Reads every gene's {gene}_per_location.tsv and adds
+        the tables env_correlation_matrix and env_correlation_matrix_labels to gene_catalog.duckdb;
+        the catalog page shows the matrix when the tables exist.
+        """
+        input:
+            # ancient(str()) and the catalog TSV: see compute_gene_correlation_similarity. The per-location
+            # files exist once the aggregation has run, because it waits for every gene's report.
+            duckdb=ancient(str(rules.aggregate_gene_summaries.output.duckdb)),
+            catalog_tsv=rules.aggregate_gene_summaries.output.tsv,
+            # With the similarity screen on, this job starts after it: both write to gene_catalog.duckdb.
+            similarity=[SIMILARITY_PAIRS] if RUN_CORRELATION_SIMILARITY else [],
+            script="code/compute_environmental_correlation_matrix.py",
+        output:
+            matrix=ENV_CORRELATION_MATRIX,
+        params:
+            results_dir=f"{RESULTS_DIR}/results",
+        container:
+            CONTAINER
+        shell:
+            """
+            python {input.script:q} \
+                --results-dir {params.results_dir:q} \
+                --duckdb {input.duckdb:q} \
+                --output-tsv {output.matrix:q}
+            """
+
 rule build_gene_catalog_html:
     """
     One static, sortable/searchable HTML page over the whole catalog -
@@ -1748,6 +1864,10 @@ rule build_gene_catalog_html:
     input:
         duckdb=rules.aggregate_gene_summaries.output.duckdb,
         availability=availability_manifest,
+        # Only with the matching switch on: they order the page after the step that adds its tables
+        # to the DuckDB file, and rebuild the page when that step runs again.
+        similarity=[SIMILARITY_PAIRS] if RUN_CORRELATION_SIMILARITY else [],
+        env_matrix=[ENV_CORRELATION_MATRIX] if RUN_ENV_CORRELATION_MATRIX else [],
         builder="code/build_gene_catalog_html.py",
         template="code/templates/gene_catalog_template.html",
         jquery_js="code/vendor/jquery-3.7.1.min.js",
